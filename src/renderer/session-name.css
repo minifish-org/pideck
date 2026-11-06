@@ -1,0 +1,51 @@
+.session-title-button {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-title-button:hover {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.session-name {
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+
+.session-name input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.workspace-title .session-name { width: min(26ch, 100%); }
+.nav-item > .session-name { padding: 3px 5px; }
+.nav-item > .session-name input { font-size: 13px; }
+.nav-item > .session-name + .nav-remove { visibility: hidden; }
+
+.notice.removal-branches { display: grid; align-items: start; grid-template-columns: auto minmax(0, 1fr) auto; }
+.removal-branches ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-height: min(106px, 24vh);
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.removal-branches li { min-width: 0; }
+.removal-branches .inline-action { max-width: 100%; overflow-wrap: anywhere; }

@@ -217,7 +217,7 @@ test("native transcript retains watched entries, loads earlier history, and fork
     runtime.trustProject(project.id);
     let ongoing!: ChatView;
     const live = await runtime.watch(selection, view => { ongoing = view; });
-    const turns = 31;
+    const turns = 55;
     faux.setResponses(Array.from({ length: turns }, (_, index) => fauxAssistantMessage(`Reply ${index}.`)));
     for (let index = 0; index < turns; index++) {
       const answer = waitForView(runtime, selection, view => view.status === "idle" && textIn(view, `Reply ${index}.`));
@@ -231,7 +231,7 @@ test("native transcript retains watched entries, loads earlier history, and fork
     const history = await runtime.watch(selection, view => { reopened = view; });
     assert.equal(reopened.hasEarlier, true);
     assert.ok(!textIn(reopened, "Turn 0."));
-    await history.loadEarlier();
+    while (reopened.hasEarlier) await history.loadEarlier();
     assert.ok(textIn(reopened, "Turn 0."));
     assert.equal(reopened.hasEarlier, undefined);
     const firstAnswer = reopened.messages.find(message => message.blocks.some(
@@ -239,6 +239,17 @@ test("native transcript retains watched entries, loads earlier history, and fork
     ));
     assert.ok(firstAnswer?.entryId);
     history.dispose();
+
+    let restored!: ChatView;
+    const anchored = await runtime.watch(selection, view => { restored = view; }, undefined, firstAnswer.entryId);
+    assert.ok(textIn(restored, "Turn 0."));
+    assert.ok(textIn(restored, "Reply 0."));
+    assert.ok(textIn(restored, "Reply 54."));
+    assert.ok(restored.gaps?.length);
+    assert.ok(!textIn(restored, "Reply 25."));
+    await anchored.fillGap(restored.gaps[0]!);
+    assert.ok(textIn(restored, "Reply 25."));
+    anchored.dispose();
 
     const forked = await runtime.fork(selection, firstAnswer.entryId);
     assert.notEqual(forked.id, selection.sessionId);

@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { applyImmutable } from '@earendil-works/chord/delta';
 import type { ChatGap, ChatView, Selection } from '../shared/api';
+import type { ReadingPosition } from './preferences';
 
 export function readableError(error: unknown) {
   return (error instanceof Error ? error.message : String(error))
     .replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 }
 
-type Conversation = { view: ChatView | null; connected: boolean; error: string | null };
+type Conversation = { view: ChatView | null; watchId?: string; connected: boolean; error: string | null };
 type Watch = { id: string; sequence: number; view: ChatView | null; requested: Promise<void> };
 
-export function useConversation({ projectId, sessionId }: Selection) {
+export function useConversation({ projectId, sessionId }: Selection, readingPosition: RefObject<ReadingPosition | undefined>) {
   const [conversation, setConversation] = useState<Conversation>({ view: null, connected: false, error: null });
   const [attempt, setAttempt] = useState(0);
   const activeWatch = useRef<Watch | null>(null);
@@ -41,7 +43,8 @@ export function useConversation({ projectId, sessionId }: Selection) {
       detach();
       setConversation((current) => ({ ...current, connected: false, error: null }));
       const id = crypto.randomUUID();
-      const requested = api.invoke('chat:watch', { projectId, sessionId, subscriptionId: id });
+      const readingEntryId = readingPosition.current?.entryId;
+      const requested = api.invoke('chat:watch', { projectId, sessionId, subscriptionId: id, readingEntryId });
       subscription = { id, sequence: 0, view: null, requested };
       void requested.catch((error: unknown) => {
         if (disposed || subscription?.id !== id) return;
@@ -91,7 +94,7 @@ export function useConversation({ projectId, sessionId }: Selection) {
         subscription.sequence = event.sequence;
         subscription.view = view;
         activeWatch.current = subscription;
-        setConversation({ view, connected: true, error: null });
+        setConversation({ view, watchId: subscription.id, connected: true, error: null });
       } catch {
         repair();
       }
@@ -103,7 +106,7 @@ export function useConversation({ projectId, sessionId }: Selection) {
       unsubscribe();
       detach();
     };
-  }, [projectId, sessionId, attempt]);
+  }, [projectId, sessionId, attempt, readingPosition]);
 
   async function loadEarlier(gap?: ChatGap) {
     const watch = activeWatch.current;

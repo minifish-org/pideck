@@ -34,7 +34,8 @@ function ProjectTerminal({ project, visible, focusOnShow }: TerminalProps) {
   const [activated, setActivated] = useState(false);
   useEffect(() => { if (visible) setActivated(true); }, [visible]);
 
-  return <section className="workspace-terminal" aria-label="Project terminal" hidden={!visible}>
+  return <section className="workspace-terminal" id={visible ? "workspace-terminal" : undefined}
+    aria-label="Project terminal" hidden={!visible}>
     {project.trusted && (visible || activated)
       ? <TerminalInstance project={project} visible={visible} focusOnShow={focusOnShow} />
       : <>

@@ -14,12 +14,14 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import type { ChatGap, ChatView, ModelOption, RemovalResult, SendChat, Selection } from "../shared/api.js";
+import type { ChatGap, ChatView, ModelOption, RemovalResult, SendChat, Selection, SessionActivity } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
+import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
 import { shellEnvironment } from "./shell-env.js";
+import { SessionActivities } from "./session-activity.js";
 import { reviewWrites } from "./write-review.js";
 
 const context = BACKGROUND_CONTEXT;
@@ -80,6 +82,7 @@ export class Runtime {
   private closing?: Promise<void>;
   private removing?: Promise<RemovalResult>;
   private readonly admissions = new Set<Promise<unknown>>();
+  private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id));
 
   private constructor(
     private readonly metadata: Metadata,
@@ -143,10 +146,20 @@ export class Runtime {
             return new ToolEnvironment(cwd, join(outputRoot, String(conversationId)));
           },
         }, context);
-        harness.resume();
         return harness;
       }
-      return new Runtime(metadata, await openHarness(), models, durablePath, outputRoot, openHarness, onStorageFailure);
+      const harness = await openHarness();
+      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, onStorageFailure);
+      try {
+        await runtime.activities.attach(harness);
+        await runtime.recoverSessionTitles();
+        harness.resume();
+      } catch (error) {
+        runtime.activities.detach();
+        await harness.close(context).catch(() => {});
+        throw error;
+      }
+      return runtime;
     } catch (error) {
       metadata.close();
       throw error;
@@ -160,15 +173,56 @@ export class Runtime {
   listSessions(projectId: string) { return this.metadata.listSessions(projectId); }
   deviceId() { return this.metadata.deviceId(); }
 
-  createSession(projectId: string, title = "New session") {
+  watchSessionActivity(listener: (items: SessionActivity[]) => void) {
+    return this.activities.subscribe(listener);
+  }
+
+  readSessionActivity(selection: Selection, taskId: number) {
+    const session = this.metadata.session(selection.projectId, selection.sessionId);
+    this.activities.read(session.conversationId, taskId);
+  }
+
+  createSession(projectId: string, title?: string) {
     return this.admit(async () => {
       const project = this.metadata.getProject(projectId);
       const conversation = await this.harness.createConversation({
         ownership: { kind: "ownerless" },
         agent: { cwd: project.directory },
       }, context);
-      return this.metadata.createSession(projectId, conversation.id, title);
+      const name = title && sessionTitle(title);
+      return this.metadata.createSession(projectId, conversation.id, name || untitledSession, !name);
     });
+  }
+
+  renameSession(selection: Selection, title: string) {
+    this.assertWritable();
+    const name = sessionTitle(title);
+    if (!name) throw new Error("Enter a session name.");
+    return this.metadata.renameSession(selection.projectId, selection.sessionId, name);
+  }
+
+  private async recoverSessionTitles(): Promise<void> {
+    for (const { id, conversationId } of this.metadata.sessionsAwaitingTitle()) {
+      const conversation = await this.harness.conversation(conversationId, context);
+      if (conversation) await this.nameFromFirstMessage(id, conversation);
+    }
+  }
+
+  private async nameFromFirstMessage(sessionId: string, conversation: Conversation): Promise<void> {
+    let cursor: Awaited<ReturnType<Conversation["entries"]>>["next"];
+    do {
+      const page = await conversation.entries({ order: "ascending" }, 16, cursor, context);
+      for (const entry of page.items) {
+        if (entry.kind !== "pi.user" && entry.kind !== inputEntryKind) continue;
+        const user = entry.model?.find(message => message.role === "user");
+        if (!user) continue;
+        const text = typeof user.content === "string" ? user.content
+          : user.content.find(block => block.type === "text")?.text ?? "";
+        this.metadata.setAutomaticTitle(sessionId, firstSessionTitle(text));
+        return;
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
   }
 
   async listModels(): Promise<ModelOption[]> {
@@ -204,13 +258,17 @@ export class Runtime {
 
   private async submitChat(input: SendChat): Promise<void> {
     this.requireTrustedProject(input.projectId);
+    const { autoTitlePending } = this.metadata.session(input.projectId, input.sessionId);
     const conversation = await this.conversation(input);
     const { requestId } = input;
     if (requestId) {
       // An acknowledgement lost during restart still belongs to the original
       // admission, even if the catalog or credentials have changed meanwhile.
       const accepted = await conversation.commit(tx => tx.submissionByRequest(conversation.id, requestId), context);
-      if (accepted) return;
+      if (accepted) {
+        if (autoTitlePending) await this.nameFromFirstMessage(input.sessionId, conversation);
+        return;
+      }
     }
     const model = this.models.getModel(input.model.provider, input.model.id);
     if (!model) throw new Error("The selected model is unavailable.");
@@ -257,6 +315,7 @@ export class Runtime {
       return true;
     }, context);
     if (admitted) this.metadata.touchSession(input.sessionId);
+    if (autoTitlePending) await this.nameFromFirstMessage(input.sessionId, conversation);
   }
 
   fork(selection: Selection, entryId: number, title?: string) {
@@ -273,7 +332,7 @@ export class Runtime {
       throw new Error("Choose a committed user or assistant message in this session.");
     }
     const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, context);
-    return this.metadata.createSession(selection.projectId, fork.id, title?.trim() || `Fork of ${source.title}`.slice(0, 120));
+    return this.metadata.createSession(selection.projectId, fork.id, (title && sessionTitle(title)) || branchTitle(source.title));
   }
 
   async compact(selection: Selection, instructions?: string): Promise<"compacted" | "no-change" | "stopped" | "failed"> {
@@ -308,13 +367,18 @@ export class Runtime {
     if (conversations.some(id => this.metadata.hasConversation(id) && this.metadata.projectOf(id) !== project.id)) {
       throw new Error("Removal would affect sessions in another workspace.");
     }
-    const sessionIds = sessions.filter(row => affected.has(row.conversationId)).map(row => row.id);
-    if (selected && sessionIds.length > 1) throw new Error("Remove this session’s branches first.");
+    const affectedSessions = sessions.filter(row => affected.has(row.conversationId));
+    const sessionIds = affectedSessions.map(row => row.id);
+    const blockingBranches = selected
+      ? affectedSessions.filter(row => row.id !== selected.id)
+        .sort((left, right) => right.conversationId - left.conversationId)
+        .map(({ id, title }) => ({ id, title }))
+      : [];
     const scope = createHash("sha256")
       .update(JSON.stringify([target.projectId, target.sessionId, conversations, [...sessionIds].sort()]))
       .digest("hex");
     return { scope, name: selected?.title ?? project.name, directory: project.directory,
-      sessionCount: sessionIds.length, roots, conversations, sessionIds };
+      sessionCount: sessionIds.length, roots, conversations, sessionIds, blockingBranches };
   }
 
   remove(target: RemovalTarget, scope: string, prepare?: (reopenHarness: boolean) => Promise<void>): Promise<RemovalResult> {
@@ -328,6 +392,7 @@ export class Runtime {
   private async performRemoval(target: RemovalTarget, scope: string, prepare?: (reopenHarness: boolean) => Promise<void>): Promise<RemovalResult> {
     await Promise.allSettled(this.admissions);
     const plan = this.removalPlan(target);
+    if (plan.blockingBranches.length) throw new Error("Remove this session’s branches first.");
     if (plan.scope !== scope) throw new Error("The affected sessions changed. Review the removal again.");
     if (plan.conversations.length === 0 && !target.sessionId) {
       await prepare?.(false);
@@ -352,15 +417,19 @@ export class Runtime {
       stop.cancel();
     }
     await prepare?.(true);
+    this.activities.detach();
     await this.harness.close(context);
     let clean = true;
     try {
       const legacySpills = conversationSpillPaths(this.durablePath, plan.conversations);
       this.metadata.purge(this.durablePath, target.projectId, plan.roots, !target.sessionId, plan.conversations, legacySpills);
+      this.activities.forget(plan.conversations);
       clean = await cleanupExpiredOutput(this.metadata, this.outputRoot);
     } finally {
       try {
         this.harness = await this.openHarness();
+        await this.activities.attach(this.harness);
+        this.harness.resume();
       } catch (error) {
         this.onStorageFailure?.();
         throw error;
@@ -388,6 +457,7 @@ export class Runtime {
     selection: Selection,
     emit: (view: ChatView) => void,
     onError?: (message: string) => void,
+    readingEntryId?: number,
   ): Promise<ChatWatch> {
     const conversation = await this.conversation(selection);
     const scope = withCancel(context);
@@ -404,7 +474,21 @@ export class Runtime {
       emit(project(view));
     }
     try {
-      publish(transcript.merge(watch.value));
+      const initial = watch.value;
+      if (readingEntryId !== undefined && initial.before !== undefined && readingEntryId <= initial.before) {
+        const entry = readingEntryId as EntryId;
+        const [previous, following] = await Promise.all([
+          conversation.entries({ maxEntryId: (entry - 1) as EntryId, order: "descending" }, 13, undefined, scope.context),
+          conversation.entries({ minEntryId: entry, maxEntryId: initial.before, order: "ascending" }, 38, undefined, scope.context),
+        ]);
+        if (following.items.some(({ id }) => id === entry)) {
+          const preceding = previous.items.slice(0, 12).reverse();
+          const before = previous.items[12]?.id
+            ?? (previous.next === undefined ? undefined : ((preceding[0]?.id ?? entry) - 1) as EntryId);
+          transcript.merge({ ...initial, before, entries: [...preceding, ...following.items] });
+        }
+      }
+      publish(transcript.merge(initial));
       watch.start(async call => {
         if (call.kind === "value") publish(transcript.merge(call.value));
       });
@@ -444,6 +528,7 @@ export class Runtime {
   close(): Promise<void> {
     this.closing ??= (async () => {
       await this.removing?.catch(() => {});
+      this.activities.detach();
       await this.harness.close(context);
     })().finally(() => this.metadata.close());
     return this.closing;

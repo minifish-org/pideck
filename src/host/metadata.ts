@@ -9,7 +9,7 @@ import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
 type ProjectRow = DirectoryIdentity & { id: string; name: string; trusted: number; createdAt: number };
-type SessionRow = Session & { conversationId: ConversationId };
+type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1 };
 
 function inspectDirectory(path: string): DirectoryIdentity {
   let directory: string;
@@ -40,7 +40,7 @@ function presentProject(row: ProjectRow): Project {
 }
 
 function presentSession(row: SessionRow): Session {
-  const { conversationId: _conversationId, ...session } = row;
+  const { conversationId: _conversationId, autoTitlePending: _autoTitlePending, ...session } = row;
   return session;
 }
 
@@ -71,7 +71,8 @@ export class Metadata {
           conversationId INTEGER NOT NULL UNIQUE,
           title TEXT NOT NULL,
           createdAt INTEGER NOT NULL,
-          updatedAt INTEGER NOT NULL
+          updatedAt INTEGER NOT NULL,
+          autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1))
         ) STRICT;
         CREATE INDEX IF NOT EXISTS project_sessions ON sessions(projectId, updatedAt DESC);
 
@@ -87,6 +88,9 @@ export class Metadata {
 
         CREATE TABLE IF NOT EXISTS tool_output_cleanup (path TEXT PRIMARY KEY) STRICT;
       `);
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'autoTitlePending'").get()) {
+        this.db.exec("ALTER TABLE sessions ADD COLUMN autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1))");
+      }
     } catch (error) {
       this.db.close();
       throw error;
@@ -154,17 +158,35 @@ export class Metadata {
     ).all(projectId) as SessionRow[];
   }
 
-  createSession(projectId: string, conversationId: ConversationId, title: string): Session {
+  createSession(projectId: string, conversationId: ConversationId, title: string, autoTitlePending = false): Session {
     const now = Date.now();
     const session = { id: randomUUID(), projectId, title, createdAt: now, updatedAt: now };
     this.db.prepare(
-      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt);
+      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt, autoTitlePending) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt, Number(autoTitlePending));
     return session;
   }
 
   touchSession(sessionId: string): void {
     this.db.prepare("UPDATE sessions SET updatedAt = ? WHERE id = ?").run(Date.now(), sessionId);
+  }
+
+  sessionsAwaitingTitle(): Pick<SessionRow, "id" | "conversationId">[] {
+    return this.db.prepare("SELECT id, conversationId FROM sessions WHERE autoTitlePending = 1").all() as
+      Pick<SessionRow, "id" | "conversationId">[];
+  }
+
+  setAutomaticTitle(sessionId: string, title: string): void {
+    this.db.prepare("UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE id = ? AND autoTitlePending = 1")
+      .run(title, sessionId);
+  }
+
+  renameSession(projectId: string, sessionId: string, title: string): Session {
+    const row = this.db.prepare(
+      "UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE projectId = ? AND id = ? RETURNING *",
+    ).get(title, projectId, sessionId) as SessionRow | undefined;
+    if (!row) throw new Error("Session not found in this project.");
+    return presentSession(row);
   }
 
   session(projectId: string, sessionId: string): SessionRow {
@@ -181,6 +203,11 @@ export class Metadata {
     ).get(conversationId);
     if (!row) throw new Error("Conversation is not attached to a project.");
     return row.projectId as string;
+  }
+
+  sessionSelection(conversationId: ConversationId): { projectId: string; sessionId: string } | undefined {
+    return this.db.prepare("SELECT projectId, id AS sessionId FROM sessions WHERE conversationId = ?")
+      .get(conversationId) as { projectId: string; sessionId: string } | undefined;
   }
 
   hasConversation(conversationId: number): boolean {

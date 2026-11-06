@@ -17,7 +17,14 @@ export type Session = {
 };
 
 export type Selection = { projectId: string; sessionId: string };
+export type SessionActivity = Selection & {
+  taskId: number;
+  state: "running" | "finished" | "attention";
+  settled: boolean;
+};
 export type RemovalResult = { sessionIds: string[]; warning?: string };
+export type SessionBranch = Pick<Session, "id" | "title">;
+export type RemovalBlocked = { blockingBranches: SessionBranch[] };
 export type ModelRef = { provider: string; id: string };
 export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelOption = ModelRef & {
@@ -112,8 +119,12 @@ export type Commands = {
   "project:trust": [{ projectId: string }, Project | null];
   "project:remove": [{ projectId: string }, RemovalResult | null];
   "session:list": [{ projectId: string }, Session[]];
+  "session:watch-activity": [{ subscriptionId: string }, void];
+  "session:unwatch-activity": [{ subscriptionId: string }, void];
+  "session:read-activity": [Selection & { taskId: number }, void];
   "session:create": [{ projectId: string; title?: string }, Session];
-  "session:remove": [Selection, RemovalResult | null];
+  "session:rename": [Selection & { title: string }, Session];
+  "session:remove": [Selection, RemovalResult | RemovalBlocked | null];
   "model:list": [undefined, ModelOption[]];
   "model:providers": [undefined, ModelProvider[]];
   "model:login": [{ provider: string; method: AuthMethod; flowId: string }, void];
@@ -123,7 +134,7 @@ export type Commands = {
   "model:auth-cancel": [{ flowId: string }, void];
   "model:auth-open": [{ flowId: string; linkId: string }, void];
   "model:auth-copy": [{ flowId: string; copyId: string }, void];
-  "chat:watch": [WatchRef, void];
+  "chat:watch": [WatchRef & { readingEntryId?: number }, void];
   "chat:unwatch": [{ subscriptionId: string }, void];
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
   "chat:send": [SendChat, void];
@@ -152,6 +163,7 @@ export type MenuState = {
   terminalVisible: boolean;
 };
 export type HostEvent =
+  | { type: "session:activity"; subscriptionId: string; items: SessionActivity[] }
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))
   | ({ type: "chat:error"; subscriptionId: string; message: string } & Selection)
   | ({ type: "chat:reset" } & Selection)

@@ -18,8 +18,15 @@ test("IPC rejects unknown commands and malformed payloads", () => {
   assert.equal(validPayload("project:remove", { projectId: "invalid" }), false);
   assert.equal(validPayload("session:remove", { projectId }), false);
   assert.equal(validPayload("session:remove", { projectId, sessionId }), true);
+  assert.equal(validPayload("session:rename", { projectId, sessionId, title: "Review search" }), true);
+  assert.equal(validPayload("session:rename", { projectId, sessionId, title: "  \u202e " }), false);
+  assert.equal(validPayload("session:rename", { projectId, sessionId, title: "x".repeat(121) }), false);
   assert.equal(validPayload("session:list", null), false);
   assert.equal(validPayload("chat:watch", { projectId, sessionId, subscriptionId: "fake" }), false);
+  const watch = { projectId, sessionId, subscriptionId: randomUUID() };
+  assert.equal(validPayload("chat:watch", { ...watch, readingEntryId: 42 }), true);
+  assert.equal(validPayload("chat:watch", { ...watch, readingEntryId: -1 }), false);
+  assert.equal(validPayload("chat:watch", { ...watch, readingEntryId: "42" }), false);
   assert.equal(validPayload("review:patch", { projectId, path: "abc\0def" }), false);
   assert.equal(validPayload("terminal:open", { projectId, cols: -1, rows: 20 }), false);
   assert.equal(validPayload("terminal:open", { projectId, cols: 80, rows: 20 }), true);

@@ -1,0 +1,35 @@
+.workspace-divider {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 9px;
+  align-self: stretch;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.workspace-divider[hidden] { display: none; }
+
+.workspace-divider--vertical {
+  margin-inline: -4px -5px;
+  cursor: col-resize;
+}
+
+.workspace-divider--horizontal {
+  margin-block: -4px -5px;
+  cursor: row-resize;
+}
+
+.workspace-divider::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.workspace-divider--vertical::after { inset: 0 4px; }
+.workspace-divider--horizontal::after { inset: 4px 0; }
+
+.workspace-divider:focus-visible { outline: none; }
+.workspace-divider:is(:hover, :focus-visible, [data-dragging])::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}

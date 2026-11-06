@@ -1,12 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { MenuAction, ModelOption, Project, Selection, Session } from '../shared/api';
+import type { MenuAction, ModelOption, Project, Selection, Session, SessionBranch } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
+import { SessionName } from './SessionName';
 import { SettingsDialog } from './Settings';
-import { emptyDraft, readPreferences, savePreferences, without } from './preferences';
-import type { Draft } from './preferences';
+import { activityLabels, useSessionActivity } from './session-activity';
+import { WorkspaceDivider } from './WorkspaceDivider';
+import { emptyDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
+import type { Draft, ReadingPosition } from './preferences';
 
 const ReviewPanel = lazy(() => import('./ReviewPanel').then(({ ReviewPanel }) => ({ default: ReviewPanel })));
 const TerminalPanel = lazy(() => import('./TerminalPanel').then(({ TerminalPanel }) => ({ default: TerminalPanel })));
@@ -15,6 +18,7 @@ const splitWorkspaceWidth = 920;
 
 type Removal = { projectId: string; sessionId?: string };
 type RemovalCheck = { target: Removal; trigger: HTMLButtonElement; error: string };
+type RenameTarget = Selection & { source: 'titlebar' | 'sidebar' };
 
 function closePopovers() {
   document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((panel) => panel.hidePopover());
@@ -63,11 +67,15 @@ function Desktop() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [preferences, setPreferences] = useState(readPreferences);
   const savedAtStartup = useRef(preferences);
-  const [drafts, setDrafts] = useState<Record<string, Record<string, Draft>>>({});
+  const [drafts, setDrafts] = useState(readDrafts);
+  const draftsAtStartup = useRef(drafts);
+  const savedDrafts = useRef(drafts);
   const [sessionList, setSessionList] = useState<{ projectId: string; items: Session[] }>();
   const [focusedSession, setFocusedSession] = useState<Selection>();
   const [focusWorkspace, setFocusWorkspace] = useState<string>();
   const [removing, setRemoving] = useState<Removal>();
+  const [removalBlock, setRemovalBlock] = useState<{ target: Selection; branches: SessionBranch[] }>();
+  const [renaming, setRenaming] = useState<RenameTarget>();
   const removalInProgress = useRef<Removal | undefined>(undefined);
   const removalChecks = useRef(new Set<RemovalCheck>());
   const removed = useRef({ projects: new Set<string>(), sessions: new Set<string>() });
@@ -107,6 +115,11 @@ function Desktop() {
   const sessions = sessionList && sessionList.projectId === projectId ? sessionList.items : undefined;
   const session = projectId ? sessions?.find(({ id }) => id === preferences.sessions[projectId]) ?? sessions?.[0] : undefined;
   const sessionId = session?.id;
+  const activeRemovalBlock = removalBlock?.target.projectId === projectId ? removalBlock : undefined;
+  const blockingBranches = activeRemovalBlock?.branches.map(branch => {
+    const current = sessions?.find(({ id }) => id === branch.id);
+    return { id: branch.id, title: current?.title ?? branch.title, ready: Boolean(current) };
+  }) ?? [];
   const projectDrafts = projectId ? drafts[projectId] : undefined;
   const removingProject = removing && removing.projectId === projectId && !removing.sessionId;
   const sessionsIssue = sessionsError?.projectId === projectId ? sessionsError?.message : undefined;
@@ -116,8 +129,13 @@ function Desktop() {
   const showProviders = models.some(({ configured }) => configured) || !session;
   const reviewOverlaysChat = !canSplitWorkspace && Boolean(project?.trusted && activeReview);
   const terminalVisible = Boolean(projectId && terminals[projectId] && !reviewOverlaysChat);
+  const sessionActivity = useSessionActivity(sessionId, !reviewOverlaysChat && !drawerOpen);
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
+
+  useEffect(() => {
+    if (!showNavigation) setRenaming(current => current?.source === 'sidebar' ? undefined : current);
+  }, [showNavigation]);
 
   useEffect(() => {
     const viewport = window.matchMedia(compactNavigationQuery);
@@ -175,6 +193,7 @@ function Desktop() {
       setProjects(() => result.filter(({ id }) => !removed.current.projects.has(id)));
       const saved = savedAtStartup.current;
       const available = new Set(result.map(({ id }) => id));
+      setDrafts((current) => retainKeys(current, (id) => !Object.hasOwn(draftsAtStartup.current, id) || available.has(id)));
       setPreferences((current) => {
         const projectId = current.projectId === saved.projectId && current.projectId && !available.has(current.projectId)
           ? undefined : current.projectId;
@@ -182,7 +201,11 @@ function Desktop() {
         for (const [id, sessionId] of Object.entries(saved.sessions)) {
           if (!available.has(id) && sessions[id] === sessionId) sessions = without(sessions, id);
         }
-        return projectId === current.projectId && sessions === current.sessions ? current : { ...current, projectId, sessions };
+        const reading = retainKeys(current.reading, (id) => !Object.hasOwn(saved.reading, id) || available.has(id));
+        const reviewPaths = retainKeys(current.reviewPaths, (id) => !Object.hasOwn(saved.reviewPaths, id) || available.has(id));
+        return projectId === current.projectId && sessions === current.sessions
+          && reading === current.reading && reviewPaths === current.reviewPaths
+          ? current : { ...current, projectId, sessions, reading, reviewPaths };
       });
     }).catch((cause) => { if (active) setProjectsError(readableError(cause)); });
     return () => { active = false; };
@@ -206,17 +229,37 @@ function Desktop() {
       setSessionList((current) => removed.current.projects.has(projectId) ? current
         : { projectId, items: items.filter(({ id }) => !removed.current.sessions.has(id)) });
       const saved = savedAtStartup.current.sessions[projectId];
-      if (saved && !items.some(({ id }) => id === saved)) {
-        setPreferences((current) => current.sessions[projectId] === saved
-          ? { ...current, sessions: without(current.sessions, projectId) } : current);
-      }
+      const available = new Set(items.map(({ id }) => id));
+      const savedDrafts = draftsAtStartup.current[projectId];
+      if (savedDrafts) setDrafts((current) => {
+        const project = current[projectId];
+        if (!project) return current;
+        const kept = retainKeys(project, (id) => !Object.hasOwn(savedDrafts, id) || available.has(id));
+        if (kept === project) return current;
+        return Object.keys(kept).length ? { ...current, [projectId]: kept } : without(current, projectId);
+      });
+      const savedReading = savedAtStartup.current.reading[projectId];
+      setPreferences((current) => {
+        const sessions = saved && !available.has(saved) && current.sessions[projectId] === saved
+          ? without(current.sessions, projectId) : current.sessions;
+        const positions = current.reading[projectId];
+        const kept = savedReading && positions
+          ? retainKeys(positions, (id) => !Object.hasOwn(savedReading, id) || available.has(id)) : positions;
+        const reading = kept === positions ? current.reading
+          : kept && Object.keys(kept).length ? { ...current.reading, [projectId]: kept } : without(current.reading, projectId);
+        return sessions === current.sessions && reading === current.reading ? current : { ...current, sessions, reading };
+      });
     }).catch((cause) => {
       if (active && !removed.current.projects.has(projectId)) setSessionsError({ projectId, message: readableError(cause) });
     });
     return () => { active = false; };
   }, [api, projectId, workspaceEpoch, sessionsEpoch]);
 
-  useEffect(() => savePreferences(preferences), [preferences]);
+  useLayoutEffect(() => savePreferences(preferences), [preferences]);
+  useLayoutEffect(() => {
+    saveDrafts(savedDrafts.current, drafts);
+    savedDrafts.current = drafts;
+  }, [drafts]);
 
   useLayoutEffect(() => {
     if (!projectId) return;
@@ -285,6 +328,8 @@ function Desktop() {
 
   function selectProject(id: string) {
     if (projectId === id || removed.current.projects.has(id)) return;
+    setRenaming(undefined);
+    setRemovalBlock(undefined);
     setPreferences((current) => ({ ...current, projectId: id }));
     setFocusWorkspace(undefined);
     setFocusTerminal(undefined);
@@ -294,6 +339,7 @@ function Desktop() {
 
   const selectSession = useCallback((projectId: string, id: string) => {
     if (removed.current.projects.has(projectId) || removed.current.sessions.has(id)) return;
+    setRenaming(current => current?.source === 'titlebar' && current.sessionId !== id ? undefined : current);
     setPreferences((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(id) ? current
       : { ...current, sessions: { ...current.sessions, [projectId]: id } });
     setReview((current) => current?.projectId === projectId && current.sessionId && current.sessionId !== id
@@ -309,6 +355,28 @@ function Desktop() {
     }
   }, [projectId, sessionId]);
   const refreshReview = useCallback(() => setReviewVersion((current) => current + 1), []);
+
+  const rememberReadingPosition = useCallback((position: ReadingPosition | undefined) => {
+    if (!projectId || !sessionId) return;
+    setPreferences((current) => {
+      if (removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return current;
+      const positions = current.reading[projectId] ?? {};
+      const previous = positions[sessionId];
+      if (previous?.messageId === position?.messageId && previous?.offset === position?.offset) return current;
+      const next = position ? { ...positions, [sessionId]: position } : without(positions, sessionId);
+      return { ...current, reading: Object.keys(next).length
+        ? { ...current.reading, [projectId]: next } : without(current.reading, projectId) };
+    });
+  }, [projectId, sessionId]);
+
+  const rememberReviewPath = useCallback((path: string | undefined) => {
+    if (!projectId) return;
+    setPreferences((current) => {
+      if (removed.current.projects.has(projectId) || current.reviewPaths[projectId] === path) return current;
+      return { ...current, reviewPaths: path
+        ? { ...current.reviewPaths, [projectId]: path } : without(current.reviewPaths, projectId) };
+    });
+  }, [projectId]);
 
   const updateActiveDraft = useCallback((update: (draft: Draft) => Draft) => {
     if (!projectId || !sessionId) return;
@@ -371,14 +439,8 @@ function Desktop() {
   async function createSession() {
     if (!project?.trusted || !sessions || creating || removingProject) return;
     setCreating(true);
-    const titles = new Set(sessions.map(({ title }) => title));
-    let number = sessions.length + 1;
-    while (titles.has(`Session ${number}`)) number += 1;
     try {
-      const created = await api.invoke('session:create', {
-        projectId: project.id,
-        title: `Session ${number}`,
-      });
+      const created = await api.invoke('session:create', { projectId: project.id });
       if (removed.current.projects.has(project.id)) return;
       setSessionList((previous) => previous?.projectId === project.id
         ? { projectId: project.id, items: [created, ...previous.items] } : previous);
@@ -397,7 +459,7 @@ function Desktop() {
   const forkSession = useCallback(async (entryId: number) => {
     if (!projectId || !session || (removalInProgress.current?.projectId === projectId
       && (!removalInProgress.current.sessionId || removalInProgress.current.sessionId === session.id))) return;
-    const forked = await api.invoke('chat:fork', { projectId, sessionId: session.id, entryId, title: `${session.title.slice(0, 100)} (fork)` });
+    const forked = await api.invoke('chat:fork', { projectId, sessionId: session.id, entryId });
     if (removed.current.projects.has(projectId)) return;
     setSessionList((previous) => previous?.projectId === projectId && !removed.current.sessions.has(forked.id)
       ? { projectId, items: [forked, ...previous.items] } : previous);
@@ -409,8 +471,39 @@ function Desktop() {
     refreshSessions((current) => current + 1);
   }, [api, projectId, selectSession, session]);
 
+  async function finishRename(title: string | undefined, restoreFocus: boolean) {
+    if (!renaming) return;
+    const { projectId, sessionId, source } = renaming;
+    setRenaming(undefined);
+    if (restoreFocus) {
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          document.getElementById(source === 'titlebar' ? 'rename-current-session' : `nav-session-${sessionId}`)?.focus();
+        }
+      });
+    }
+    if (!title) return;
+    try {
+      const updated = await api.invoke('session:rename', { projectId, sessionId, title });
+      if (removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return;
+      setSessionList(previous => previous?.projectId === projectId
+        ? { projectId, items: previous.items.map(item => item.id === sessionId ? updated : item) } : previous);
+      refreshSessions(current => current + 1);
+    } catch (cause) {
+      if (selectionRef.current.projectId === projectId && !removed.current.sessions.has(sessionId)) {
+        setError(readableError(cause));
+      }
+    }
+  }
+
   const forgetRemoval = useCallback(({ projectId, sessionId }: Removal, sessionIds: string[], trigger: HTMLButtonElement) => {
     const removedIds = new Set(sessionIds);
+    setRemovalBlock(current => {
+      if (current?.target.projectId !== projectId) return current;
+      if (!sessionId || current.target.sessionId === sessionId) return undefined;
+      const branches = current.branches.filter(branch => !removedIds.has(branch.id));
+      return branches.length ? { ...current, branches } : undefined;
+    });
     for (const check of removalChecks.current) {
       if (check.target.projectId === projectId && (!sessionId || (check.target.sessionId && removedIds.has(check.target.sessionId)))) {
         removalChecks.current.delete(check);
@@ -434,11 +527,18 @@ function Desktop() {
       const remaining = Object.fromEntries(Object.entries(current[projectId]).filter(([id]) => !removedIds.has(id)));
       return Object.keys(remaining).length ? { ...current, [projectId]: remaining } : without(current, projectId);
     });
-    setPreferences((current) => ({
-      ...current,
-      projectId: !sessionId && current.projectId === projectId ? undefined : current.projectId,
-      sessions: !sessionId || removedIds.has(current.sessions[projectId]) ? without(current.sessions, projectId) : current.sessions,
-    }));
+    setPreferences((current) => {
+      const positions = current.reading[projectId];
+      const remaining = sessionId && positions ? retainKeys(positions, (id) => !removedIds.has(id)) : undefined;
+      return {
+        ...current,
+        projectId: !sessionId && current.projectId === projectId ? undefined : current.projectId,
+        sessions: !sessionId || removedIds.has(current.sessions[projectId]) ? without(current.sessions, projectId) : current.sessions,
+        reading: remaining && Object.keys(remaining).length
+          ? { ...current.reading, [projectId]: remaining } : without(current.reading, projectId),
+        reviewPaths: sessionId ? current.reviewPaths : without(current.reviewPaths, projectId),
+      };
+    });
     setReview((current) => current?.projectId === projectId
       && (!sessionId || (current.sessionId !== undefined && removedIds.has(current.sessionId))) ? undefined : current);
     setFocusedSession((current) => current?.projectId === projectId
@@ -484,6 +584,15 @@ function Desktop() {
         ? await api.invoke('session:remove', { projectId, sessionId })
         : await api.invoke('project:remove', { projectId });
       if (!result) return;
+      if ('blockingBranches' in result) {
+        if (sessionId && selectionRef.current.projectId === projectId) {
+          setRemovalBlock({ target: { projectId, sessionId }, branches: result.blockingBranches });
+          if (result.blockingBranches.some(branch => !sessions?.some(item => item.id === branch.id))) {
+            refreshSessions(current => current + 1);
+          }
+        }
+        return;
+      }
       forgetRemoval(target, result.sessionIds, trigger);
       setError(result.warning);
     } catch (cause) {
@@ -617,9 +726,16 @@ function Desktop() {
           <div className="title-context">
             {project && <div className="workspace-title">
               {!dockedNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
-              <span className="workspace-title-current" title={session?.title ?? project.directory}>
-                {session?.title ?? (!dockedNavigation ? project.name : project.trusted ? 'Sessions' : 'Project setup')}
-              </span>
+              {session ? renaming?.sessionId === session.id && renaming.source === 'titlebar'
+                ? <SessionName key={session.id} title={session.title} onFinish={finishRename} />
+                : <button type="button" className="workspace-title-current session-title-button" id="rename-current-session"
+                    title={`Rename session “${session.title}”`} aria-label={`Rename session ${session.title}`}
+                    onClick={() => setRenaming({ projectId: project.id, sessionId: session.id, source: 'titlebar' })}>
+                    {session.title}
+                  </button>
+                : <span className="workspace-title-current" title={project.directory}>
+                    {!dockedNavigation ? project.name : project.trusted ? 'Sessions' : 'Project setup'}
+                  </span>}
             </div>}
             <div id="session-actions-slot" inert={reviewOverlaysChat || drawerOpen} />
           </div>
@@ -713,10 +829,20 @@ function Desktop() {
                 {sessions?.map((item) => {
                   const draft = projectDrafts?.[item.id];
                   const hasDraft = Boolean(draft?.text || draft?.attachments.length);
+                  const activity = sessionActivity[item.id];
+                  const activityLabel = activity && activityLabels[activity.state];
+                  const statusLabel = [activityLabel, hasDraft ? 'Unsent draft' : undefined].filter(Boolean).join('. ');
                   return <div className="nav-item" key={item.id}>
-                    <button className="nav-row" id={`nav-session-${item.id}`} type="button" title={item.title}
-                      aria-current={item.id === sessionId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace"
-                      aria-description={hasDraft ? 'Unsent draft' : undefined}
+                    {renaming?.sessionId === item.id && renaming.source === 'sidebar'
+                      ? <SessionName title={item.title} onFinish={finishRename} />
+                      : <button className="nav-row" id={`nav-session-${item.id}`} type="button" title={item.title}
+                      aria-current={item.id === sessionId ? 'true' : undefined} aria-keyshortcuts="F2 Delete Backspace"
+                      onKeyDown={(event) => {
+                        if (event.key !== 'F2' || removing) return;
+                        event.preventDefault();
+                        setRenaming({ projectId: project.id, sessionId: item.id, source: 'sidebar' });
+                      }}
+                      aria-description={statusLabel || undefined}
                       onClick={() => {
                         selectSession(project.id, item.id);
                         if (reviewOverlaysChat) setReview(undefined);
@@ -726,8 +852,8 @@ function Desktop() {
                         }
                       }}>
                       <Icon name="chat" /><span>{item.title}</span>
-                      {hasDraft && <span className="nav-draft" title="Draft" aria-hidden="true" />}
-                    </button>
+                      {statusLabel && <span className="nav-status" data-activity={activity?.state} title={statusLabel} aria-hidden="true" />}
+                    </button>}
                     <RemoveRowButton label={`Remove session ${item.title}`} current={item.id === sessionId} disabled={Boolean(removing)}
                       onClick={(button) => void remove({ projectId: project.id, sessionId: item.id }, button)} />
                   </div>;
@@ -747,6 +873,24 @@ function Desktop() {
           ref={workspace} inert={drawerOpen}>
           {error && <div className="notice" role="alert"><Icon name="alert" /><span>{error}</span>
             <button className="icon-button" type="button" aria-label="Dismiss message" onClick={() => setError(undefined)}><Icon name="close" /></button>
+          </div>}
+          {blockingBranches.length > 0 && projectId && <div className="notice notice--info removal-branches">
+            <Icon name="fork" />
+            <div>
+              <span role="alert">Remove this session’s branches first.</span>
+              <ul aria-label="Branches to remove">
+                {blockingBranches.map(branch => <li key={branch.id}>
+                  <button className="inline-action" type="button" disabled={!branch.ready} aria-label={`Open branch ${branch.title}`} onClick={() => {
+                    selectSession(projectId, branch.id);
+                    if (reviewOverlaysChat) setReview(undefined);
+                    setFocusedSession({ projectId, sessionId: branch.id });
+                  }}>{branch.title}</button>
+                </li>)}
+              </ul>
+            </div>
+            <button className="icon-button" type="button" aria-label="Dismiss branches" onClick={() => setRemovalBlock(undefined)}>
+              <Icon name="close" />
+            </button>
           </div>}
           <div className="workspace-middle">
             <div className="workspace-conversation" inert={reviewOverlaysChat}>
@@ -777,6 +921,7 @@ function Desktop() {
                     ? <Chat key={session.id} project={project} session={session} models={models}
                         modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
                         draft={projectDrafts?.[session.id] ?? emptyDraft} updateDraft={updateActiveDraft}
+                        readingPosition={preferences.reading[project.id]?.[session.id]} onReadingPosition={rememberReadingPosition}
                         onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
                         onRetryModels={() => refreshModels((current) => current + 1)}
                         onSettings={(provider) => setSettings({ provider })}
@@ -798,11 +943,14 @@ function Desktop() {
                             </button>
                           </EmptyScene>}
             </div>
+            <WorkspaceDivider workspace={workspace} pane="review" visible={Boolean(activeReview && !reviewOverlaysChat)} />
             {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
               <ReviewPanel project={project} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+                rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                 refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
             </Suspense>}
           </div>
+          <WorkspaceDivider workspace={workspace} pane="terminal" visible={terminalVisible} />
           {projects?.filter((item) => item.trusted && Object.hasOwn(terminals, item.id)).map((item) => {
             const visible = item.id === projectId && terminalVisible;
             return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>

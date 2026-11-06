@@ -41,9 +41,15 @@ async page => {
 
   await prompt.fill("Update and verify the status.");
   await nav.getByRole("button", { name: "New session", exact: true }).click();
-  await nav.getByRole("button", { name: "Session 2", exact: true }).waitFor();
+  const currentRow = nav.locator(".nav-scroll .nav-row[aria-current=true]");
+  await currentRow.press("F2");
+  const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
+  await sessionName.fill("Separate draft");
+  await sessionName.press("Enter");
+  const draftSession = nav.getByRole("button", { name: "Separate draft", exact: true });
+  await draftSession.waitFor();
   await prompt.fill("A separate draft.");
-  await nav.getByRole("button", { name: "Session 2", exact: true }).focus();
+  await draftSession.focus();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   if (await prompt.inputValue() !== "Update and verify the status.") throw new Error("Draft did not survive a session switch.");
@@ -65,6 +71,9 @@ async page => {
   if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
+  const runningSessionId = await nav.locator(".nav-scroll [aria-current=true]").getAttribute("id");
+  const runningSession = nav.locator(`#${runningSessionId}`);
+  await runningSession.locator("[data-activity=running]").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
   await prompt.fill("Prefer a focused check.");
   await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
@@ -73,8 +82,18 @@ async page => {
   await prompt.fill("Report the verification.");
   await page.getByRole("button", { name: "Queue next" }).waitFor();
   await prompt.press("Enter");
+  await nav.locator(`.nav-scroll .nav-row:not([id="${runningSessionId}"])`).first().click();
+  const finishedBadge = runningSession.locator("[data-activity=finished]");
+  await finishedBadge.waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-background.png" });
+  await runningSession.click();
+  await finishedBadge.waitFor({ state: "detached" });
   await page.getByText("I updated the status and checked the result.").waitFor();
   await page.getByText("Checks passed.").waitFor();
+  await nav.getByRole("button", { name: "Update and verify the status.", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Rename session Update and verify the status.", exact: true }).click();
+  await sessionName.fill("Verify status");
+  await sessionName.press("Enter");
 
   await page.getByRole("button", { name: "Load earlier messages" }).click();
   await page.getByText("An earlier coding request.").waitFor();
@@ -85,13 +104,43 @@ async page => {
   await page.getByText("Context summarized.").waitFor();
   await page.getByRole("article", { name: "Pideck" }).filter({ hasText: "I updated the status and checked the result." })
     .getByRole("button", { name: "Branch from here" }).click();
-  const forked = nav.getByRole("button", { name: "Session 1 (fork)", exact: true });
-  const original = nav.getByRole("button", { name: "Session 1", exact: true });
+  const forked = nav.getByRole("button", { name: "Verify status (fork)", exact: true });
+  const original = nav.getByRole("button", { name: "Verify status", exact: true });
   await forked.waitFor();
   await original.click();
+  await page.getByText("An earlier coding request.").waitFor();
+  const resumeViewport = page.viewportSize();
+  await page.setViewportSize({ width: resumeViewport.width, height: 340 });
+  await page.locator(".chat-scroll").evaluate(scroll => { scroll.scrollTop = 18; });
+  const position = await page.waitForFunction(() => {
+    const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
+    const id = preferences.sessions?.[preferences.projectId];
+    return preferences.reading?.[preferences.projectId]?.[id];
+  }).then(handle => handle.jsonValue());
+  await prompt.fill("Continue this after restarting.");
   await page.reload();
   await page.getByText("I updated the status and checked the result.").waitFor();
   if (await original.getAttribute("aria-current") !== "true") throw new Error("Session selection did not survive reload.");
+  if (await prompt.inputValue() !== "Continue this after restarting.") throw new Error("Draft did not survive reload.");
+  await page.waitForFunction(({ messageId, offset }) => {
+    const scroll = document.querySelector(".chat-scroll");
+    const anchor = scroll?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    return anchor && Math.abs(anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top - offset) <= 2;
+  }, position);
+  await draftSession.click();
+  await page.waitForFunction(() => document.querySelector("#prompt").value === "A separate draft.");
+  await page.setViewportSize(resumeViewport);
+  await page.evaluate(() => sessionStorage.setItem("pideck-extra-review-file", "1"));
+  const changeButton = page.getByRole("button", { name: "Changes", exact: true });
+  await changeButton.click();
+  const extraFile = page.getByRole("button", { name: /second\.ts/ });
+  await extraFile.click();
+  await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem("pideck.workspace.v1")).reviewPaths).includes("second.ts"));
+  await page.reload();
+  await changeButton.click();
+  await page.getByRole("complementary", { name: "Review changes" }).getByRole("heading", { name: "second.ts", exact: true }).waitFor();
+  await changeButton.click();
+  await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   await forked.click();
   await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
@@ -104,6 +153,12 @@ async page => {
   const singleDiff = review.locator("diffs-container [data-diff-type=single]").first();
   const splitDiff = review.locator("diffs-container [data-diff-type=split]").first();
   await singleDiff.waitFor();
+  const divider = page.getByRole("separator", { name: "Resize review" });
+  const reviewWidthBefore = (await review.boundingBox()).width;
+  await divider.press("Shift+ArrowLeft");
+  await page.waitForFunction(width => document.getElementById("review-panel").getBoundingClientRect().width > width + 20, reviewWidthBefore);
+  await divider.press("Enter");
+  await page.waitForFunction(width => Math.abs(document.getElementById("review-panel").getBoundingClientRect().width - width) < 2, reviewWidthBefore);
   if (await layout.inputValue() !== "auto") throw new Error("Diff layout does not start in Auto.");
   await layout.selectOption("split");
   await splitDiff.waitFor();
@@ -148,7 +203,7 @@ async page => {
     return bounds.top >= 0 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight;
   });
   if (!compactMenuFits) throw new Error("The model dropdown overflows a narrow window.");
-  await page.locator(".workspace-title-current").click();
+  await page.locator(".titlebar").click({ position: { x: 380, y: 25 } });
   await picker.waitFor({ state: "hidden" });
   await sidebar.click();
   await nav.waitFor();
@@ -186,11 +241,14 @@ async page => {
   await review.getByTitle("Assistant patch for example.ts").waitFor({ state: "detached" });
   await forked.click();
   await page.getByRole("button", { name: "Open review", exact: true }).click();
-  const removeOriginal = nav.getByRole("button", { name: "Remove session Session 1", exact: true });
+  const removeOriginal = nav.getByRole("button", { name: "Remove session Verify status", exact: true });
   await original.focus();
   await page.keyboard.press("Backspace");
   await workspace.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
-  const removeFork = nav.getByRole("button", { name: "Remove session Session 1 (fork)", exact: true });
+  await page.screenshot({ path: "output/playwright/pideck-ui-branches.png" });
+  await workspace.getByRole("button", { name: "Open branch Verify status (fork)", exact: true }).click();
+  if (await forked.getAttribute("aria-current") !== "true") throw new Error("The blocking branch did not open.");
+  const removeFork = nav.getByRole("button", { name: "Remove session Verify status (fork)", exact: true });
   await removeFork.focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.body.dataset.staleSessionList === "started");
@@ -201,7 +259,7 @@ async page => {
   await forked.waitFor({ state: "detached" });
   await page.waitForFunction(() => document.body.dataset.staleSessionList === "released");
   await review.waitFor({ state: "detached" });
-  const fallback = nav.getByRole("button", { name: "Session 2", exact: true });
+  const fallback = draftSession;
   if (await fallback.getAttribute("aria-current") !== "true" || await forked.count()) throw new Error("Session removal did not keep the next session selected.");
   await prompt.fill("Draft to remove with the project.");
   await removeOriginal.click();
@@ -238,7 +296,9 @@ async page => {
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
   await page.waitForFunction(() => {
     const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
-    return !preferences.projectId && Object.keys(preferences.sessions ?? {}).length === 0;
+    return !preferences.projectId && Object.keys(preferences.sessions ?? {}).length === 0
+      && Object.keys(preferences.reading ?? {}).length === 0 && Object.keys(preferences.reviewPaths ?? {}).length === 0
+      && !Object.keys(localStorage).some(key => key.startsWith("pideck.draft.v1/"));
   });
   await page.evaluate((previous) => localStorage.setItem("pideck.workspace.v1", previous), previousPreferences);
   await page.reload();

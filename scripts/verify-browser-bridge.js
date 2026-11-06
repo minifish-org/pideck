@@ -2,11 +2,15 @@ async page => {
   await page.addInitScript(() => {
     const listeners = new Set();
     const watches = new Map();
+    const activity = new Map();
+    let activityWatch;
+    let nextTaskId = 0;
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", trusted: false, createdAt: 1 };
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
+    state.untitled ??= {};
     let auth;
     let offline = false;
     const attemptedRemovals = new Set();
@@ -22,6 +26,9 @@ async page => {
     };
     const persist = () => sessionStorage.setItem("pideck-browser-fixture", JSON.stringify(state));
     const update = (watch, payload) => emit({ type: "chat:update", ...watch.payload, sequence: ++watch.sequence, ...payload });
+    const publishActivity = () => {
+      if (activityWatch) emit({ type: "session:activity", subscriptionId: activityWatch, items: [...activity.values()] });
+    };
 
     function change(sessionId, values) {
       const previous = state.views[sessionId];
@@ -31,10 +38,19 @@ async page => {
       for (const watch of watches.values()) {
         if (watch.payload.sessionId === sessionId) update(watch, { ops });
       }
+      if (values.status === "running" && previous.status !== "running") {
+        activity.set(sessionId, { projectId: project.id, sessionId, taskId: ++nextTaskId, state: "running", settled: false });
+        publishActivity();
+      } else if (values.status === "idle" && activity.has(sessionId)) {
+        activity.set(sessionId, { ...activity.get(sessionId), state: "finished", settled: true });
+        publishActivity();
+      }
     }
 
     function addSession(title, view = { messages: [], status: "idle" }) {
-      const session = { id: crypto.randomUUID(), projectId: project.id, title, createdAt: Date.now(), updatedAt: Date.now() };
+      const session = { id: crypto.randomUUID(), projectId: project.id, title: title ?? "Untitled session",
+        createdAt: Date.now(), updatedAt: Date.now() };
+      if (title === undefined) state.untitled[session.id] = true;
       state.sessions.unshift(session);
       state.views[session.id] = view;
       persist();
@@ -46,7 +62,10 @@ async page => {
       for (const id of sessionIds) {
         delete state.views[id];
         delete state.parents[id];
+        delete state.untitled[id];
+        activity.delete(id);
       }
+      publishActivity();
       const survivors = new Set();
       for (const [key, { payload }] of watches) {
         watches.delete(key);
@@ -86,6 +105,20 @@ async page => {
             persist();
             return { ...project };
           case "project:trust": project.trusted = state.trusted = true; persist(); return { ...project };
+          case "session:watch-activity": {
+            activityWatch = payload.subscriptionId;
+            queueMicrotask(publishActivity);
+            return;
+          }
+          case "session:unwatch-activity":
+            if (activityWatch === payload.subscriptionId) activityWatch = undefined;
+            return;
+          case "session:read-activity":
+            if (activity.get(payload.sessionId)?.taskId === payload.taskId) {
+              activity.delete(payload.sessionId);
+              publishActivity();
+            }
+            return;
           case "project:remove": {
             if (payload.projectId !== project.id || !state.opened) throw new Error("Fixture project not found.");
             if (!attemptedRemovals.has(project.id)) {
@@ -98,7 +131,7 @@ async page => {
             return loseRemovalReply();
           }
           case "session:list": {
-            const snapshot = state.sessions.slice();
+            const snapshot = state.sessions.map(session => ({ ...session }));
             if (!captureSessionList) return snapshot;
             captureSessionList = false;
             document.body.dataset.staleSessionList = "started";
@@ -110,16 +143,25 @@ async page => {
             });
           }
           case "session:create": return addSession(payload.title);
+          case "session:rename": {
+            const session = state.sessions.find(({ id, projectId }) => id === payload.sessionId && projectId === payload.projectId);
+            if (!session) throw new Error("Fixture session not found.");
+            session.title = payload.title;
+            delete state.untitled[session.id];
+            persist();
+            return { ...session };
+          }
           case "session:remove": {
             if (!state.sessions.some(({ id }) => id === payload.sessionId)) throw new Error("Fixture session not found.");
-            if (Object.values(state.parents).includes(payload.sessionId)) throw new Error("Remove this session’s branches first.");
+            const branches = state.sessions.filter(({ id }) => state.parents[id] === payload.sessionId);
+            if (branches.length) return { blockingBranches: branches.map(({ id, title }) => ({ id, title })) };
             if (!attemptedRemovals.has(payload.sessionId)) {
               attemptedRemovals.add(payload.sessionId);
               captureSessionList = true;
               emit({ type: "host:restart" });
               return null;
             }
-            const loseReply = state.sessions.some(({ id, title }) => id === payload.sessionId && title === "Session 1");
+            const loseReply = state.sessions.some(({ id, title }) => id === payload.sessionId && title === "Verify status");
             const result = deleteSessions([payload.sessionId]);
             const release = releaseSessionList;
             releaseSessionList = undefined;
@@ -191,6 +233,10 @@ async page => {
             const { sessionId } = payload;
             const view = state.views[sessionId];
             if (payload.delivery === "send") {
+              if (state.untitled[sessionId]) {
+                state.sessions.find(({ id }) => id === sessionId).title = payload.text.split("\n")[0].trim();
+                delete state.untitled[sessionId];
+              }
               const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [{ type: "text", text: payload.text }] };
               // The host accepted the input but its IPC reply was lost. The next
               // watch supplies the Durable request ID and clears the matching draft.
@@ -211,7 +257,7 @@ async page => {
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
                 ] };
                 change(sessionId, { messages: [...state.views[sessionId].messages, reply], status: "idle", queued: [], hasEarlier: true });
-              }, 300);
+              }, 700);
             }
             return;
           }
@@ -222,7 +268,8 @@ async page => {
             const view = state.views[payload.sessionId];
             const index = view.messages.findIndex((message) => message.entryId === payload.entryId);
             if (index === -1) throw new Error("Fork checkpoint not found.");
-            const fork = addSession(payload.title, { ...view, messages: view.messages.slice(0, index + 1) });
+            const title = state.sessions.find(({ id }) => id === payload.sessionId).title;
+            const fork = addSession(payload.title ?? title + " (fork)", { ...view, messages: view.messages.slice(0, index + 1) });
             state.parents[fork.id] = payload.sessionId;
             persist();
             return fork;
@@ -231,8 +278,11 @@ async page => {
           case "terminal:close":
           case "terminal:resize": return;
           case "terminal:sync": return [];
-          case "review:list": return [{ path: "example.ts", status: " M", added: 1, removed: 1 }];
-          case "review:patch": return { patch };
+          case "review:list": return [
+            { path: "example.ts", status: " M", added: 1, removed: 1 },
+            ...(sessionStorage.getItem("pideck-extra-review-file") ? [{ path: "second.ts", status: " M", added: 1, removed: 1 }] : []),
+          ];
+          case "review:patch": return { patch: payload.path === "second.ts" ? patch.replaceAll("example.ts", "second.ts") : patch };
           default: throw new Error("Unexpected fixture command " + command);
         }
       },

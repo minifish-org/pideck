@@ -275,6 +275,16 @@ try {
       return dimensions;
     }
     const original = await ptySize(".pty-original");
+    const terminalDivider = page.getByRole("separator", { name: "Resize terminal" });
+    await terminalDivider.press("Shift+ArrowUp");
+    await terminal.focus();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const enlarged = await ptySize(".pty-enlarged");
+    assert.ok(Number.parseInt(enlarged, 10) > Number.parseInt(original, 10));
+    await terminalDivider.press("Enter");
+    await terminal.focus();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await ptySize(".pty-reset"), original);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 740));
     await page.waitForFunction(() => window.innerWidth <= 1000);
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -289,6 +299,9 @@ try {
   await prompt.fill("Recover the active request");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Recovery request is in progress.", { exact: true }).waitFor();
+  const runningBadge = page.getByRole("complementary", { name: "Workspace navigation" })
+    .getByRole("button", { name: "Smoke session", exact: true }).locator("[data-activity=running]");
+  await runningBadge.waitFor();
   await app.evaluate(({ app }) => {
     const host = app.getAppMetrics().find(metric => metric.name === "Pideck workspace");
     if (!host) throw new Error("Workspace process was not found.");
@@ -297,6 +310,7 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.hostRestarted === "true");
   await page.getByText("Shell running").waitFor();
   await page.getByText("Recovered after host restart.", { exact: true }).waitFor({ timeout: 35_000 });
+  await runningBadge.waitFor({ state: "detached" });
   assert.equal(await page.getByText("Recover the active request", { exact: true }).count(), 1);
   await page.getByRole("button", { name: "Find in terminal" }).click();
   const previousOutput = page.getByRole("searchbox", { name: "Find in terminal output" });
@@ -307,12 +321,24 @@ try {
     throw new Error("Recovered terminal search status was " + text.join(" ") + "\n" + terminal.join("\n"), { cause: error });
   });
   assert.equal((await command("session:list", { projectId }))[0].id, conversation.id);
+  await prompt.fill("Resume this draft after reopening.");
+  const savedWindow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
   await app.close();
   app = undefined;
 
   const reopened = await launch();
   app = reopened.running;
   const reopenedPage = reopened.window;
+  const restoredWindow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
+  assert.equal(restoredWindow.width, savedWindow.width);
+  assert.equal(restoredWindow.height, savedWindow.height);
+  if (process.platform === "darwin") {
+    assert.equal(restoredWindow.x, savedWindow.x);
+    assert.equal(restoredWindow.y, savedWindow.y);
+  }
+  const reopenedPrompt = reopenedPage.getByRole("textbox", { name: "Message Pideck" });
+  await reopenedPrompt.waitFor();
+  assert.equal(await reopenedPrompt.inputValue(), "Resume this draft after reopening.");
   assert.equal((await reopenedPage.evaluate(() => window.pideck.invoke("project:list")))[0].id, projectId);
   assert.equal((await reopenedPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), projectId))[0].id, conversation.id);
   await app.evaluate(({ dialog }) => {
@@ -334,6 +360,8 @@ try {
   await parentRemove.press("Enter");
   await reopenedPage.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.removalDialogs), 0);
+  await reopenedPage.getByRole("button", { name: "Open branch Smoke session (fork)", exact: true }).click();
+  assert.equal(await branch.getAttribute("aria-current"), "true");
 
   const branchRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session (fork)", exact: true });
   await branchRemove.press("Enter");

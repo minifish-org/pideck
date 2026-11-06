@@ -92,6 +92,8 @@ type ReviewPanelProps = {
   onClose: () => void;
   selectedPath?: string;
   selectedPatch?: string;
+  rememberedPath?: string;
+  onRememberPath?: (path: string | undefined) => void;
   refreshVersion?: number;
   selectionVersion?: number;
 };
@@ -101,11 +103,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
   return <ProjectReview key={props.project.id} {...props} />;
 }
 
-function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, refreshVersion, selectionVersion }: ReviewPanelProps) {
+function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, rememberedPath, onRememberPath,
+  refreshVersion, selectionVersion }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
   const requestedGitPath = selectedPatch ? undefined : requestedPath;
   const initialPath = selectedPatch ? editSelection : requestedPath;
-  const [path, setPath] = useState<string | symbol | undefined>(initialPath);
+  const [path, setPath] = useState<string | symbol | undefined>(initialPath ?? rememberedPath);
+  const lastSelection = useRef({ initialPath, selectedPatch, selectionVersion });
   const [layout, setLayout] = useState<DiffLayout>("auto");
   const [wide, setWide] = useState(false);
   const [filter, setFilter] = useState("");
@@ -142,9 +146,12 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   }, []);
 
   useEffect(() => {
-    setPath(initialPath);
+    const last = lastSelection.current;
+    if (last.initialPath === initialPath && last.selectedPatch === selectedPatch && last.selectionVersion === selectionVersion) return;
+    lastSelection.current = { initialPath, selectedPatch, selectionVersion };
+    setPath(initialPath ?? rememberedPath);
     setFilter("");
-  }, [initialPath, selectedPatch, selectionVersion]);
+  }, [initialPath, rememberedPath, selectedPatch, selectionVersion]);
 
   useEffect(() => {
     if (lastRefreshVersion.current === refreshVersion) return;
@@ -184,6 +191,10 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   }, [list, listReady, requestedGitPath]);
 
   useEffect(() => {
+    if (listReady && !list?.error && !showEdit && !missingRequestedFile) onRememberPath?.(currentPath);
+  }, [currentPath, list?.error, listReady, missingRequestedFile, onRememberPath, showEdit]);
+
+  useEffect(() => {
     if (!project.trusted || !listReady || !currentPath || list?.error) return;
     let active = true;
     const timer = window.setTimeout(() => {
@@ -218,7 +229,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
       {!showEdit && files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
       <div className="workspace-panel-actions">
         {showEdit ? <button type="button" className="workspace-action" onClick={() => {
-          setPath(requestedPath);
+          setPath(rememberedPath ?? requestedPath);
           setRevision(value => value + 1);
           panel.current?.focus();
         }}>Project changes</button>

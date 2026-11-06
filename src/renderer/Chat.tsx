@@ -7,7 +7,7 @@ import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption
 import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
-import type { Attachment, Draft, SendAttempt } from './preferences';
+import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
@@ -90,8 +90,10 @@ const Message = memo(function Message({ message, onReview, onFork }: {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   const author = message.role === 'user' ? 'You' : 'Pideck';
   const entryId = message.entryId;
+  const readingEntry = entryId ?? /^(\d+):\d+$/.exec(message.id)?.[1];
   return (
-    <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id}>
+    <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id}
+      data-reading-entry={readingEntry}>
       <header className="message-heading">
         <span className="message-author">{author}</span>
         {onFork && entryId !== undefined && <button type="button" className="message-fork"
@@ -189,6 +191,25 @@ function CompactPopover({ onConfirm }: { onConfirm: (instructions: string) => vo
 
 type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
 
+function visibleReadingPosition(element: HTMLElement): ReadingPosition | undefined {
+  const edge = element.getBoundingClientRect().top;
+  const entries = element.querySelectorAll<HTMLElement>('[data-reading-entry]');
+  let start = 0;
+  let end = entries.length;
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (entries[middle]!.getBoundingClientRect().bottom <= edge) start = middle + 1;
+    else end = middle;
+  }
+  const entry = entries[start];
+  const messageId = entry?.dataset.messageId;
+  const entryId = Number(entry?.dataset.readingEntry);
+  if (entry && messageId && Number.isSafeInteger(entryId) && entryId > 0) {
+    const top = entry.getBoundingClientRect().top;
+    if (top < edge + element.clientHeight) return { messageId, entryId, offset: Math.round(top - edge) };
+  }
+}
+
 function sameGap(left: ChatGap, right: ChatGap) {
   return left.after === right.after && left.upTo === right.upTo;
 }
@@ -201,12 +222,13 @@ function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
     text: unchanged ? '' : draft.text,
     attachments: unchanged ? [] : draft.attachments,
     attempt: undefined,
+    pendingRequestId: undefined,
     sending: false,
     error: undefined,
   };
 }
 
-export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft,
+export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft, readingPosition, onReadingPosition,
   onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
   project: Project;
   session: Session;
@@ -216,6 +238,8 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   defaultModel?: string;
   draft: Draft;
   updateDraft: (update: (draft: Draft) => Draft) => void;
+  readingPosition?: ReadingPosition;
+  onReadingPosition: (position: ReadingPosition | undefined) => void;
   onModelChosen: (key: string) => void;
   onSettings: (provider?: string) => void;
   onRetryModels: () => void;
@@ -225,7 +249,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   onFork: (entryId: number) => Promise<void>;
 }) {
   const selection = { projectId: project.id, sessionId: session.id };
-  const { view, connected, error: connectionError, retry, loadEarlier } = useConversation(selection);
+  const currentPosition = useRef(readingPosition);
+  const lastWatch = useRef<string | undefined>(undefined);
+  const { view, watchId, connected, error: connectionError, retry, loadEarlier } = useConversation(selection, currentPosition);
   const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [notice, setNotice] = useState<string>();
@@ -239,7 +265,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const scroll = useRef<HTMLDivElement>(null);
   const thread = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const pinned = useRef(true);
+  const pinned = useRef(!readingPosition);
   const historyAnchor = useRef<HistoryAnchor | undefined>(undefined);
   const toolStates = useRef<Map<string, string> | undefined>(undefined);
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
@@ -281,14 +307,36 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   }
 
   function jumpToLatest() {
-    if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+    const element = scroll.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
     pinned.current = true;
+    currentPosition.current = undefined;
+    onReadingPosition(undefined);
     setJumpVisible(false);
   }
 
   useLayoutEffect(() => {
     const element = scroll.current;
     if (!element) return;
+    if (watchId && lastWatch.current !== watchId) {
+      lastWatch.current = watchId;
+      const saved = currentPosition.current;
+      if (saved) {
+        const entry = element.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(saved.messageId)}"]`);
+        if (entry) {
+          const bounds = entry.getBoundingClientRect();
+          const offset = Math.max(saved.offset, 1 - bounds.height);
+          element.scrollTop += bounds.top - element.getBoundingClientRect().top - offset;
+          pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+          setJumpVisible(!pinned.current);
+          return;
+        }
+        currentPosition.current = undefined;
+        onReadingPosition(undefined);
+        pinned.current = true;
+      }
+    }
     const anchor = historyAnchor.current;
     if (anchor && view && view !== anchor.view) {
       const gap = anchor.gap;
@@ -305,7 +353,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     }
     if (!readingHistory && anchor && view === anchor.view) historyAnchor.current = undefined;
     if (pinned.current) element.scrollTop = element.scrollHeight;
-  }, [readingHistory, view]);
+  }, [onReadingPosition, readingHistory, view, watchId]);
 
   useLayoutEffect(() => {
     if (!scroll.current || !thread.current) return;
@@ -318,13 +366,14 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   }, [hasMessages]);
 
   useEffect(() => {
-    if (!draft.attempt || !view) return;
     const attempt = draft.attempt;
-    const id = attempt.input.requestId;
+    const id = attempt?.input.requestId ?? draft.pendingRequestId;
+    if (!id || !view) return;
     if (view.messages.some((message) => message.requestId === id) || view.queued?.some((queued) => queued.requestId === id)) {
-      updateDraft((current) => completeAttempt(current, attempt));
+      updateDraft((current) => attempt ? completeAttempt(current, attempt)
+        : current.pendingRequestId === id ? { ...current, text: '', pendingRequestId: undefined } : current);
     }
-  }, [draft.attempt, updateDraft, view]);
+  }, [draft.attempt, draft.pendingRequestId, updateDraft, view]);
 
   useEffect(() => {
     if (!view || !connected) return;
@@ -342,7 +391,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     const deliveryMode: SendChat['delivery'] = busy ? whileRunning : 'send';
     const previous = draft.attempt;
     const requestId = previous?.text === text && previous.attachments === attachments
-      ? previous.input.requestId : crypto.randomUUID();
+      ? previous.input.requestId : draft.pendingRequestId ?? crypto.randomUUID();
     const attempt: SendAttempt = {
       text, attachments,
       input: {
@@ -391,7 +440,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     update({ reading: true, error: undefined });
     try {
       const newAttachments = await Promise.all(files.map(readAttachment));
-      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...newAttachments], reading: false }));
+      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...newAttachments], pendingRequestId: undefined, reading: false }));
     } catch (error) {
       update({ reading: false, error: readableError(error) });
     }
@@ -498,6 +547,12 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
           }
           setJumpVisible(!pinned.current);
+          if (!watchId || historyAnchor.current) return;
+          const position = pinned.current ? undefined : visibleReadingPosition(element);
+          if (pinned.current || position) {
+            currentPosition.current = position;
+            onReadingPosition(position);
+          }
         }}>
         {empty ? (
           <div className="chat-welcome">
@@ -553,7 +608,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
           </div>}
           <textarea ref={textarea} id="prompt" value={text} maxLength={200000} rows={2} aria-label="Message Pideck"
             placeholder={queueing ? 'Write a follow-up…' : 'Message Pideck…'}
-            onChange={(event) => update({ text: event.target.value, error: undefined })}
+            onChange={(event) => update({ text: event.target.value, pendingRequestId: undefined, error: undefined })}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault();

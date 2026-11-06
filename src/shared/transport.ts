@@ -1,4 +1,4 @@
-import type { Command, Commands, HostEvent, RemovalResult } from "./api";
+import type { Command, Commands, HostEvent, RemovalBlocked, RemovalResult } from "./api";
 import type { Credential } from "@earendil-works/pi-ai";
 
 export const invokeChannel = "pideck:invoke";
@@ -8,7 +8,7 @@ export const menuStateChannel = "pideck:menu-state";
 
 type Forwarded = Exclude<Command, "project:open" | "project:remove" | "session:remove">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
-export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number };
+export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
 
 export type HostCommand =
   | Forwarded

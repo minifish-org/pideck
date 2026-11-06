@@ -17,6 +17,7 @@ let closing = false;
 let removing: RemovalTarget | undefined;
 const closedOwners = new Set<number>();
 const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>();
+const activityWatches = new Map<number, { id: string; dispose: () => void }>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
 const reviews = new Map<string, Set<{ controller: AbortController; pending: Promise<unknown> }>>();
 let nextWrite = 0;
@@ -42,6 +43,8 @@ function unwatch(owner: number, subscriptionId: string) {
 function closeOwner(owner: number) {
   closedOwners.add(owner);
   for (const id of watches.get(owner)?.keys() ?? []) unwatch(owner, id);
+  activityWatches.get(owner)?.dispose();
+  activityWatches.delete(owner);
   terminals.closeOwner(owner);
   auth?.closeOwner(owner);
 }
@@ -120,15 +123,34 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.trustProject(payload.projectId);
     case "removal:plan": {
       if (removing) throw new Error("Another removal is already in progress.");
-      const { scope, name, directory, sessionCount } = runtime.removalPlan(payload);
-      return { scope, name, directory, sessionCount };
+      const { scope, name, directory, sessionCount, blockingBranches } = runtime.removalPlan(payload);
+      return { scope, name, directory, sessionCount, blockingBranches };
     }
     case "removal:execute":
       return executeRemoval(runtime, payload, payload.scope);
     case "session:list":
       return runtime.listSessions(payload.projectId);
+    case "session:watch-activity": {
+      activityWatches.get(owner)?.dispose();
+      const { subscriptionId } = payload;
+      const dispose = runtime.watchSessionActivity(items => emit(owner, { type: "session:activity", subscriptionId, items }));
+      activityWatches.set(owner, { id: subscriptionId, dispose });
+      return;
+    }
+    case "session:unwatch-activity": {
+      const watch = activityWatches.get(owner);
+      if (watch?.id === payload.subscriptionId) {
+        watch.dispose();
+        activityWatches.delete(owner);
+      }
+      return;
+    }
+    case "session:read-activity":
+      return runtime.readSessionActivity(payload, payload.taskId);
     case "session:create":
       return runtime.createSession(payload.projectId, payload.title);
+    case "session:rename":
+      return runtime.renameSession(payload, payload.title);
     case "model:list":
       return runtime.listModels();
     case "model:providers":
@@ -188,7 +210,7 @@ async function handle(request: HostRequest): Promise<unknown> {
           if (owned.get(subscriptionId) !== entry) return;
           unwatch(owner, subscriptionId);
           emit(owner, { type: "chat:error", subscriptionId, projectId, sessionId, message: messageOf(error) });
-        });
+        }, payload.readingEntryId);
         if (owned.get(subscriptionId) === entry) entry.watch = watch;
         else watch.dispose();
       } catch (error) {
@@ -248,7 +270,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
   } else if (data.type === "shutdown" && !closing) {
     closing = true;
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
-    for (const owner of watches.keys()) closeOwner(owner);
+    for (const owner of new Set([...watches.keys(), ...activityWatches.keys()])) closeOwner(owner);
     terminals.closeAll();
     auth?.close();
     void Promise.resolve(runtime?.close()).finally(() => process.exit(0));

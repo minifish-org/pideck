@@ -19,7 +19,7 @@
 .workspace-terminal {
   container: terminal / inline-size;
   display: flex;
-  flex: 0 0 clamp(136px, 31%, 356px);
+  flex: 0 0 var(--terminal-height, clamp(136px, 31%, 356px));
   flex-direction: column;
   min-width: 0;
   min-height: 0;

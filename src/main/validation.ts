@@ -1,4 +1,5 @@
 import type { Command, Commands, Thinking } from "../shared/api";
+import { normalizeSessionTitle, sessionTitleLimit } from "../shared/session-title";
 
 const thinking = new Set<Thinking>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -68,8 +69,13 @@ const validators = {
   "project:trust": (value) => object(value) && project(value),
   "project:remove": (value) => object(value) && project(value),
   "session:list": (value) => object(value) && project(value),
+  "session:watch-activity": (value) => object(value) && match(value.subscriptionId, id),
+  "session:unwatch-activity": (value) => object(value) && match(value.subscriptionId, id),
+  "session:read-activity": (value) => object(value) && selection(value) && entry(value.taskId),
   "session:create": (value) => object(value) && project(value)
-    && (value.title === undefined || string(value.title, 120)),
+    && (value.title === undefined || string(value.title, sessionTitleLimit)),
+  "session:rename": (value) => object(value) && selection(value)
+    && string(value.title, sessionTitleLimit) && Boolean(normalizeSessionTitle(value.title)),
   "session:remove": (value) => object(value) && selection(value),
   "model:list": empty,
   "model:providers": empty,
@@ -82,7 +88,8 @@ const validators = {
   "model:auth-cancel": (value) => object(value) && flow(value),
   "model:auth-open": (value) => object(value) && flow(value) && match(value.linkId, id),
   "model:auth-copy": (value) => object(value) && flow(value) && match(value.copyId, id),
-  "chat:watch": (value) => object(value) && selection(value) && match(value.subscriptionId, id),
+  "chat:watch": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
+    && (value.readingEntryId === undefined || entry(value.readingEntryId)),
   "chat:unwatch": (value) => object(value) && match(value.subscriptionId, id),
   "chat:earlier": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
     && (value.gap === undefined || (object(value.gap) && entry(value.gap.after, 0) && entry(value.gap.upTo)
@@ -96,7 +103,7 @@ const validators = {
     && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length)),
   "chat:cancel": (value) => object(value) && selection(value),
   "chat:fork": (value) => object(value) && selection(value) && entry(value.entryId)
-    && (value.title === undefined || string(value.title, 120)),
+    && (value.title === undefined || string(value.title, sessionTitleLimit)),
   "chat:compact": (value) => object(value) && selection(value)
     && (value.instructions === undefined || string(value.instructions, 8_192)),
   "review:list": (value) => object(value) && project(value),

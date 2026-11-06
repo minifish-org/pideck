@@ -9,6 +9,7 @@ import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
 import { installDesktopMenu, isMenuState } from "./menu";
 import { isCommand, validPayload } from "./validation";
+import { minimumWindow, openWindowState } from "./window-state";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -32,6 +33,7 @@ app.enableSandbox();
 
 let mainWindow: BrowserWindow | undefined;
 let desktopMenu: ReturnType<typeof installDesktopMenu> | undefined;
+let windowState: Awaited<ReturnType<typeof openWindowState>>;
 let owner = 0;
 let host: HostClient | undefined;
 let exiting = false;
@@ -43,11 +45,11 @@ function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, wi
 }
 
 function openWindow() {
+  const initial = windowState.options();
   const window = new BrowserWindow({
-    width: 1420,
-    height: 930,
-    minWidth: 760,
-    minHeight: 560,
+    ...initial.bounds,
+    minWidth: minimumWindow.width,
+    minHeight: minimumWindow.height,
     backgroundColor: "#14181e",
     ...(process.platform === "darwin" ? {
       titleBarStyle: "hidden",
@@ -77,11 +79,20 @@ function openWindow() {
   window.webContents.on("will-frame-navigate", event => event.preventDefault());
   window.webContents.on("will-attach-webview", event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const capture = () => windowState.capture(window);
+  window.on("move", capture);
+  window.on("resize", capture);
+  window.on("maximize", capture);
+  window.on("unmaximize", capture);
+  window.on("close", () => { capture(); void windowState.flush(); });
   window.once("closed", () => {
     retire();
     if (mainWindow === window) mainWindow = undefined;
   });
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    window.show();
+    if (initial.maximized) window.maximize();
+  });
   void window.loadURL(appUrl).catch(() => {
     if (!window.isDestroyed()) {
       dialog.showErrorBox("Pideck", "The desktop interface could not be loaded.");
@@ -112,6 +123,7 @@ async function initialize() {
 
   const dataDir = app.getPath("userData");
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  windowState = await openWindowState(dataDir);
   const vault = new CredentialVault(dataDir, safeStorage);
   const client = new HostClient(dataDir, vault, (target, event) => {
     if (target === owner && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, event);
@@ -132,6 +144,7 @@ async function initialize() {
   async function confirmRemoval(window: BrowserWindow, requestOwner: number, target: RemovalTarget) {
     const plan = await client.request(requestOwner, "removal:plan", target);
     if (window.isDestroyed() || requestOwner !== owner) return null;
+    if (plan.blockingBranches.length) return { blockingBranches: plan.blockingBranches };
     const count = plan.sessionCount;
     const scope = target.sessionId ? "this session" : count
       ? `this workspace and its ${count} ${count === 1 ? "session" : "sessions"}` : "this workspace";
@@ -211,7 +224,8 @@ else {
     if (exiting || !host) return;
     exiting = true;
     event.preventDefault();
-    void host.close().finally(() => app.quit());
+    if (mainWindow) windowState.capture(mainWindow);
+    void Promise.allSettled([host.close(), windowState.flush()]).finally(() => app.quit());
   });
   void app.whenReady().then(initialize).catch(error => {
     dialog.showErrorBox("Pideck could not start", error instanceof Error ? error.message : "Startup failed.");

@@ -93,8 +93,15 @@ test("parent sessions require branch-first removal and an empty workspace can be
     const point = (await finished).messages.find(message => message.role === "assistant")?.entryId;
     assert.ok(point);
     const fork = await runtime.fork(selection, point);
-    assert.throws(() => runtime.removalPlan(selection), /branches first/i);
     const child = { ...selection, sessionId: fork.id };
+    const nested = await runtime.fork(child, point);
+    const blockedPlan = runtime.removalPlan(selection);
+    assert.deepEqual(blockedPlan.blockingBranches, [
+      { id: nested.id, title: nested.title }, { id: fork.id, title: fork.title },
+    ]);
+    await assert.rejects(runtime.remove(selection, blockedPlan.scope), /branches first/i);
+    const grandchild = { ...selection, sessionId: nested.id };
+    await runtime.remove(grandchild, runtime.removalPlan(grandchild).scope);
     const childPlan = runtime.removalPlan(child);
     await runtime.remove(child, childPlan.scope);
     assert.equal(runtime.removalPlan(selection).sessionCount, 1);
