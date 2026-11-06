@@ -156,7 +156,8 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
     }
   }
   limitInlineImages(messages);
-  return { messages, tools, gaps, hasEarlier: items[0]?.kind === "earlier" };
+  const latest = items.findLast(item => item.kind === "entry");
+  return { messages, tools, gaps, latestEntryId: latest?.entry.id, hasEarlier: items[0]?.kind === "earlier" };
 }
 
 function liveActivity(live: LiveState | undefined): ChatView["activity"] {
@@ -192,7 +193,7 @@ export function chatProjection() {
       items = view.items;
       committed = projectTranscript(items, view.conversation.parent?.at);
     }
-    const { hasEarlier, gaps, tools } = committed;
+    const { hasEarlier, gaps, tools, latestEntryId } = committed;
     const messages = committed.messages.slice();
     const live = view.docs["pi.live"] as LiveState | undefined;
     const agent = view.docs["pi.agent"] as AgentState | undefined;
@@ -231,6 +232,7 @@ export function chatProjection() {
     return {
       messages,
       status: live?.run || activity?.kind === "compacting" ? "running" : "idle",
+      ...(latestEntryId !== undefined ? { latestEntryId } : {}),
       ...(hasEarlier ? { hasEarlier: true } : {}),
       ...(gaps.length ? { gaps } : {}),
       ...(queued?.length ? { queued } : {}),
@@ -238,8 +240,8 @@ export function chatProjection() {
       ...(activity ? { activity } : {}),
       ...(agent?.model ? { model: { provider: agent.model.provider, id: agent.model.modelId } } : {}),
       ...(agent?.thinkingLevel ? { thinking: agent.thinkingLevel } : {}),
-      ...(live?.runFailure ? { error: failureMessage(live.runFailure) }
-        : live?.compactionFailure ? { error: "The model could not compact the conversation." } : {}),
+      ...(live?.runFailure ? { error: failureMessage(live.runFailure), failureTaskId: live.runFailure.taskId }
+        : live?.compactionFailure ? { error: "The model could not compact the conversation.", failureTaskId: live.compactionFailure.taskId } : {}),
     };
   };
 }

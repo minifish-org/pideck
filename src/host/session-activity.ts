@@ -113,15 +113,21 @@ export class SessionActivities {
     if (changed) this.publish();
     for (const [id, task] of previous) {
       if (next.has(id)) continue;
-      const settle = (state?: Activity["state"]) => {
+      const settle = (state?: Activity["state"], resultEntryId?: number) => {
         if (!active() || this.live.has(id) || this.states.get(id)?.taskId !== task.id) return;
-        if (state) this.states.set(id, { state, taskId: task.id, settled: true });
+        if (state) this.states.set(id, { state, taskId: task.id, settled: true,
+          ...(resultEntryId !== undefined ? { resultEntryId } : {}) });
         else this.states.delete(id);
         this.publish();
       };
       void harness.getTask(task.id, BACKGROUND_CONTEXT).then(receipt => {
-        const outcome = receipt?.state.status === "terminal" ? receipt.state.outcome.status : undefined;
-        settle(outcome === "completed" ? "finished" : outcome && outcome !== "aborted" ? "attention" : undefined);
+        const outcome = receipt?.state.status === "terminal" ? receipt.state.outcome : undefined;
+        if (outcome?.status === "completed") {
+          const result = outcome.result;
+          const entryId = result && typeof result === "object" && "entryId" in result && typeof result.entryId === "number"
+            ? result.entryId : undefined;
+          settle("finished", entryId);
+        } else settle(outcome && outcome.status !== "aborted" ? "attention" : undefined);
       }, () => settle());
     }
   }

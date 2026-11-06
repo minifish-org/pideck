@@ -21,6 +21,7 @@ export type SessionActivity = Selection & {
   taskId: number;
   state: "running" | "finished" | "attention";
   settled: boolean;
+  resultEntryId?: number;
 };
 export type RemovalResult = { sessionIds: string[]; warning?: string };
 export type SessionBranch = Pick<Session, "id" | "title">;
@@ -97,6 +98,8 @@ export type ChatView = {
   model?: ModelRef;
   thinking?: Thinking;
   error?: string;
+  failureTaskId?: number;
+  latestEntryId?: number;
   hasEarlier?: boolean;
   gaps?: ChatGap[];
   activity?: { kind: "compacting" | "retrying" | "waiting"; retryAt?: number };

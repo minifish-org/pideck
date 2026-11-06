@@ -9,6 +9,8 @@ async page => {
     let nextTaskId = 0;
     let nextQueueId = 2;
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", trusted: false, createdAt: 1 };
+    const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", trusted: true, createdAt: 2 };
+    const secondSession = { id: "0c1bd9dc-58bd-4918-92ee-bc30609f0dbd", projectId: secondProject.id, title: "Other task", createdAt: 2, updatedAt: 2 };
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
@@ -45,7 +47,7 @@ async page => {
         activity.set(sessionId, { projectId: project.id, sessionId, taskId: ++nextTaskId, state: "running", settled: false });
         publishActivity();
       } else if (values.status === "idle" && activity.has(sessionId)) {
-        activity.set(sessionId, { ...activity.get(sessionId), state: "finished", settled: true });
+        activity.set(sessionId, { ...activity.get(sessionId), state: "finished", settled: true, resultEntryId: values.messages?.at(-1)?.entryId });
         publishActivity();
       }
     }
@@ -101,8 +103,13 @@ async page => {
       async invoke(command, payload) {
         if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
-          case "project:list": return state.opened ? [project] : [];
+          case "project:list": return [...(state.opened ? [project] : []), ...(state.secondOpened ? [secondProject] : [])];
           case "project:open":
+            if (state.opened) {
+              state.secondOpened = true;
+              persist();
+              return { ...secondProject };
+            }
             if (!state.opened) project.id = state.projectId = crypto.randomUUID();
             state.opened = true;
             persist();
@@ -123,6 +130,11 @@ async page => {
             }
             return;
           case "project:remove": {
+            if (payload.projectId === secondProject.id && state.secondOpened) {
+              state.secondOpened = false;
+              persist();
+              return { sessionIds: [secondSession.id] };
+            }
             if (payload.projectId !== project.id || !state.opened) throw new Error("Fixture project not found.");
             if (!attemptedRemovals.has(project.id)) {
               attemptedRemovals.add(project.id);
@@ -134,6 +146,7 @@ async page => {
             return loseRemovalReply();
           }
           case "session:list": {
+            if (payload.projectId === secondProject.id) return state.secondOpened ? [{ ...secondSession }] : [];
             const snapshot = state.sessions.map(session => ({ ...session }));
             if (!captureSessionList) return snapshot;
             captureSessionList = false;
@@ -221,7 +234,8 @@ async page => {
             const watch = { payload, sequence: 0 };
             watches.set(payload.subscriptionId, watch);
             if (resetting.delete(payload.sessionId)) document.body.dataset.survivingWatch = "attached";
-            queueMicrotask(() => update(watch, { view: state.views[payload.sessionId] }));
+            queueMicrotask(() => update(watch, { view: payload.sessionId === secondSession.id
+              ? { messages: [], status: "idle" } : state.views[payload.sessionId] }));
             return;
           }
           case "chat:unwatch": watches.delete(payload.subscriptionId); return;

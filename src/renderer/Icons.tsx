@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleAlert, CodeXml, Columns2,
-  FileText, Folder, FolderPlus, GitFork, ImagePlus, KeyRound, LockKeyhole, MessageCircle,
+  FileText, Folder, FolderPlus, GitFork, ImagePlus, KeyRound, LoaderCircle, LockKeyhole, MessageCircle,
   PanelLeft, Pencil, Plus, Search, Settings, ShieldCheck, SquareTerminal, Trash2, X,
 } from 'lucide-react';
 import type { SVGProps } from 'react';
@@ -9,7 +9,7 @@ const icons = {
   sidebar: PanelLeft, terminal: SquareTerminal, diff: Columns2, folder: Folder, folderPlus: FolderPlus,
   plus: Plus, chat: MessageCircle, chevron: ChevronRight, down: ChevronDown, settings: Settings,
   lock: LockKeyhole, shield: ShieldCheck, arrowUp: ArrowUp, arrowDown: ArrowDown, close: X, file: FileText,
-  code: CodeXml, check: Check, alert: CircleAlert, key: KeyRound, image: ImagePlus, fork: GitFork, edit: Pencil, search: Search, trash: Trash2,
+  code: CodeXml, check: Check, alert: CircleAlert, spinner: LoaderCircle, key: KeyRound, image: ImagePlus, fork: GitFork, edit: Pencil, search: Search, trash: Trash2,
 };
 
 export function Icon({ name, ...props }: { name: keyof typeof icons | 'mark' | 'stop' } & SVGProps<SVGSVGElement>) {

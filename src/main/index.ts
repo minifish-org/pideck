@@ -53,6 +53,7 @@ function openWindow() {
     backgroundColor: "#14181e",
     ...(process.platform === "darwin" ? {
       titleBarStyle: "hidden",
+      trafficLightPosition: { x: 20, y: 21 },
       // Match the renderer toolbar so AppKit centers its controls within it.
       titleBarOverlay: { height: 56 },
     } : {}),

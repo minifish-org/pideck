@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { SessionActivity } from "../src/shared/api.js";
-import { fauxRuntime } from "./support/faux-runtime.js";
+import { fauxRuntime, waitForView } from "./support/faux-runtime.js";
 
 test("Durable reports background session completion and failure without opening a transcript", { timeout: 10_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "pideck-activity-"));
@@ -46,6 +46,10 @@ test("Durable reports background session completion and failure without opening 
       release.resolve();
       const result = await finished.promise;
       assert.equal(result.taskId, active.taskId);
+      const done = await waitForView(runtime, selection, view => view.status === "idle" && view.messages.length >= 2);
+      assert.ok(result.resultEntryId);
+      assert.equal(result.resultEntryId, done.messages.at(-1)?.entryId);
+      assert.equal(done.latestEntryId, result.resultEntryId);
       runtime.readSessionActivity(selection, result.taskId + 1);
       assert.equal(latest[0]?.state, "finished");
       runtime.readSessionActivity(selection, result.taskId);
@@ -54,8 +58,11 @@ test("Durable reports background session completion and failure without opening 
       await runtime.send(input({ projectId: project.id, sessionId: second.id }, "This model call fails."));
       const failed = await attention.promise;
       assert.equal(failed.projectId, project.id);
-      const plan = runtime.removalPlan({ projectId: project.id, sessionId: second.id });
-      await runtime.remove({ projectId: project.id, sessionId: second.id }, plan.scope);
+      const failedSelection = { projectId: project.id, sessionId: second.id };
+      const failedView = await waitForView(runtime, failedSelection, view => view.status === "idle" && Boolean(view.error));
+      assert.equal(failedView.failureTaskId, failed.taskId);
+      const plan = runtime.removalPlan(failedSelection);
+      await runtime.remove(failedSelection, plan.scope);
       assert.deepEqual(latest, []);
     } finally {
       detach();

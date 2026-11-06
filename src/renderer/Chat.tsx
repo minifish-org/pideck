@@ -2,11 +2,12 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, 
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, StartChat, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
+import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import { completeAttempt } from './preferences';
 import './chat.css';
@@ -183,10 +184,11 @@ function sameGap(left: ChatGap, right: ChatGap) {
   return left.after === right.after && left.upTo === right.upTo;
 }
 
-export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft, readingPosition, onReadingPosition,
+export function Chat({ project, session, activityReceipt, models, modelsReady, modelsError, defaultModel, draft, updateDraft, readingPosition, onReadingPosition,
   onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onStarted, onFork }: {
   project: Project;
   session?: Session;
+  activityReceipt?: SessionActivity;
   models: ModelOption[];
   modelsReady: boolean;
   modelsError?: string;
@@ -224,6 +226,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const historyAnchor = useRef<HistoryAnchor | undefined>(undefined);
   const toolStates = useRef<Map<string, string> | undefined>(undefined);
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
+  useReadSessionActivity(watchConnected ? activityReceipt : undefined, view, scroll);
   const { text, attachments } = draft;
 
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
@@ -499,7 +502,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
               </div>
             ))}
             {renderGaps()}
-            {view?.error && <div className="notice" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
+            {view?.error && <div className="notice chat-run-error" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
           </div>
         ) : null}
       </div>

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { SessionActivity } from '../shared/api';
+import { useEffect, useState, type RefObject } from 'react';
+import type { ChatView, SessionActivity } from '../shared/api';
 
 export const activityLabels = {
   running: 'Running',
@@ -7,7 +7,7 @@ export const activityLabels = {
   attention: 'Needs attention',
 } satisfies Record<SessionActivity['state'], string>;
 
-export function useSessionActivity(activeSessionId: string | undefined, reading: boolean) {
+export function useSessionActivity() {
   const [items, setItems] = useState<Record<string, SessionActivity>>({});
   useEffect(() => {
     const api = window.pideck;
@@ -44,20 +44,56 @@ export function useSessionActivity(activeSessionId: string | undefined, reading:
       detach();
     };
   }, []);
-
-  const active = activeSessionId ? items[activeSessionId] : undefined;
-  const projectId = active?.projectId;
-  const sessionId = active?.sessionId;
-  const taskId = active?.settled ? active.taskId : undefined;
-  useEffect(() => {
-    if (!reading || !projectId || !sessionId || taskId === undefined) return;
-    const receipt = { projectId, sessionId, taskId };
-    function markRead() {
-      if (document.hasFocus()) void window.pideck.invoke('session:read-activity', receipt).catch(() => {});
-    }
-    markRead();
-    window.addEventListener('focus', markRead);
-    return () => window.removeEventListener('focus', markRead);
-  }, [reading, projectId, sessionId, taskId]);
   return items;
+}
+
+export function useReadSessionActivity(activity: SessionActivity | undefined, view: ChatView | null,
+  scroll: RefObject<HTMLDivElement | null>) {
+  const settledView = activity?.settled && view?.status === 'idle' ? view : null;
+  useEffect(() => {
+    if (!activity || !settledView) return;
+    const viewport = scroll.current;
+    const thread = viewport?.querySelector('.chat-thread');
+    if (!viewport || !thread) return;
+    const { projectId, sessionId, taskId, state, resultEntryId } = activity;
+    let result: Element | null = thread;
+    if (state === 'attention') {
+      if (settledView.failureTaskId !== taskId) return;
+      result = thread.querySelector('.chat-run-error');
+    } else if (resultEntryId !== undefined) {
+      result = thread.querySelector(`[data-reading-entry="${resultEntryId}"]`);
+      // A committed empty answer has an entry, but no visible message.
+      if (!result && settledView.latestEntryId === resultEntryId) result = thread;
+    }
+    if (!result) return;
+    const target = result;
+    let frame = 0;
+    let sent = false;
+    function check() {
+      frame = 0;
+      if (sent || !document.hasFocus() || document.visibilityState !== 'visible' || !viewport?.clientHeight) return;
+      const bounds = viewport.getBoundingClientRect();
+      const end = target.getBoundingClientRect().bottom;
+      if (end <= bounds.top || end > bounds.bottom + 1) return;
+      sent = true;
+      void window.pideck.invoke('session:read-activity', { projectId, sessionId, taskId }).catch(() => { sent = false; });
+    }
+    function schedule() {
+      if (!sent && !frame) frame = requestAnimationFrame(check);
+    }
+    const resize = new ResizeObserver(schedule);
+    resize.observe(viewport);
+    resize.observe(thread);
+    viewport.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('focus', schedule);
+    document.addEventListener('visibilitychange', schedule);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      resize.disconnect();
+      viewport.removeEventListener('scroll', schedule);
+      window.removeEventListener('focus', schedule);
+      document.removeEventListener('visibilitychange', schedule);
+    };
+  }, [activity, scroll, settledView]);
 }

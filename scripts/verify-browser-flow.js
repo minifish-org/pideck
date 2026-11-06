@@ -38,6 +38,22 @@ async page => {
   await settings.getByLabel("Authorization code").fill("test-authorization");
   await settings.getByRole("button", { name: "Continue" }).click();
   await settings.getByText("Fixture provider connected.").waitFor();
+  const connection = settings.getByRole("region", { name: "Provider connection" });
+  const alignedConnection = await connection.evaluate(card => {
+    const middle = element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    };
+    const status = middle(card.querySelector(".key-status"));
+    const actions = [...card.querySelectorAll(".provider-connection-header button")];
+    return actions.length === 3 && actions.every(action => Math.abs(middle(action) - status) < 1);
+  });
+  if (!alignedConnection) throw new Error("The connected status and actions do not align.");
+  await connection.getByRole("button", { name: "Refresh models", exact: true }).waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-providers-connected.png" });
+  await connection.getByRole("button", { name: "Disconnect…", exact: true }).click();
+  await connection.getByText("Disconnect Fixture provider from Pideck?", { exact: true }).waitFor();
+  await connection.getByRole("button", { name: "Cancel", exact: true }).click();
   await settings.getByRole("button", { name: "Close settings" }).click();
 
   await prompt.fill("Update and verify the status.");
@@ -62,9 +78,9 @@ async page => {
   if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
-  const runningSessionId = await nav.locator(".nav-scroll [aria-current=true]").getAttribute("id");
+  const runningSessionId = await nav.locator(".nav-session-row[aria-current=true]").getAttribute("id");
   const runningSession = nav.locator(`#${runningSessionId}`);
-  await runningSession.locator("[data-activity=running]").waitFor();
+  await runningSession.locator("[data-activity=running] svg.lucide-loader-circle").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
   if (await sessionCount() !== 1) throw new Error("The first send did not create exactly one session.");
   await page.getByText("Running the status check…", { exact: true }).waitFor();
@@ -88,7 +104,7 @@ async page => {
   await startedSession.waitFor();
   if (await runningSession.getAttribute("aria-current") !== "true") throw new Error("A late first-send reply changed the active session.");
   await startedSession.click();
-  const currentRow = nav.locator(".nav-scroll .nav-row[aria-current=true]");
+  const currentRow = nav.locator(".nav-session-row[aria-current=true]");
   await currentRow.press("F2");
   const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
   await sessionName.fill("Separate draft");
@@ -230,14 +246,32 @@ async page => {
   await queue.getByRole("listitem").nth(0).getByText("Prefer a focused check.", { exact: true }).waitFor();
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
   if (await page.locator(".queued-messages [role=alert]").count()) throw new Error("An invalid drop reached the host.");
-  await nav.locator(`.nav-scroll .nav-row:not([id="${runningSessionId}"])`).first().click();
+  await page.setViewportSize({ width: queueViewport.width, height: 420 });
+  const transcript = page.locator(".chat-scroll");
+  await page.waitForFunction(() => {
+    const scroll = document.querySelector(".chat-scroll");
+    return scroll.clientHeight > 40 && scroll.scrollHeight - scroll.clientHeight > 48 && scroll.scrollTop > 0;
+  });
+  await transcript.hover();
+  await page.mouse.wheel(0, -1000);
+  await page.waitForFunction(() => {
+    const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
+    const id = preferences.sessions?.[preferences.projectId];
+    return preferences.reading?.[preferences.projectId]?.[id]?.messageId === "prompt";
+  });
+  await draftSession.click();
   await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-queue")));
   const finishedBadge = runningSession.locator("[data-activity=finished]");
-  await finishedBadge.waitFor();
+  await finishedBadge.locator("svg.lucide-check").waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-background.png" });
   await runningSession.click();
+  await page.getByText("I updated the status and checked the result.").waitFor({ state: "attached" });
+  const latest = page.getByRole("button", { name: "Latest", exact: true });
+  await latest.waitFor();
+  if (!await finishedBadge.count()) throw new Error("Opening at an old reading position cleared the unseen result.");
+  await latest.click();
   await finishedBadge.waitFor({ state: "detached" });
-  await page.getByText("I updated the status and checked the result.").waitFor();
+  await page.setViewportSize(queueViewport);
   const successfulCommand = page.locator(".tool-card summary").filter({ hasText: "npm test" });
   const successOutput = page.getByText("Checks passed.", { exact: true });
   await successfulCommand.getByText("Succeeded", { exact: true }).waitFor();
@@ -420,10 +454,14 @@ async page => {
   await forked.click();
   await page.getByRole("button", { name: "Open review", exact: true }).click();
   const removeOriginal = nav.getByRole("button", { name: "Remove session Verify status", exact: true });
-  await original.focus();
-  await page.keyboard.press("Backspace");
+  await page.setViewportSize({ width: 760, height: 560 });
+  await sidebar.click();
+  await original.press("Backspace");
+  await nav.waitFor({ state: "detached" });
   await workspace.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === "removal-branches");
   await page.screenshot({ path: "output/playwright/pideck-ui-branches.png" });
+  await page.setViewportSize(viewport);
   await workspace.getByRole("button", { name: "Open branch Verify status (fork)", exact: true }).click();
   if (await forked.getAttribute("aria-current") !== "true") throw new Error("The blocking branch did not open.");
   const removeFork = nav.getByRole("button", { name: "Remove session Verify status (fork)", exact: true });
@@ -452,19 +490,35 @@ async page => {
   await page.getByRole("button", { name: "End shell", exact: true }).click();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByText("Shell running").waitFor();
-  const projectPicker = nav.getByRole("button", { name: /Switch project, current project/ });
-  if (await nav.getByRole("group", { name: "Saved projects" }).count()) throw new Error("The project list obscures sessions by default.");
-  const sessionTop = (await fallback.boundingBox()).y;
-  await projectPicker.press("ArrowDown");
-  await page.getByRole("group", { name: "Saved projects" }).waitFor();
-  if (Math.abs((await fallback.boundingBox()).y - sessionTop) > 1) throw new Error("The project menu moves the sessions beneath it.");
-  await page.waitForFunction(() => document.activeElement?.id.startsWith("nav-project-")
-    && document.activeElement?.id !== "nav-project-picker");
-  await nav.getByRole("button", { name: "Sample project", exact: true }).press("Escape");
-  if (await projectPicker.getAttribute("aria-expanded") !== "false" || !await projectPicker.evaluate(button => button === document.activeElement)) {
-    throw new Error("Dismissing project selection did not return keyboard focus.");
+  const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
+  const primaryBranch = nav.getByRole("list", { name: "Sample project sessions", exact: true });
+  await primaryBranch.getByRole("button", { name: "Separate draft", exact: true }).waitFor();
+  if (await fallback.locator(":scope > svg").count()) throw new Error("The session row still displays a leading icon.");
+  await nav.getByRole("button", { name: "Collapse Sample project", exact: true }).click();
+  await primaryBranch.waitFor({ state: "detached" });
+  if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Collapsing the project changed the active session.");
+  await projectRow.press("ArrowRight");
+  await primaryBranch.waitFor();
+  await projectRow.press("ArrowRight");
+  if (!await fallback.evaluate(button => button === document.activeElement)) throw new Error("ArrowRight did not enter the session branch.");
+  await fallback.press("ArrowLeft");
+  if (!await projectRow.evaluate(button => button === document.activeElement)) throw new Error("ArrowLeft did not return to the project row.");
+
+  await nav.getByRole("button", { name: "Open folder…", exact: true }).click();
+  const otherBranch = nav.getByRole("list", { name: "Other project sessions", exact: true });
+  const otherTask = otherBranch.getByRole("button", { name: "Other task", exact: true });
+  await otherTask.waitFor();
+  if (await primaryBranch.getByRole("button", { name: "Other task", exact: true }).count()
+    || await otherBranch.getByRole("button", { name: "Separate draft", exact: true }).count()) {
+    throw new Error("The tree grouped a session under the wrong project.");
   }
-  await projectPicker.click();
+  await primaryBranch.getByRole("button", { name: "Separate draft", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Draft to remove with the project.");
+  await otherTask.waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-project-tree.png" });
+  await nav.getByRole("button", { name: "Remove project Other project", exact: true }).click();
+  await otherBranch.waitFor({ state: "detached" });
+  if (await fallback.getAttribute("aria-current") !== "true") throw new Error("Removing a sibling project changed the selected session.");
   const removeProject = nav.getByRole("button", { name: "Remove project Sample project", exact: true });
   const previousPreferences = await page.evaluate(() => localStorage.getItem("pideck.workspace.v1"));
   await removeProject.click();

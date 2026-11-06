@@ -31,12 +31,18 @@ async function clickNativeMenu(app, id) {
 
 async function verifyNativeTitlebar(app, page) {
   if (process.platform !== "darwin") return;
-  const { bounds, minimum } = await app.evaluate(({ BrowserWindow }) => {
+  const { bounds, minimum, position } = await app.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
-    return { bounds: window.getBounds(), minimum: window.getMinimumSize() };
+    return { bounds: window.getBounds(), minimum: window.getMinimumSize(), position: window.getWindowButtonPosition() };
   });
-  async function measure() {
-    await page.waitForFunction(() => navigator.windowControlsOverlay?.visible);
+  assert.deepEqual(position, { x: 20, y: 21 });
+  async function measure(width, inset) {
+    await page.waitForFunction(({ width, inset }) => {
+      const overlay = navigator.windowControlsOverlay;
+      if (!overlay?.visible || innerWidth !== width) return false;
+      const area = overlay.getTitlebarAreaRect();
+      return area.right === width && (inset === undefined || area.x === inset);
+    }, { width, inset });
     return page.evaluate(() => {
       const safeArea = navigator.windowControlsOverlay.getTitlebarAreaRect();
       const titlebar = document.querySelector(".titlebar").getBoundingClientRect();
@@ -50,20 +56,20 @@ async function verifyNativeTitlebar(app, page) {
       };
     });
   }
-  const wide = await measure();
+  const wide = await measure(bounds.width);
   try {
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), minimum);
-    await page.waitForFunction(width => innerWidth === width, minimum[0]);
-    const narrow = await measure();
+    // AppKit can report an intermediate button inset before the overlay settles.
+    const narrow = await measure(minimum[0], wide.nativeInset);
     for (const chrome of [wide, narrow]) {
-      assert.ok(chrome.nativeInset > 0 && chrome.buttonX >= chrome.nativeInset);
+      assert.ok(chrome.nativeInset > 0 && chrome.buttonX - chrome.nativeInset >= 8);
       assert.ok(Math.abs(chrome.titlebarHeight - chrome.nativeHeight) <= 1);
       assert.ok(Math.abs(chrome.buttonCenterY - chrome.nativeHeight / 2) <= 1);
     }
     assert.equal(wide.buttonX, narrow.buttonX);
   } finally {
     await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), bounds);
-    await page.waitForFunction(width => innerWidth === width, bounds.width);
+    await measure(bounds.width, wide.nativeInset);
   }
 }
 
@@ -157,9 +163,12 @@ try {
   await assert.rejects(command("chat:watch", { projectId, sessionId: crypto.randomUUID(), subscriptionId: crypto.randomUUID() }), /Session not found/);
 
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
+  const navigation = page.getByRole("complementary", { name: "Workspace navigation" });
+  const projectRow = navigation.getByRole("button", { name: "smoke-project", exact: true });
+  const projectSessions = navigation.getByRole("list", { name: "smoke-project sessions", exact: true });
   await prompt.fill("Edit example.ts and verify it.");
   await page.reload();
-  await page.getByRole("button", { name: "Switch project, current project smoke-project", exact: true }).waitFor();
+  await projectRow.waitFor();
   await prompt.waitFor();
   assert.equal(await prompt.inputValue(), "Edit example.ts and verify it.");
   assert.deepEqual(await command("session:list", { projectId }), []);
@@ -192,11 +201,18 @@ try {
   const sessions = await command("session:list", { projectId });
   assert.equal(sessions.length, 1);
   const [conversation] = sessions;
-  await page.getByRole("button", { name: "Edit example.ts and verify it.", exact: true }).press("F2");
+  await projectSessions.getByRole("button", { name: "Edit example.ts and verify it.", exact: true }).press("F2");
   const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
   await sessionName.fill("Smoke session");
   await sessionName.press("Enter");
-  await page.getByRole("button", { name: "Smoke session", exact: true }).waitFor();
+  const smokeSession = projectSessions.getByRole("button", { name: "Smoke session", exact: true });
+  await smokeSession.waitFor();
+  await navigation.getByRole("button", { name: "Collapse smoke-project", exact: true }).click();
+  await projectSessions.waitFor({ state: "hidden" });
+  await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  await navigation.getByRole("button", { name: "Expand smoke-project", exact: true }).click();
+  await smokeSession.waitFor();
+  assert.equal(await smokeSession.getAttribute("aria-current"), "true");
   assert.equal(await readFile(join(project, "example.ts"), "utf8"), "export const result = 'after';\n");
   assert.ok(modelServer.requests.some(request => request.input.some(item =>
     item.type === "function_call_output" && String(item.output).includes("export const result = 'after'"))));
@@ -260,7 +276,7 @@ try {
   await review.waitFor({ state: "detached" });
   await page.locator(".xterm-rows").getByText("REVIEW_PTY_OK", { exact: true }).waitFor();
   await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), boundsBeforeReview);
-  await page.getByRole("button", { name: /Switch project, current project/ }).waitFor();
+  await projectRow.waitFor();
 
   await terminal.focus();
   const continueInBackground = process.platform === "win32"
@@ -271,18 +287,18 @@ try {
   await app.evaluate(({ dialog }, directory) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
   }, otherProject);
-  const projectPicker = page.getByRole("button", { name: /Switch project, current project/ });
-  await projectPicker.click();
-  await page.getByRole("button", { name: "Open folder…", exact: true }).click();
-  await page.getByRole("button", { name: "Switch project, current project side-project", exact: true }).waitFor();
+  await navigation.getByRole("button", { name: "Open folder…", exact: true }).click();
+  const sideProject = navigation.getByRole("button", { name: "side-project", exact: true });
+  await sideProject.waitFor();
+  assert.equal(await sideProject.getAttribute("aria-current"), "true");
+  assert.equal(await navigation.getByRole("list", { name: "side-project sessions", exact: true }).count(), 0);
+  await smokeSession.waitFor();
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "hidden" });
-  await projectPicker.click();
-  await page.getByRole("button", { name: "smoke-project", exact: true }).click();
+  await projectRow.click();
   await page.locator(".xterm-rows").getByText("PROJECT_PTY_OK", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => document.activeElement?.id), "nav-project-picker");
-  await projectPicker.click();
-  await page.getByRole("button", { name: "side-project", exact: true }).press("Backspace");
-  await page.getByRole("button", { name: "side-project", exact: true }).waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => document.activeElement?.id), `nav-project-${projectId}`);
+  await sideProject.press("Backspace");
+  await sideProject.waitFor({ state: "detached" });
 
   if (process.platform !== "win32") {
     await terminal.focus();
@@ -323,8 +339,7 @@ try {
   await prompt.fill("Recover the active request");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Recovery request is in progress.", { exact: true }).waitFor();
-  const runningBadge = page.getByRole("complementary", { name: "Workspace navigation" })
-    .getByRole("button", { name: "Smoke session", exact: true }).locator("[data-activity=running]");
+  const runningBadge = smokeSession.locator("[data-activity=running]");
   await runningBadge.waitFor();
   const queue = page.getByRole("list", { name: "Queued messages" });
   const queuedRow = text => queue.getByRole("listitem").filter({ hasText: text });
@@ -440,8 +455,8 @@ try {
   await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
   await reopenedPage.getByRole("button", { name: "Terminal", exact: true }).click();
   await reopenedPage.getByText("Shell running").waitFor();
-  await reopenedPage.getByRole("button", { name: /Switch project, current project/ }).click();
-  const removeProject = reopenedPage.getByRole("button", { name: "Remove project smoke-project", exact: true });
+  const removeProject = reopenedPage.getByRole("complementary", { name: "Workspace navigation" })
+    .getByRole("button", { name: "Remove project smoke-project", exact: true });
   await removeProject.press("Enter");
   await reopenedPage.getByRole("heading", { name: "Open a project folder", exact: true }).waitFor();
   await reopenedPage.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
@@ -468,6 +483,8 @@ try {
     restoredPage = await reopenedWindow;
   } else await clickNativeMenu(app, "open-project");
   await restoredPage.getByRole("button", { name: "Review permissions", exact: true }).waitFor();
+  await restoredPage.getByRole("complementary", { name: "Workspace navigation" })
+    .getByRole("button", { name: "smoke-project", exact: true }).waitFor();
   const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
   assert.equal(readded.trusted, false);

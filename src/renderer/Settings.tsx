@@ -1,3 +1,4 @@
+import { RefreshCw } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { AuthLink, AuthMethod, AuthNotice, AuthPrompt, ModelProvider } from '../shared/api';
@@ -250,16 +251,19 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
       {provider.configured && !changeConnection && <>
         <div className="provider-connection-header">
           <span className="key-status"><span aria-hidden="true" />Connected</span>
-          {provider.dynamic && <button type="button" className="button provider-quiet" disabled={busy} onClick={refresh}>Refresh models</button>}
+          <div className="provider-manage">
+            {provider.dynamic && <button type="button" className="icon-button" aria-label="Refresh models"
+              title="Refresh models" disabled={busy} onClick={refresh}><RefreshCw size={16} aria-hidden="true" /></button>}
+            {!confirmDisconnect && <>
+              {provider.methods.length > 0 && <button type="button" className="button provider-quiet" disabled={busy}
+                onClick={() => { setChangeConnection(true); setStatus(undefined); setError(undefined); }}>
+                {provider.credential ? 'Change connection' : 'Add a connection'}
+              </button>}
+              {provider.credential && <button type="button" className="button provider-quiet provider-danger" disabled={busy}
+                onClick={() => { setConfirmDisconnect(true); setStatus(undefined); setError(undefined); }}>Disconnect…</button>}
+            </>}
+          </div>
         </div>
-        {!confirmDisconnect && <div className="provider-manage">
-          {provider.methods.length > 0 && <button type="button" className="button provider-quiet" disabled={busy}
-            onClick={() => { setChangeConnection(true); setStatus(undefined); setError(undefined); }}>
-            {provider.credential ? 'Change connection' : 'Add a connection'}
-          </button>}
-          {provider.credential && <button type="button" className="button provider-quiet provider-danger" disabled={busy}
-            onClick={() => { setConfirmDisconnect(true); setStatus(undefined); setError(undefined); }}>Disconnect…</button>}
-        </div>}
         {confirmDisconnect && <div className="provider-confirm">
           <p className="provider-message">Disconnect {provider.name} from Pideck?</p>
           <div className="provider-manage">
