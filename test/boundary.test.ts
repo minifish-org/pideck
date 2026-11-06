@@ -43,6 +43,19 @@ test("IPC accepts supported thinking and bounded image input", () => {
   assert.equal(validPayload("chat:send", { ...input, text: "", images: [{ mimeType: "image/png", data: "AAAA" }] }), true);
 });
 
+test("IPC validates queue item identity, edits, and relative moves", () => {
+  const queued = { projectId, sessionId, id: 10 };
+  assert.equal(validPayload("chat:queue-read", queued), true);
+  assert.equal(validPayload("chat:queue-read", { ...queued, id: 0 }), false);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "steer" }), true);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "remove", sessionId: "invalid" }), false);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "edit", text: "" }), true);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "edit", text: "x".repeat(200_001) }), false);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "move", targetId: 9, position: "before" }), true);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "move", targetId: 10, position: "before" }), false);
+  assert.equal(validPayload("chat:queue-update", { ...queued, action: "move", targetId: 9, position: "first" }), false);
+});
+
 test("tool and terminal environment drops credentials and shell injection variables", () => {
   const env = shellEnvironment({
     PATH: "/usr/bin",

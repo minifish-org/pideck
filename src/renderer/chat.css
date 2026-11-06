@@ -102,10 +102,8 @@
 .composer-actions { flex: 0 0 auto; margin-left: auto; }
 .composer-attach { width: 34px; height: 34px; }
 .composer-current-model { padding: 0 7px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
-.composer .send-button, .composer .composer-steer { height: 34px; padding: 0 9px; white-space: nowrap; font-size: 12px; }
+.composer .send-button { height: 34px; padding: 0 9px; white-space: nowrap; font-size: 12px; }
 .composer .send-button:disabled { color: var(--dim); background: var(--surface-hover); border-color: var(--border); opacity: 1; }
-.composer .composer-steer { background: transparent; color: var(--muted); }
-.composer .composer-steer:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .composer-status { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; padding: 5px var(--chat-inset) 0; color: var(--muted); font-size: 12px; }
 .image-input { display: none; }
 .attachments { display: flex; gap: 7px; flex-wrap: wrap; padding: 1px 5px 5px; }
@@ -118,13 +116,44 @@
 .history-button { align-self: center; margin: 0 auto 7px; color: var(--muted); font-size: 12px; }
 .composer-wrap .composer-notice { margin: 0 0 6px; }
 .composer-notice .inline-action { flex: 0 0 auto; }
-.queued-list {
-  display: grid; gap: 4px; max-height: 82px; overflow: auto; margin: 0 0 8px;
-  list-style: none; padding: 6px var(--chat-inset); border-left: 2px solid var(--border);
+.queued-messages { margin: 0 0 8px; }
+.queued-heading {
+  display: flex; align-items: center; gap: 6px; padding: 0 var(--chat-inset) 4px;
+  color: var(--muted); font-size: 11px; font-weight: 600;
 }
-.queued-list li { display: grid; grid-template-columns: 55px minmax(0, 1fr); align-items: center; gap: 6px; font-size: 12px; }
-.queued-list li span:first-child { color: var(--accent); font-size: 11px; }
-.queued-list li span:last-child { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queued-heading span { color: var(--dim); font-variant-numeric: tabular-nums; }
+.queued-list {
+  display: grid; gap: 2px; max-height: min(146px, 29vh); overflow: auto; margin: 0;
+  list-style: none; padding: 2px calc(var(--chat-inset) - 4px) 2px calc(var(--chat-inset) - 2px);
+  border-left: 2px solid var(--border);
+}
+.queued-row { display: flex; align-items: center; gap: 8px; min-height: 29px; font-size: 12px; }
+.queued-mode { flex: none; color: var(--accent); font-size: 11px; }
+.queued-preview { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-actions-trigger { width: 26px; height: 26px; }
+.queue-actions-trigger[aria-disabled='true'] { opacity: .5; cursor: default; }
+.queue-actions-trigger:has(+ :popover-open) { background: var(--surface-hover); color: var(--text); }
+.queue-popover {
+  width: max-content; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 4px;
+}
+.queue-popover:not([data-positioned]) { visibility: hidden; }
+.queue-popover:popover-open { display: grid; gap: 1px; }
+.queue-popover button {
+  display: block; width: 100%; padding: 5px 8px; text-align: left; font-size: 12px;
+  background: transparent; color: var(--text); border: 1px solid transparent; border-radius: 5px;
+}
+.queue-popover button:hover, .queue-popover button:focus-visible { background: var(--surface-hover); }
+.queue-popover button:focus-visible { outline-offset: -2px; }
+.queue-popover .queue-action-danger { color: var(--danger); }
+.queue-editor { display: grid; gap: 5px; padding: 3px 0 4px; }
+.queue-editor textarea {
+  min-width: 0; width: 100%; resize: vertical; padding: 6px 8px; font-size: 12px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+}
+.queue-editor-footer { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 5px; }
+.queue-editor-footer span { margin-right: auto; color: var(--muted); font-size: 11px; }
+.queue-editor-footer .button { min-height: 25px; padding: 2px 7px; font-size: 11px; }
+.queued-messages .composer-notice { margin: 6px 0 0; }
 .model-trigger {
   display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 28px; max-width: 225px;
   height: 34px; padding: 0 7px; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px;

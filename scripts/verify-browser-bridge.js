@@ -3,8 +3,10 @@ async page => {
     const listeners = new Set();
     const watches = new Map();
     const activity = new Map();
+    const queuedTexts = new Map();
     let activityWatch;
     let nextTaskId = 0;
+    let nextQueueId = 2;
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", trusted: false, createdAt: 1 };
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
@@ -241,22 +243,67 @@ async page => {
               // The host accepted the input but its IPC reply was lost. The next
               // watch supplies the Durable request ID and clears the matching draft.
               watches.clear();
-              change(sessionId, { messages: [...view.messages, prompt], status: "running", model, thinking: payload.thinking });
+              change(sessionId, { messages: [...view.messages, prompt], status: "running", canSteerQueued: true, model, thinking: payload.thinking });
               emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
               setTimeout(() => emit({ type: "host:restart" }), 100);
               throw new Error("The fixture lost the send acknowledgement.");
             }
-            const queued = [...(view.queued ?? []), { id: (view.queued?.length ?? 0) + 3, requestId: payload.requestId, delivery: payload.delivery, preview: payload.text }];
+            if (payload.delivery !== "follow-up") throw new Error("The composer must queue follow-up messages.");
+            const id = ++nextQueueId;
+            queuedTexts.set(id, payload.text);
+            const queued = [...(view.queued ?? []), { id, requestId: payload.requestId, delivery: "follow-up", preview: payload.text }];
+            change(sessionId, { queued, canSteerQueued: true });
+            return;
+          }
+          case "chat:queue-read": {
+            const item = state.views[payload.sessionId]?.queued?.find(({ id }) => id === payload.id);
+            if (!item || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
+            return { text: queuedTexts.get(item.id), hasImages: false };
+          }
+          case "chat:queue-update": {
+            const { sessionId, action } = payload;
+            const view = state.views[sessionId];
+            const queued = [...(view?.queued ?? [])];
+            const index = queued.findIndex(({ id }) => id === payload.id);
+            if (index < 0 || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
+            const [item] = queued.splice(index, 1);
+            switch (action) {
+              case "remove":
+                queuedTexts.delete(item.id);
+                break;
+              case "edit":
+                queuedTexts.set(item.id, payload.text);
+                queued.splice(index, 0, { ...item, preview: payload.text });
+                break;
+              case "move": {
+                const target = queued.findIndex(({ id }) => id === payload.targetId);
+                if (target < 0 || queued[target].delivery !== item.delivery) throw new Error("Invalid queue target.");
+                queued.splice(target + (payload.position === "after" ? 1 : 0), 0, item);
+                break;
+              }
+              case "steer": {
+                const firstFollowUp = queued.findIndex(({ delivery }) => delivery === "follow-up");
+                queued.splice(firstFollowUp < 0 ? queued.length : firstFollowUp, 0, { ...item, delivery: "steer" });
+                break;
+              }
+              default: throw new Error("Unexpected queue action " + action);
+            }
             change(sessionId, { queued });
-            if (queued.length === 2) {
-              if (queued[0].delivery !== "steer" || queued[1].delivery !== "follow-up") throw new Error("Unexpected queue delivery.");
+            if (action === "steer") {
+              const result = queued.map(({ delivery, id }) => [delivery, queuedTexts.get(id)]);
+              if (JSON.stringify(result) !== JSON.stringify([
+                ["steer", "Prefer a focused check."],
+                ["follow-up", "List follow-up work."],
+                ["follow-up", "Report the final verification."],
+              ])) throw new Error("Queue operations did not leave the expected order and content.");
               setTimeout(() => {
                 const reply = { id: "reply", entryId: 8, role: "assistant", blocks: [
                   { type: "text", text: "I updated the status and checked the result." },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
                 ] };
-                change(sessionId, { messages: [...state.views[sessionId].messages, reply], status: "idle", queued: [], hasEarlier: true });
+                for (const { id } of queued) queuedTexts.delete(id);
+                change(sessionId, { messages: [...state.views[sessionId].messages, reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
               }, 700);
             }
             return;

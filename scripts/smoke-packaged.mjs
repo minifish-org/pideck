@@ -302,6 +302,34 @@ try {
   const runningBadge = page.getByRole("complementary", { name: "Workspace navigation" })
     .getByRole("button", { name: "Smoke session", exact: true }).locator("[data-activity=running]");
   await runningBadge.waitFor();
+  const queue = page.getByRole("list", { name: "Queued messages" });
+  const queuedRow = text => queue.getByRole("listitem").filter({ hasText: text });
+  async function queueAction(text, action) {
+    await queuedRow(text).getByRole("button", { name: "Queued message actions" }).click();
+    await page.getByRole("button", { name: action, exact: true }).or(page.getByRole("menuitem", { name: action, exact: true })).click();
+  }
+  const firstQueued = "Guide the recovery when possible.";
+  const draftQueued = "Original queued text.";
+  const editedQueued = "Edited queued text.";
+  const discardedQueued = "Remove this queued text.";
+  const movedQueued = "Process this follow-up first.";
+  for (const text of [firstQueued, draftQueued, discardedQueued, movedQueued]) {
+    await prompt.fill(text);
+    await prompt.press("Enter");
+    await queuedRow(text).waitFor();
+  }
+  await queueAction(draftQueued, "Edit message");
+  const editQueued = page.getByRole("textbox", { name: "Edit queued message" });
+  assert.equal(await editQueued.inputValue(), draftQueued);
+  await editQueued.fill(editedQueued);
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await queuedRow(editedQueued).waitFor();
+  await queueAction(discardedQueued, "Delete message");
+  await queuedRow(discardedQueued).waitFor({ state: "detached" });
+  await queueAction(movedQueued, "Move up");
+  await queue.getByRole("listitem").nth(1).getByText(movedQueued, { exact: true }).waitFor();
+  await queueAction(firstQueued, "Steer current run");
+  await queuedRow(firstQueued).getByText("Steering", { exact: true }).waitFor();
   await app.evaluate(({ app }) => {
     const host = app.getAppMetrics().find(metric => metric.name === "Pideck workspace");
     if (!host) throw new Error("Workspace process was not found.");
@@ -310,8 +338,14 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.hostRestarted === "true");
   await page.getByText("Shell running").waitFor();
   await page.getByText("Recovered after host restart.", { exact: true }).waitFor({ timeout: 35_000 });
+  await page.getByText(editedQueued, { exact: true }).waitFor();
+  await queue.waitFor({ state: "detached" });
   await runningBadge.waitFor({ state: "detached" });
   assert.equal(await page.getByText("Recover the active request", { exact: true }).count(), 1);
+  const sentQueue = await page.getByRole("article", { name: "You", exact: true }).allTextContents();
+  const queueMessages = sentQueue.flatMap(message => [firstQueued, movedQueued, editedQueued].filter(text => message.includes(text)));
+  assert.deepEqual(queueMessages, [firstQueued, movedQueued, editedQueued]);
+  assert.ok(sentQueue.every(message => !message.includes(discardedQueued) && !message.includes(draftQueued)));
   await page.getByRole("button", { name: "Find in terminal" }).click();
   const previousOutput = page.getByRole("searchbox", { name: "Find in terminal output" });
   await previousOutput.fill("pty_ok");

@@ -85,6 +85,11 @@ export type ChatMessage = {
   error?: string;
 };
 export type ChatGap = { after: number; upTo: number; beforeMessageId?: string };
+export type QueuedInputRef = Selection & { id: number };
+export type QueueUpdate =
+  | { action: "steer" | "remove" }
+  | { action: "edit"; text: string }
+  | { action: "move"; targetId: number; position: "before" | "after" };
 export type ChatView = {
   messages: ChatMessage[];
   status: "idle" | "running" | "cancelling";
@@ -95,6 +100,7 @@ export type ChatView = {
   gaps?: ChatGap[];
   activity?: { kind: "compacting" | "retrying" | "waiting"; retryAt?: number };
   queued?: { id: number; requestId?: string; delivery: "follow-up" | "steer"; preview: string }[];
+  canSteerQueued?: boolean;
 };
 
 export type ReviewFile = {
@@ -138,6 +144,8 @@ export type Commands = {
   "chat:unwatch": [{ subscriptionId: string }, void];
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
   "chat:send": [SendChat, void];
+  "chat:queue-read": [QueuedInputRef, { text: string; hasImages: boolean }];
+  "chat:queue-update": [QueuedInputRef & QueueUpdate, void];
   "chat:cancel": [Selection, void];
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];
   "review:list": [{ projectId: string }, ReviewFile[]];

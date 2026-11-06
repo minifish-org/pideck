@@ -171,6 +171,10 @@ async function handle(request: HostRequest): Promise<unknown> {
       return auth.code(owner, payload.flowId, payload.copyId);
     case "chat:send":
       return runtime.send(payload);
+    case "chat:queue-read":
+      return runtime.readQueuedInput(payload);
+    case "chat:queue-update":
+      return runtime.updateQueuedInput(payload);
     case "chat:cancel":
       return runtime.cancel(payload);
     case "chat:fork":

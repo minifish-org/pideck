@@ -1,6 +1,7 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentState, InboxState, LiveState, RunFailure, TranscriptView } from "@earendil-works/pi-durable";
 import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
+import { canSteerQueued } from "./queued-input.js";
 
 export const inputEntryKind = "pideck.input";
 
@@ -233,6 +234,7 @@ export function chatProjection() {
       ...(hasEarlier ? { hasEarlier: true } : {}),
       ...(gaps.length ? { gaps } : {}),
       ...(queued?.length ? { queued } : {}),
+      ...(queued?.length && canSteerQueued(live) ? { canSteerQueued: true } : {}),
       ...(activity ? { activity } : {}),
       ...(agent?.model ? { model: { provider: agent.model.provider, id: agent.model.modelId } } : {}),
       ...(agent?.thinkingLevel ? { thinking: agent.thinkingLevel } : {}),

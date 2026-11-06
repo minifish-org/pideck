@@ -75,13 +75,65 @@ async page => {
   const runningSession = nav.locator(`#${runningSessionId}`);
   await runningSession.locator("[data-activity=running]").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
-  await prompt.fill("Prefer a focused check.");
-  await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
-  await page.getByRole("button", { name: "Steer run" }).click();
-  await page.getByText("Prefer a focused check.", { exact: true }).waitFor();
-  await prompt.fill("Report the verification.");
   await page.getByRole("button", { name: "Queue next" }).waitFor();
-  await prompt.press("Enter");
+  if (await page.getByRole("button", { name: "Steer run", exact: true }).count()) throw new Error("The composer exposes a second send action.");
+  const queue = page.getByRole("list", { name: "Queued messages" });
+  const row = text => queue.getByRole("listitem").filter({ hasText: text });
+  const queueMenu = page.getByRole("group", { name: "Queued message actions" }).or(
+    page.getByRole("menu", { name: "Queued message actions" }),
+  );
+  async function waitForAnchoredQueueMenu() {
+    await queueMenu.waitFor();
+    await page.waitForFunction(() => {
+      const panel = document.querySelector(".queue-popover:popover-open");
+      if (!panel || !panel.previousElementSibling) return false;
+      const bounds = panel.getBoundingClientRect();
+      const anchor = panel.previousElementSibling.getBoundingClientRect();
+      const aligned = Math.min(Math.abs(bounds.left - anchor.left), Math.abs(bounds.right - anchor.right)) <= 14;
+      const gap = Math.min(Math.abs(bounds.bottom - anchor.top), Math.abs(bounds.top - anchor.bottom));
+      return aligned && gap <= 12 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
+    });
+  }
+  async function chooseQueueAction(text, action) {
+    await row(text).getByRole("button", { name: "Queued message actions" }).click();
+    const control = page.getByRole("button", { name: action, exact: true }).or(page.getByRole("menuitem", { name: action, exact: true }));
+    await control.click();
+  }
+  for (const text of ["Prefer a focused check.", "Report the verification.", "Drop this duplicate.", "List follow-up work."]) {
+    await prompt.fill(text);
+    await prompt.press("Enter");
+    await row(text).waitFor();
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
+  const queueViewport = page.viewportSize();
+  await page.setViewportSize({ width: 760, height: 560 });
+  const queueTrigger = row("List follow-up work.").getByRole("button", { name: "Queued message actions" });
+  await queueTrigger.focus();
+  await queueTrigger.press("Enter");
+  await waitForAnchoredQueueMenu();
+  await page.keyboard.press("Escape");
+  await queueMenu.waitFor({ state: "hidden" });
+  if (!await queueTrigger.evaluate(button => button === document.activeElement)) throw new Error("Closing the queue menu lost keyboard focus.");
+  await page.setViewportSize(queueViewport);
+  await chooseQueueAction("Report the verification.", "Edit message");
+  const queueEdit = page.getByRole("textbox", { name: "Edit queued message" });
+  if (await queueEdit.inputValue() !== "Report the verification.") throw new Error("The queue editor did not load the full message.");
+  await queueEdit.fill("Report the final verification.");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await row("Report the final verification.").waitFor();
+  await chooseQueueAction("Drop this duplicate.", "Delete message");
+  await row("Drop this duplicate.").waitFor({ state: "detached" });
+  await chooseQueueAction("List follow-up work.", "Move up");
+  await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
+  await row("Prefer a focused check.").getByRole("button", { name: "Queued message actions" }).click();
+  const steer = page.getByRole("button", { name: "Steer current run", exact: true }).or(
+    page.getByRole("menuitem", { name: "Steer current run", exact: true }),
+  );
+  await steer.waitFor();
+  await waitForAnchoredQueueMenu();
+  await page.screenshot({ path: "output/playwright/pideck-ui-queue.png" });
+  await steer.click();
+  await row("Prefer a focused check.").getByText("Steering", { exact: true }).waitFor();
   await nav.locator(`.nav-scroll .nav-row:not([id="${runningSessionId}"])`).first().click();
   const finishedBadge = runningSession.locator("[data-activity=finished]");
   await finishedBadge.waitFor();

@@ -370,6 +370,114 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
   }
 });
 
+test("queued inputs can be steered, removed, edited with attachments, and reordered before native placement", async () => {
+  const { root, runtime, project, selection, input, faux } = await openFixture();
+  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const image = {
+    mimeType: "image/png" as const,
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRckAAAAASUVORK5CYII=",
+  };
+  try {
+    runtime.trustProject(project.id);
+    const otherSession = await runtime.createSession(project.id);
+    faux.setResponses([
+      async () => {
+        started.resolve();
+        await release.promise;
+        return toolResponse("bash", { command: "printf ready" });
+      },
+      fauxAssistantMessage("Steered run finished."),
+      fauxAssistantMessage("Reordered follow-up finished."),
+      fauxAssistantMessage("Last follow-up finished."),
+    ]);
+    await runtime.send(input);
+    await started.promise;
+
+    const edit = { ...input, delivery: "follow-up" as const, text: "Original description", images: [image], requestId: randomUUID() };
+    const remove = { ...input, delivery: "follow-up" as const, text: "Discard this", requestId: randomUUID() };
+    const move = { ...input, delivery: "follow-up" as const, text: "Move before the edit", requestId: randomUUID() };
+    const steer = { ...input, delivery: "follow-up" as const, text: "Steer this run", requestId: randomUUID() };
+    for (const message of [edit, remove, move, steer]) await runtime.send(message);
+    const queued = await waitForView(runtime, selection, view => view.queued?.length === 4);
+    const [editId, removeId, moveId, steerId] = queued.queued!.map(item => item.id);
+    assert.equal(queued.canSteerQueued, true);
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: edit.text, hasImages: true });
+    await assert.rejects(runtime.readQueuedInput({ ...selection, sessionId: otherSession.id, id: editId }), /no longer in the queue/);
+    await assert.rejects(runtime.updateQueuedInput({ ...selection, id: moveId, action: "edit", text: " " }), /Enter a message/);
+
+    const editedText = "Updated description. ".repeat(20);
+    await runtime.updateQueuedInput({ ...selection, id: editId, action: "edit", text: "" });
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: "", hasImages: true });
+    await runtime.updateQueuedInput({ ...selection, id: editId, action: "edit", text: editedText });
+    await runtime.updateQueuedInput({ ...selection, id: removeId, action: "remove" });
+    await runtime.updateQueuedInput({ ...selection, id: steerId, action: "steer" });
+    const reorder = { ...selection, id: moveId, action: "move", targetId: editId, position: "before" } as const;
+    await runtime.updateQueuedInput(reorder);
+    await runtime.updateQueuedInput(reorder);
+    await assert.rejects(runtime.updateQueuedInput({ ...reorder, targetId: steerId }), /this part of the queue/);
+    // Retries of the original send must not resurrect, overwrite, or duplicate a queued input.
+    for (const message of [edit, remove, steer]) await runtime.send(message);
+    const updated = await waitForView(runtime, selection, () => true);
+    assert.deepEqual(updated.queued?.map(item => [item.id, item.delivery]), [
+      [steerId, "steer"], [moveId, "follow-up"], [editId, "follow-up"],
+    ]);
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: editedText, hasImages: true });
+    await assert.rejects(runtime.readQueuedInput({ ...selection, id: removeId }), /no longer in the queue/);
+
+    release.resolve();
+    const completed = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Last follow-up finished."));
+    assert.deepEqual(completed.messages.filter(message => message.role === "user").map(message => message.requestId),
+      [undefined, steer.requestId, move.requestId, edit.requestId]);
+    assert.deepEqual(completed.messages.find(message => message.requestId === edit.requestId)?.blocks,
+      [{ type: "text", text: editedText }, { type: "image", ...image }]);
+    assert.equal(completed.queued, undefined);
+    await assert.rejects(runtime.updateQueuedInput({ ...selection, id: editId, action: "remove" }), /no longer in the queue/);
+  } finally {
+    release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an idle conversation accepts a late follow-up but cannot steer retained input from a failed run", async () => {
+  const { root, runtime, project, selection, input, faux } = await openFixture();
+  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  try {
+    runtime.trustProject(project.id);
+    faux.setResponses([
+      async () => {
+        started.resolve();
+        await release.promise;
+        return fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid credentials" });
+      },
+    ]);
+    await runtime.send(input);
+    await started.promise;
+    const followUp = { ...input, delivery: "follow-up" as const, text: "Retained after failure" };
+    await runtime.send(followUp);
+    release.resolve();
+    const failed = await waitForView(runtime, selection, view => view.status === "idle" && Boolean(view.error));
+    const queuedId = failed.queued?.[0]?.id;
+    assert.ok(queuedId);
+    assert.equal(failed.canSteerQueued, undefined);
+    await assert.rejects(runtime.updateQueuedInput({ ...selection, id: queuedId, action: "steer" }), /no current task/);
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: queuedId }), { text: followUp.text, hasImages: false });
+    await runtime.updateQueuedInput({ ...selection, id: queuedId, action: "remove" });
+
+    faux.setResponses([fauxAssistantMessage("Late follow-up finished.")]);
+    await runtime.send({ ...followUp, text: "Admitted after the prior run ended" });
+    const completed = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Late follow-up finished."));
+    assert.ok(textIn(completed, "Admitted after the prior run ended"));
+    assert.equal(completed.queued, undefined);
+  } finally {
+    release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an abrupt host exit resumes a committed request without admitting a duplicate", async () => {
   const fixture = await openFixture();
   const { root, data, project, selection, input, faux } = fixture;

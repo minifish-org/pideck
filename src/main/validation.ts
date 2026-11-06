@@ -101,6 +101,12 @@ const validators = {
     && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer")
     && thinking.has(value.thinking as Thinking) && images(value.images)
     && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length)),
+  "chat:queue-read": (value) => object(value) && selection(value) && entry(value.id),
+  "chat:queue-update": (value) => object(value) && selection(value) && entry(value.id)
+    && (value.action === "steer" || value.action === "remove"
+      || (value.action === "edit" && string(value.text, 200_000))
+      || (value.action === "move" && entry(value.targetId) && value.targetId !== value.id
+        && (value.position === "before" || value.position === "after"))),
   "chat:cancel": (value) => object(value) && selection(value),
   "chat:fork": (value) => object(value) && selection(value) && entry(value.entryId)
     && (value.title === undefined || string(value.title, sessionTitleLimit)),

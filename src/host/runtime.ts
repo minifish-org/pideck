@@ -14,12 +14,15 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import type { ChatGap, ChatView, ModelOption, RemovalResult, SendChat, Selection, SessionActivity } from "../shared/api.js";
+import type {
+  ChatGap, ChatView, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, SessionActivity,
+} from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
+import { readQueuedInput, updateQueuedInput } from "./queued-input.js";
 import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
 import { reviewWrites } from "./write-review.js";
@@ -256,6 +259,22 @@ export class Runtime {
     return this.admit(() => this.submitChat(input));
   }
 
+  readQueuedInput(selection: QueuedInputRef): Promise<{ text: string; hasImages: boolean }> {
+    return this.admit(async () => {
+      this.requireTrustedProject(selection.projectId);
+      const conversation = await this.conversation(selection);
+      return conversation.commit(tx => readQueuedInput(tx, conversation.id, selection.id), context);
+    });
+  }
+
+  updateQueuedInput(input: QueuedInputRef & QueueUpdate): Promise<void> {
+    return this.admit(async () => {
+      this.requireTrustedProject(input.projectId);
+      const conversation = await this.conversation(input);
+      return conversation.commit(tx => updateQueuedInput(tx, conversation.id, input.id, input), context);
+    });
+  }
+
   private async submitChat(input: SendChat): Promise<void> {
     this.requireTrustedProject(input.projectId);
     const { autoTitlePending } = this.metadata.session(input.projectId, input.sessionId);
@@ -302,7 +321,7 @@ export class Runtime {
       await conversation.submit(tx, {
         type: "input",
         whenBusy: delivery === "send" ? "reject" : delivery === "steer" ? "steer" : "followUp",
-        ...(delivery !== "send" ? { whenIdle: "reject" } : {}),
+        ...(delivery === "steer" ? { whenIdle: "reject" } : {}),
         ...(requestId ? {
           requestId,
           entry: { kind: inputEntryKind, data: { requestId } },

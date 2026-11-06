@@ -6,6 +6,7 @@ import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption
 import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
+import { QueuedMessages } from './QueuedMessages';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import './chat.css';
 
@@ -341,9 +342,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     toolStates.current = next;
   }, [connected, onWorkspaceChange, view]);
 
-  async function send(whileRunning: 'follow-up' | 'steer' = 'follow-up') {
+  async function send() {
     if (!canSend || !model) return;
-    const deliveryMode: SendChat['delivery'] = busy ? whileRunning : 'send';
+    const deliveryMode: SendChat['delivery'] = busy ? 'follow-up' : 'send';
     const previous = draft.attempt;
     const requestId = previous?.text === text && previous.attachments === attachments
       ? previous.input.requestId : draft.pendingRequestId ?? crypto.randomUUID();
@@ -518,9 +519,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
             disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
         </div>}
-        {view?.queued?.length ? <ul className="queued-list" aria-label="Queued messages">
-          {view.queued.map((item) => <li key={item.id}><span>{item.delivery === 'steer' ? 'Steering' : 'Up next'}</span><span title={item.preview}>{item.preview}</span></li>)}
-        </ul> : null}
+        <QueuedMessages selection={selection} items={view?.queued} canSteer={Boolean(view?.canSteerQueued)}
+          enabled={connected && !stopping && view?.status !== 'cancelling'}
+          onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
           <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
           {modelsError && !draft.error
@@ -587,8 +588,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
                     }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
             </div>
             <div className="composer-actions">
-              {queueing && <button className="button composer-steer" type="button" aria-label="Steer run"
-                title="Guide the current run at its next turn boundary" disabled={!canSend} onClick={() => void send('steer')}>Steer run</button>}
               <button className="button button--primary send-button" type="submit" title={`${submitLabel} (Enter)`} aria-label={submitLabel}
                 disabled={!canSend}>{submitLabel}<Icon name="arrowUp" width={14} height={14} /></button>
             </div>
