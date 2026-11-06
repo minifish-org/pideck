@@ -1,0 +1,63 @@
+import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { listChanges, readPatch } from "../src/host/review.js";
+
+function git(cwd: string, ...args: string[]) {
+  execFileSync("git", [
+    "-c", "user.email=pideck-test@example.invalid", "-c", "user.name=Pideck Test", "-c", "commit.gpgSign=false", ...args,
+  ], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+}
+
+test("lists and displays tracked, renamed, and untracked files inside the selected Git folder", async t => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-review-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = join(root, "feature area");
+  await mkdir(cwd);
+  git(root, "init", "-q");
+  await writeFile(join(cwd, "old name.ts"), "const value = 1;\n");
+  await writeFile(join(cwd, "tracked.ts"), "const tracked = true;\n");
+  await writeFile(join(root, "outside.txt"), "outside\n");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "start");
+  await rename(join(cwd, "old name.ts"), join(cwd, "new name.ts"));
+  git(cwd, "add", "-A", ".");
+  await writeFile(join(cwd, "tracked.ts"), "const tracked = false;\n");
+  await writeFile(join(cwd, "词 file.ts"), "const created = 3;\n");
+  await writeFile(join(cwd, "asset.bin"), Buffer.from([0, 1, 2]));
+  await writeFile(join(root, "outside.txt"), "change outside project\n");
+
+  const changes = new Map((await listChanges(cwd)).map(file => [file.path, file]));
+  assert.equal(changes.size, 4);
+  assert.deepEqual(changes.get("new name.ts"), { path: "new name.ts", oldPath: "old name.ts", status: "R " });
+  assert.equal(changes.get("tracked.ts")?.status, " M");
+  assert.equal(changes.get("词 file.ts")?.status, "??");
+  assert.match((await readPatch(cwd, "new name.ts")).patch ?? "", /similarity index 100%/);
+  assert.match((await readPatch(cwd, "tracked.ts")).patch ?? "", /\+const tracked = false;/);
+  assert.match((await readPatch(cwd, "词 file.ts")).patch ?? "", /\+const created = 3;/);
+  assert.deepEqual(await readPatch(cwd, "asset.bin"), { patch: null, reason: "This binary file has changed." });
+  await assert.rejects(readPatch(cwd, "../outside.txt"), /inside the project/);
+  await assert.rejects(readPatch(cwd, join(root, "outside.txt")), /inside the project/);
+});
+
+test("reads the working tree of an unborn branch and preserves staged changes reverted on disk", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pideck-review-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  assert.deepEqual(await listChanges(cwd), []);
+  git(cwd, "init", "-q");
+  const file = join(cwd, "file.txt");
+  await writeFile(file, "first\n");
+  git(cwd, "add", ".");
+  await writeFile(file, "second\n");
+  assert.match((await readPatch(cwd, "file.txt")).patch ?? "", /\+second/);
+  git(cwd, "commit", "-qm", "start");
+  await writeFile(file, "third\n");
+  git(cwd, "add", ".");
+  await writeFile(file, "first\n");
+  const patch = (await readPatch(cwd, "file.txt")).patch ?? "";
+  assert.match(patch, /-first\n\+third/);
+  assert.match(patch, /-third\n\+first/);
+});

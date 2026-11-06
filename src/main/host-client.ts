@@ -1,0 +1,129 @@
+import { utilityProcess } from "electron";
+import type { UtilityProcess } from "electron";
+import { fileURLToPath } from "node:url";
+import { shellEnvironment } from "../host/shell-env";
+import type { HostEvent } from "../shared/api";
+import type { FromHost, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
+
+type Pending = { resolve(value: unknown): void; reject(error: Error): void };
+
+export class HostClient {
+  private process?: UtilityProcess;
+  private ready?: Promise<void>;
+  private pending = new Map<number, Pending>();
+  private nextId = 0;
+  private stopping = false;
+  private restartAttempts = 0;
+
+  constructor(
+    private dataDir: string,
+    private keys: Record<string, string>,
+    private onEvent: (owner: number, event: HostEvent) => void,
+    private onRestart: () => void,
+  ) {}
+
+  start(): void {
+    if (this.stopping || this.process) return;
+    const child = utilityProcess.fork(fileURLToPath(new URL("../host/worker.js", import.meta.url)), [], {
+      env: shellEnvironment(),
+      stdio: "ignore",
+      serviceName: "Pideck workspace",
+    });
+    this.process = child;
+    const boot = Promise.withResolvers<void>();
+    this.ready = boot.promise;
+    void this.ready.catch(() => { /* requests report startup errors */ });
+
+    const timeout = setTimeout(() => child.kill(), 20_000);
+    const startedAt = Date.now();
+    const reconnecting = this.restartAttempts > 0;
+    let initialized = false;
+    let fatal = false;
+    child.on("message", (message: FromHost) => {
+      if (this.process !== child || this.stopping) return;
+      switch (message.type) {
+        case "ready":
+          clearTimeout(timeout);
+          initialized = true;
+          boot.resolve();
+          if (reconnecting) this.onRestart();
+          break;
+        case "fatal":
+          clearTimeout(timeout);
+          fatal = true;
+          boot.reject(new Error(message.error));
+          child.kill();
+          break;
+        case "event":
+          this.onEvent(message.owner, message.event);
+          break;
+        case "result": {
+          const entry = this.pending.get(message.id);
+          if (!entry) break;
+          this.pending.delete(message.id);
+          if (message.error !== undefined) entry.reject(new Error(message.error));
+          else entry.resolve(message.value);
+        }
+      }
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      if (this.process !== child) return;
+      this.process = undefined;
+      const error = new Error(initialized
+        ? "The workspace host disconnected."
+        : `The workspace host could not start (exit ${code}).`);
+      boot.reject(error);
+      for (const entry of this.pending.values()) entry.reject(error);
+      this.pending.clear();
+
+      if (initialized && Date.now() - startedAt >= 30_000) this.restartAttempts = 0;
+      if (!fatal && !this.stopping && this.restartAttempts < 5) {
+        const delay = Math.min(4_000, 250 * 2 ** this.restartAttempts++);
+        const restart = new Promise<void>(resolve => setTimeout(resolve, delay)).then(() => {
+          this.start();
+          return this.process ? this.ready : undefined;
+        });
+        this.ready = restart;
+        void restart.catch(() => { /* requests report startup errors */ });
+      }
+    });
+    this.post(child, { type: "start", dataDir: this.dataDir, keys: this.keys });
+  }
+
+  setKeys(keys: Record<string, string>) {
+    this.keys = keys;
+  }
+
+  async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C]): Promise<HostResult[C]> {
+    await this.ready;
+    const child = this.process;
+    if (!child || this.stopping) throw new Error("The workspace host is unavailable.");
+    const id = ++this.nextId;
+    const response = new Promise<unknown>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.post(child, { type: "request", id, owner, command, payload } as HostRequest);
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
+    });
+    return response as Promise<HostResult[C]>;
+  }
+
+  async close() {
+    this.stopping = true;
+    const child = this.process;
+    if (!child) return;
+    await new Promise<void>(resolve => {
+      const timeout = setTimeout(() => { child.kill(); resolve(); }, 3000);
+      child.once("exit", () => { clearTimeout(timeout); resolve(); });
+      this.post(child, { type: "shutdown" });
+    });
+  }
+
+  private post(child: UtilityProcess, message: ToHost) {
+    child.postMessage(message);
+  }
+}

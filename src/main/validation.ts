@@ -1,0 +1,90 @@
+import type { Command, Commands, Thinking } from "../shared/api";
+
+const thinking = new Set<Thinking>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const provider = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function string(value: unknown, limit: number): value is string {
+  return typeof value === "string" && value.length <= limit && !value.includes("\0");
+}
+
+function match(value: unknown, pattern: RegExp): boolean {
+  return typeof value === "string" && pattern.test(value);
+}
+
+function integer(value: unknown, min: number, max: number): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function empty(value: unknown): boolean {
+  return value === undefined;
+}
+
+function project(value: Record<string, unknown>): boolean {
+  return match(value.projectId, id);
+}
+
+function selection(value: Record<string, unknown>): boolean {
+  return project(value) && match(value.sessionId, id);
+}
+
+function size(value: Record<string, unknown>): boolean {
+  return integer(value.cols, 2, 500) && integer(value.rows, 1, 300);
+}
+
+function terminal(value: Record<string, unknown>): boolean {
+  return project(value) && match(value.terminalId, id);
+}
+
+function images(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 4) return false;
+  let total = 0;
+  for (const image of value) {
+    if (!object(image) || typeof image.mimeType !== "string" || !imageTypes.has(image.mimeType)
+      || typeof image.data !== "string" || !image.data.length || image.data.length % 4 !== 0) return false;
+    total += image.data.length;
+    if (total > 12_000_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return false;
+  }
+  return true;
+}
+
+const validators = {
+  "project:list": empty,
+  "project:open": empty,
+  "project:trust": (value) => object(value) && project(value),
+  "session:list": (value) => object(value) && project(value),
+  "session:create": (value) => object(value) && project(value)
+    && (value.title === undefined || string(value.title, 120)),
+  "model:list": empty,
+  "model:save-key": (value) => object(value) && match(value.provider, provider)
+    && string(value.key, 8192) && !/[\r\n]/.test(value.key) && value.key.trim().length > 0,
+  "chat:watch": (value) => object(value) && selection(value) && match(value.subscriptionId, id),
+  "chat:unwatch": (value) => object(value) && match(value.subscriptionId, id),
+  "chat:send": (value) => object(value) && selection(value) && string(value.text, 200_000)
+    && object(value.model) && match(value.model.provider, provider)
+    && string(value.model.id, 240) && value.model.id.length > 0
+    && thinking.has(value.thinking as Thinking) && images(value.images)
+    && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length)),
+  "chat:cancel": (value) => object(value) && selection(value),
+  "review:list": (value) => object(value) && project(value),
+  "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
+  "terminal:open": (value) => object(value) && project(value) && size(value),
+  "terminal:input": (value) => object(value) && terminal(value)
+    && typeof value.data === "string" && value.data.length <= 65536,
+  "terminal:resize": (value) => object(value) && terminal(value) && size(value),
+  "terminal:close": (value) => object(value) && terminal(value),
+} satisfies Record<Command, (value: unknown) => boolean>;
+
+export function isCommand(command: unknown): command is Command {
+  return typeof command === "string" && Object.hasOwn(validators, command);
+}
+
+export function validPayload<C extends Command>(command: C, value: unknown): value is Commands[C][0] {
+  return validators[command](value);
+}

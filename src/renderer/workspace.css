@@ -1,0 +1,240 @@
+.workspace-review {
+  display: flex;
+  flex: 0 0 clamp(340px, 42vw, 690px);
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--sidebar, #141619);
+  border-left: 1px solid var(--border, #303439);
+}
+
+.workspace-terminal {
+  display: flex;
+  flex: 0 0 clamp(156px, 30vh, 272px);
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-top: 1px solid var(--border, #303439);
+  background: var(--bg, #16181b);
+}
+
+.workspace-terminal[hidden] { display: none; }
+
+.workspace-panel-header {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  gap: 8px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border-soft, #25292d);
+}
+
+.workspace-panel-header h2 {
+  margin: 0;
+  color: var(--text, #ebede8);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workspace-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  min-height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--surface, #1c1f22);
+  color: var(--muted, #969c99);
+  font: 11px var(--mono, monospace);
+}
+
+.workspace-icon-button,
+.workspace-action,
+.workspace-inline-open {
+  color: var(--muted, #969c99);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.workspace-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.workspace-action {
+  padding: 5px 8px;
+  font-size: 12px;
+  border-color: var(--border, #303439);
+}
+
+.workspace-icon-button:hover:not(:disabled),
+.workspace-action:hover,
+.workspace-inline-open:hover {
+  color: var(--text, #ebede8);
+  background: var(--surface-hover, #24282b);
+}
+
+.workspace-icon-button:disabled { opacity: .48; cursor: default; }
+.workspace-refresh { margin-left: auto; }
+
+.workspace-empty {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--muted, #969c99);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.workspace-file-list {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 2px;
+  max-height: min(25vh, 216px);
+  overflow: auto;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-soft, #25292d);
+}
+
+.workspace-file-list button {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 9px;
+  padding: 5px 7px;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted, #969c99);
+  cursor: pointer;
+  text-align: left;
+  font: 12px var(--mono, monospace);
+}
+
+.workspace-file-list button:hover,
+.workspace-file-list button[aria-current="true"] {
+  color: var(--text, #ebede8);
+  background: var(--surface-hover, #24282b);
+}
+
+.workspace-file-list button[aria-current="true"] { border-color: var(--border, #303439); }
+
+.workspace-file-list button > span:last-child,
+.workspace-diff-toolbar > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-file-status {
+  flex: 0 0 25px;
+  color: #e8cc8e;
+  font-size: 10px;
+  text-align: center;
+}
+
+.workspace-file-status[data-status="A"],
+.workspace-file-status[data-status="?"] { color: var(--accent, #c9ee95); }
+.workspace-file-status[data-status="D"],
+.workspace-file-status[data-status="U"] { color: var(--danger, #ff9b96); }
+
+.workspace-diff-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border-soft, #25292d);
+  font: 12px var(--mono, monospace);
+  color: var(--text, #ebede8);
+}
+
+.workspace-segmented {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border, #303439);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.workspace-segmented button {
+  padding: 3px 7px;
+  background: transparent;
+  color: var(--muted, #969c99);
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font: 11px var(--font, sans-serif);
+}
+
+.workspace-segmented button:hover,
+.workspace-segmented button[aria-pressed="true"] {
+  background: var(--surface-hover, #24282b);
+  color: var(--text, #ebede8);
+}
+
+.workspace-review-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
+.workspace-diff {
+  display: block;
+  --diffs-bg-override: var(--bg, #16181b);
+  --diffs-font-family: var(--mono, monospace);
+  --diffs-font-size: 12px;
+  --diffs-line-height: 20px;
+}
+
+.workspace-diff + .workspace-diff { border-top: 1px solid var(--border, #303439); }
+
+.workspace-raw-patch {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text, #ebede8);
+  font: 12px/1.55 var(--mono, monospace);
+}
+
+.workspace-inline {
+  min-width: 0;
+  border: 1px solid var(--border, #303439);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--bg, #16181b);
+  color: var(--muted, #969c99);
+  font-size: 12px;
+}
+
+.workspace-inline-large { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; }
+.workspace-inline > summary { padding: 8px 10px; cursor: pointer; color: var(--text, #ebede8); }
+.workspace-inline > summary span { margin-left: 7px; color: var(--muted, #969c99); }
+.workspace-inline-scroll { overflow: auto; max-height: 250px; border-top: 1px solid var(--border-soft, #25292d); }
+.workspace-inline-open { margin: 4px 6px; padding: 4px; font-size: 11px; }
+
+.workspace-terminal .workspace-panel-header { flex-shrink: 0; min-height: 36px; }
+.workspace-terminal-status { flex: 0 1 auto; font-size: 11px; color: var(--muted, #969c99); }
+.workspace-terminal-status[data-state="failed"], .workspace-terminal-issue { color: var(--danger, #ff9b96); }
+.workspace-terminal-issue { margin: 0; padding: 3px 12px; font-size: 11px; }
+.workspace-terminal-body { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; padding: 6px 8px 2px; }
+.workspace-terminal-body > .xterm { height: 100%; }
+
+@media (max-width: 960px) {
+  .workspace-middle { position: relative; }
+  .workspace-review {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(100%, 480px);
+    z-index: 4;
+    box-shadow: -8px 0 24px #0006;
+  }
+}
