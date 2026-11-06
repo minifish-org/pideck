@@ -17,6 +17,18 @@ async function executable() {
   return resolve("release", "linux-unpacked", "pideck");
 }
 
+async function clickNativeMenu(app, id) {
+  await app.evaluate(async ({ BrowserWindow, Menu }, id) => {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(id);
+    if (!item) throw new Error(`Native menu item ${id} is missing.`);
+    const deadline = Date.now() + 5000;
+    while (!item.enabled && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (!item.enabled) throw new Error(`Native menu item ${id} is disabled.`);
+    const window = BrowserWindow.getAllWindows()[0];
+    item.click({}, window, window?.webContents);
+  }, id);
+}
+
 const path = await executable();
 const temporary = await mkdtemp(join(tmpdir(), "pideck-packaged-"));
 const data = join(temporary, "profile");
@@ -65,12 +77,31 @@ try {
 
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
+  const nativeMenu = await app.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu();
+    return {
+      sections: menu.items.map(item => item.label.replace("&", "")),
+      roles: menu.items.flatMap(item => item.submenu.items.map(child => child.role?.toLowerCase()).filter(Boolean)),
+      workspaceItemsEnabled: ["new-session", "toggle-review", "toggle-terminal", "focus-composer"].some(id => menu.getMenuItemById(id).enabled),
+    };
+  });
+  assert.deepEqual(nativeMenu.sections, process.platform === "darwin" ? ["Pideck", "File", "Edit", "View", "Window"] : ["File", "Edit", "View"]);
+  assert.equal(nativeMenu.workspaceItemsEnabled, false);
+  assert.ok(["undo", "redo", "cut", "copy", "paste", "selectall", "zoomin", "zoomout", "resetzoom"].every(role => nativeMenu.roles.includes(role)));
+  assert.ok(["reload", "forcereload", "toggledevtools", "services", "showsubstitutions", "startspeaking"].every(role => !nativeMenu.roles.includes(role)));
+  await page.evaluate(async () => {
+    window.pideck.updateMenu({ canCreateSession: true });
+    await window.pideck.invoke("project:list");
+  });
+  assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("new-session").enabled), false);
   await assert.rejects(page.evaluate(() => window.pideck.invoke("project:add", { directory: "/" })), /Invalid workspace request/);
   await assert.rejects(page.evaluate(() => window.pideck.invoke("model:auth-open", {
     flowId: crypto.randomUUID(), linkId: crypto.randomUUID(),
   })), /no longer active/);
 
-  const added = await page.evaluate(() => window.pideck.invoke("project:open"));
+  await clickNativeMenu(app, "open-project");
+  await page.getByRole("button", { name: "Review permissions", exact: true }).waitFor();
+  const [added] = await page.evaluate(() => window.pideck.invoke("project:list"));
   assert.equal(added.name, "smoke-project");
   assert.equal(added.trusted, false);
   const projectId = added.id;
@@ -88,17 +119,30 @@ try {
 
   // Reload through the shipped app to show the project and session created above.
   await page.reload();
-  await page.getByRole("button", { name: "smoke-project", exact: true }).click();
+  await page.getByRole("button", { name: "Switch project, current project smoke-project", exact: true }).waitFor();
   await page.getByRole("button", { name: "Smoke session", exact: true }).click();
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   await prompt.waitFor();
+  await prompt.blur();
+  await clickNativeMenu(app, "focus-composer");
+  await page.waitForFunction(() => document.activeElement?.id === "prompt");
   const modelList = await command("model:list");
   assert.ok(!JSON.stringify(modelList).includes("pideck-smoke-key"));
   const azure = modelList.find(model => model.provider === "azure" && model.id === "gpt-4.1");
   assert.equal(azure?.configured, true);
+  await clickNativeMenu(app, "settings");
+  const providers = page.getByRole("dialog", { name: "Model providers" });
+  await providers.getByRole("button", { name: "Close settings" }).click();
   const modelPicker = page.getByRole("button", { name: "Model", exact: true });
   await modelPicker.click();
   await page.getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
+  assert.equal(await app.evaluate(async ({ Menu }) => {
+    const ids = ["open-project", "settings", "new-session", "toggle-review", "toggle-terminal"];
+    const disabled = () => ids.every(id => !Menu.getApplicationMenu().getMenuItemById(id).enabled);
+    const deadline = Date.now() + 1000;
+    while (!disabled() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    return disabled();
+  }), true);
   await page.getByRole("button", { name: /GPT-4\.1.*Azure|Azure.*GPT-4\.1/i }).first().click();
   await prompt.fill("Edit example.ts and verify it.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -108,7 +152,7 @@ try {
   assert.ok(modelServer.requests.some(request => request.input.some(item =>
     item.type === "function_call_output" && String(item.output).includes("export const result = 'after'"))));
 
-  await page.getByRole("button", { name: /^(toggle )?(review|changes)$/i }).first().click();
+  await clickNativeMenu(app, "toggle-review");
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
   await page.getByRole("button", { name: "Split" }).click();
   await page.locator("diffs-container").filter({ hasText: "after" }).last().waitFor();
@@ -116,8 +160,9 @@ try {
   const highlighted = page.locator("diffs-container").filter({ hasText: "afterMarker" });
   await highlighted.locator("[data-line] span[style]").filter({ hasText: "export" }).first().waitFor();
   assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
+  assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("toggle-review").checked), true);
 
-  await page.getByRole("button", { name: /^(toggle )?terminal$/i }).first().click();
+  await clickNativeMenu(app, "toggle-terminal");
   await page.getByText("Shell running").waitFor();
   const terminal = page.locator(".xterm-helper-textarea");
   await terminal.focus();
@@ -145,12 +190,16 @@ try {
   await app.evaluate(({ dialog }, directory) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
   }, otherProject);
-  await page.getByRole("button", { name: "Open a project folder", exact: true }).click();
-  await page.getByRole("button", { name: "side-project", exact: true }).waitFor();
+  const projectPicker = page.getByRole("button", { name: /Switch project, current project/ });
+  await projectPicker.click();
+  await page.getByRole("button", { name: "Open folder…", exact: true }).click();
+  await page.getByRole("button", { name: "Switch project, current project side-project", exact: true }).waitFor();
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "hidden" });
+  await projectPicker.click();
   await page.getByRole("button", { name: "smoke-project", exact: true }).click();
   await page.locator(".xterm-rows").getByText("PROJECT_PTY_OK", { exact: true }).waitFor();
-  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "smoke-project");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "nav-project-picker");
+  await projectPicker.click();
   await page.getByRole("button", { name: "side-project", exact: true }).press("Backspace");
   await page.getByRole("button", { name: "side-project", exact: true }).waitFor({ state: "detached" });
 
@@ -220,8 +269,8 @@ try {
   });
   await reopenedPage.getByRole("button", { name: "Smoke session", exact: true }).click();
   await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
-  await reopenedPage.locator("summary[aria-label='Session actions']").click();
-  await reopenedPage.getByRole("button", { name: "Fork from latest turn" }).click();
+  await reopenedPage.getByRole("article", { name: "Pideck" }).filter({ hasText: "Recovered after host restart." })
+    .getByRole("button", { name: "Branch from here" }).click();
   const branch = reopenedPage.getByRole("button", { name: "Smoke session (fork)", exact: true });
   await branch.waitFor();
   const parentRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session", exact: true });
@@ -246,8 +295,9 @@ try {
   await branch.waitFor({ state: "detached" });
   await reopenedPage.waitForFunction(() => document.documentElement.dataset.survivorReattached === "true");
   await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
-  await reopenedPage.getByRole("button", { name: "Toggle terminal" }).click();
+  await reopenedPage.getByRole("button", { name: "Terminal", exact: true }).click();
   await reopenedPage.getByText("Shell running").waitFor();
+  await reopenedPage.getByRole("button", { name: /Switch project, current project/ }).click();
   const removeProject = reopenedPage.getByRole("button", { name: "Remove project smoke-project", exact: true });
   await removeProject.press("Enter");
   await reopenedPage.getByRole("heading", { name: "Open a project folder", exact: true }).waitFor();
@@ -263,13 +313,25 @@ try {
   await app.evaluate(({ dialog }, directory) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
   }, project);
-  const readded = await cleaned.window.evaluate(() => window.pideck.invoke("project:open"));
+  let restoredPage = cleaned.window;
+  if (process.platform === "darwin") {
+    await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.once("closed", () => resolve());
+      window.close();
+    }));
+    const reopenedWindow = app.waitForEvent("window");
+    await clickNativeMenu(app, "open-project");
+    restoredPage = await reopenedWindow;
+  } else await clickNativeMenu(app, "open-project");
+  await restoredPage.getByRole("button", { name: "Review permissions", exact: true }).waitFor();
+  const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
   assert.equal(readded.trusted, false);
-  assert.deepEqual(await cleaned.window.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
+  assert.deepEqual(await restoredPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);
-  console.log("Packaged Electron verified: coding and host recovery, native PTY, and permanent removal through the workspace and session controls.");
+  console.log("Packaged Electron verified: native menus, coding and host recovery, native PTY, and permanent workspace and session removal.");
 } catch (error) {
   if (errors.length) console.error("Renderer errors:", errors);
   if (modelServer?.failures.length) console.error("Provider fixture errors:", modelServer.failures);

@@ -3,10 +3,11 @@ import type { IpcMainInvokeEvent } from "electron";
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { eventChannel, invokeChannel, type RemovalTarget } from "../shared/transport";
+import { eventChannel, invokeChannel, menuStateChannel, type RemovalTarget } from "../shared/transport";
 import { safeAuthUrl } from "../host/auth-flows";
 import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
+import { installDesktopMenu, isMenuState } from "./menu";
 import { isCommand, validPayload } from "./validation";
 
 const appUrl = "pideck://app/index.html";
@@ -30,11 +31,12 @@ protocol.registerSchemesAsPrivileged([
 app.enableSandbox();
 
 let mainWindow: BrowserWindow | undefined;
+let desktopMenu: ReturnType<typeof installDesktopMenu> | undefined;
 let owner = 0;
 let host: HostClient | undefined;
 let exiting = false;
 
-function ownsFrame(event: IpcMainInvokeEvent, window: BrowserWindow): boolean {
+function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, window: BrowserWindow): boolean {
   return event.sender === window.webContents
     && event.senderFrame === window.webContents.mainFrame
     && event.senderFrame?.url === appUrl;
@@ -58,6 +60,7 @@ function openWindow() {
     },
   });
   mainWindow = window;
+  desktopMenu?.attach(window);
   let windowOwner = ++owner;
 
   const retire = () => { void host?.request(windowOwner, "owner:close", undefined).catch(() => {}); };
@@ -115,6 +118,12 @@ async function initialize() {
   });
   host = client;
   client.start();
+  const menu = installDesktopMenu(openWindow);
+  desktopMenu = menu;
+  ipcMain.on(menuStateChannel, (event, state: unknown) => {
+    const window = mainWindow;
+    if (window && !window.isDestroyed() && ownsFrame(event, window) && isMenuState(state)) menu.update(window, state);
+  });
 
   async function confirmRemoval(window: BrowserWindow, requestOwner: number, target: RemovalTarget) {
     const plan = await client.request(requestOwner, "removal:plan", target);

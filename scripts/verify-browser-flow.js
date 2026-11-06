@@ -12,7 +12,7 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-welcome.png" });
   await open.click();
   await page.waitForFunction(() => document.activeElement?.id === "workspace-trust");
-  await workspace.getByRole("button", { name: "Trust project" }).click();
+  await workspace.getByRole("button", { name: "Review permissions" }).click();
   await page.waitForFunction(() => document.activeElement?.id === "workspace-new-session");
   if (await page.getByRole("button", { name: "New session", exact: true }).count() !== 1) {
     throw new Error("First session has duplicate entry points.");
@@ -27,7 +27,9 @@ async page => {
   await provider.locator('option[value="openai"]').waitFor({ state: "attached" });
   if (await provider.inputValue() !== "") throw new Error("Provider setup chose an account without user input.");
   await provider.selectOption("openai");
-  await settings.getByLabel("Sign-in method").selectOption("oauth");
+  if (await settings.getByRole("combobox", { name: "Sign-in method" }).count()) throw new Error("Connection methods repeat an extra selection step.");
+  await settings.getByRole("button", { name: "Use API key", exact: true }).waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-providers.png" });
   await settings.getByRole("button", { name: "Sign in with browser" }).click();
   await settings.getByText("PIDE-CK99").waitFor();
   await settings.getByRole("button", { name: /Open fixture.invalid/ }).click();
@@ -54,25 +56,25 @@ async page => {
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
-  await page.getByLabel("Message delivery").selectOption("steer");
   await prompt.fill("Prefer a focused check.");
-  await page.getByRole("button", { name: "Steer the run" }).click();
+  await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
+  await page.getByRole("button", { name: "Steer run" }).click();
   await page.getByText("Prefer a focused check.", { exact: true }).waitFor();
   await prompt.fill("Report the verification.");
-  await page.getByRole("button", { name: "Queue follow-up" }).click();
+  await page.getByRole("button", { name: "Queue next" }).waitFor();
+  await prompt.press("Enter");
   await page.getByText("I updated the status and checked the result.").waitFor();
   await page.getByText("Checks passed.").waitFor();
 
   await page.getByRole("button", { name: "Load earlier messages" }).click();
   await page.getByText("An earlier coding request.").waitFor();
-  await page.getByLabel("Session actions").click();
-  await page.getByRole("button", { name: "Compact context…" }).click();
-  const compact = page.getByRole("dialog", { name: "Compact context" });
+  await page.getByRole("button", { name: "Summarize context" }).click();
+  const compact = page.getByRole("dialog", { name: "Summarize context" });
   await compact.getByLabel(/What should the summary preserve/).fill("Keep the testing details.");
-  await compact.getByRole("button", { name: "Compact context" }).click();
-  await page.getByText("Context compacted.").waitFor();
-  await page.getByLabel("Session actions").click();
-  await page.getByRole("button", { name: "Fork from latest turn" }).click();
+  await compact.getByRole("button", { name: "Summarize", exact: true }).click();
+  await page.getByText("Context summarized.").waitFor();
+  await page.getByRole("article", { name: "Pideck" }).filter({ hasText: "I updated the status and checked the result." })
+    .getByRole("button", { name: "Branch from here" }).click();
   const forked = nav.getByRole("button", { name: "Session 1 (fork)", exact: true });
   const original = nav.getByRole("button", { name: "Session 1", exact: true });
   await forked.waitFor();
@@ -81,14 +83,15 @@ async page => {
   await page.getByText("I updated the status and checked the result.").waitFor();
   if (await original.getAttribute("aria-current") !== "true") throw new Error("Session selection did not survive reload.");
   await forked.click();
+  await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
-  await page.getByRole("button", { name: "Toggle review" }).click();
-  await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
   const split = page.getByRole("button", { name: "Split", exact: true });
   await split.click();
   if (await split.getAttribute("aria-pressed") !== "true") throw new Error("Split layout did not activate.");
   await page.getByRole("complementary", { name: "Review changes" }).locator("diffs-container").filter({ hasText: "verified" }).last().waitFor();
   const review = page.getByRole("complementary", { name: "Review changes" });
+  if (await review.getByRole("button", { name: "Back to chat" }).count()) throw new Error("Wide review has a duplicate close action.");
   const viewport = page.viewportSize();
   const aligned = await page.evaluate(() => {
     const bounds = selector => document.querySelector(selector).getBoundingClientRect();
@@ -100,12 +103,17 @@ async page => {
   await page.setViewportSize({ width: 760, height: 560 });
   await page.waitForFunction(() => document.querySelector(".workspace-conversation").inert
     && document.querySelector("#review-panel").contains(document.activeElement));
+  await review.getByRole("button", { name: "Back to chat" }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-narrow.png" });
   await page.keyboard.press("Escape");
   await review.waitFor({ state: "detached" });
   await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
     && document.activeElement?.id === "toggle-review");
   await page.setViewportSize(viewport);
+  await page.getByRole("button", { name: "Open review", exact: true }).click();
+  await review.getByTitle("Assistant patch for example.ts").waitFor();
+  await review.getByRole("button", { name: "Project changes", exact: true }).click();
+  await review.getByTitle("Assistant patch for example.ts").waitFor({ state: "detached" });
   await page.getByRole("button", { name: "Open review", exact: true }).click();
   await review.getByTitle("Assistant patch for example.ts").waitFor();
   await original.click();
@@ -137,8 +145,22 @@ async page => {
   await original.waitFor({ state: "detached" });
   if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Reattaching a surviving session lost its draft.");
 
-  await page.getByRole("button", { name: "Toggle terminal" }).click();
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await page.getByText("Shell running").waitFor();
+  await page.getByRole("button", { name: "End shell", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByText("Shell running").waitFor();
+  const projectPicker = nav.getByRole("button", { name: /Switch project, current project/ });
+  if (await nav.getByRole("group", { name: "Saved projects" }).count()) throw new Error("The project list obscures sessions by default.");
+  await projectPicker.press("ArrowDown");
+  await page.getByRole("group", { name: "Saved projects" }).waitFor();
+  await page.waitForFunction(() => document.activeElement?.id.startsWith("nav-project-")
+    && document.activeElement?.id !== "nav-project-picker");
+  await nav.getByRole("button", { name: "Sample project", exact: true }).press("Escape");
+  if (await projectPicker.getAttribute("aria-expanded") !== "false" || !await projectPicker.evaluate(button => button === document.activeElement)) {
+    throw new Error("Dismissing project selection did not return keyboard focus.");
+  }
+  await projectPicker.click();
   const removeProject = nav.getByRole("button", { name: "Remove project Sample project", exact: true });
   const previousPreferences = await page.evaluate(() => localStorage.getItem("pideck.workspace.v1"));
   await removeProject.click();

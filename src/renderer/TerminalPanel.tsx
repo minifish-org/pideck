@@ -9,7 +9,7 @@ import { connectTerminal, type TerminalStatus } from "./terminal-connection";
 import "@xterm/xterm/css/xterm.css";
 import "./workspace.css";
 
-type TerminalProps = { project: Project; visible: boolean; focusOnShow?: boolean; onClose: () => void };
+type TerminalProps = { project: Project; visible: boolean; focusOnShow?: boolean };
 const opening: TerminalStatus = { type: "opening", message: "Starting shell…" };
 const searchOptions: ISearchOptions = {
   decorations: {
@@ -37,38 +37,34 @@ export function TerminalPanel(props: TerminalProps) {
   return <ProjectTerminal key={props.project.id} {...props} />;
 }
 
-function ProjectTerminal({ project, visible, focusOnShow, onClose }: TerminalProps) {
+function ProjectTerminal({ project, visible, focusOnShow }: TerminalProps) {
   const [activated, setActivated] = useState(false);
   useEffect(() => { if (visible) setActivated(true); }, [visible]);
 
   return <section className="workspace-terminal" aria-label="Project terminal" hidden={!visible}>
     {project.trusted && (visible || activated)
-      ? <TerminalInstance project={project} visible={visible} focusOnShow={focusOnShow} onClose={onClose} />
+      ? <TerminalInstance project={project} visible={visible} focusOnShow={focusOnShow} />
       : <>
-        <header className="workspace-panel-header">
-          <h2>Terminal</h2>
-          <div className="workspace-panel-actions">
-            <button type="button" className="workspace-icon-button" onClick={onClose}
-              aria-label="Hide terminal" title="Hide terminal"><Icon name="close" /></button>
-          </div>
-        </header>
+        <header className="workspace-panel-header"><h2>Terminal</h2></header>
         <p className="workspace-empty">Trust this project to open a terminal.</p>
       </>}
   </section>;
 }
 
-function TerminalInstance({ project, visible, focusOnShow = true, onClose }: TerminalProps) {
+function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProps) {
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon } | null>(null);
-  const previousFocus = useRef<HTMLElement | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const searchButton = useRef<HTMLButtonElement>(null);
+  const endShell = useRef<HTMLButtonElement>(null);
+  const cancelEnd = useRef<HTMLButtonElement>(null);
+  const restartShell = useRef<HTMLButtonElement>(null);
   const previousHost = useRef(0);
   const [host, setHost] = useState<{ generation: number; disconnected?: string }>({ generation: 0 });
   const [attempt, setAttempt] = useState<number | null>(0);
   const [status, setStatus] = useState<TerminalStatus>(opening);
   const [issue, setIssue] = useState("");
   const [finding, setFinding] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const searchWasOpen = useRef(finding);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ISearchResultChangeEvent>();
@@ -157,10 +153,6 @@ function TerminalInstance({ project, visible, focusOnShow = true, onClose }: Ter
 
   useEffect(() => {
     if (!visible) return;
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && active !== document.body && !element.current?.parentElement?.contains(active)) {
-      previousFocus.current = active;
-    }
     screen.current?.fit();
     if (focusOnShow) focusTerminalInput(searchInput.current, screen.current?.terminal);
   }, [visible, focusOnShow]);
@@ -181,6 +173,25 @@ function TerminalInstance({ project, visible, focusOnShow = true, onClose }: Ter
   }, [finding, query]);
 
   const restartable = status.type === "exited" || status.type === "failed" || status.type === "stopped";
+  const canEnd = !host.disconnected && !restartable;
+  useEffect(() => {
+    if (confirmEnd && (!visible || !canEnd)) setConfirmEnd(false);
+    else if (confirmEnd) cancelEnd.current?.focus();
+  }, [canEnd, confirmEnd, visible]);
+
+  function cancelEnding() {
+    setConfirmEnd(false);
+    requestAnimationFrame(() => endShell.current?.focus());
+  }
+
+  function stopShell() {
+    setAttempt(null);
+    setIssue("");
+    setStatus({ type: "stopped", message: "Shell ended" });
+    setConfirmEnd(false);
+    requestAnimationFrame(() => restartShell.current?.focus());
+  }
+
   const matchLabel = query
     ? !matches?.resultCount ? "No results"
       : matches.resultIndex < 0 ? `${matches.resultCount} results` : `${matches.resultIndex + 1} of ${matches.resultCount}`
@@ -189,13 +200,17 @@ function TerminalInstance({ project, visible, focusOnShow = true, onClose }: Ter
   const searchId = `terminal-find-${project.id}`;
   return <div className="workspace-terminal-content" onKeyDownCapture={event => {
     const findKey = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey;
-    if (findKey && !event.altKey && event.key.toLowerCase() === "f") {
+    if (event.key === "Escape" && confirmEnd) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelEnding();
+    } else if (!confirmEnd && findKey && !event.altKey && event.key.toLowerCase() === "f") {
       event.preventDefault();
       event.stopPropagation();
       setFinding(true);
-      searchInput.current?.select();
+      focusTerminalInput(searchInput.current);
     } else if (finding && event.key === "Escape" && event.target instanceof Element
-      && (event.target === searchButton.current || event.target.closest(".workspace-terminal-search"))) {
+      && event.target.closest(".workspace-terminal-search")) {
       event.preventDefault();
       event.stopPropagation();
       setFinding(false);
@@ -203,13 +218,20 @@ function TerminalInstance({ project, visible, focusOnShow = true, onClose }: Ter
   }}>
     <header className="workspace-panel-header">
       <h2>Terminal</h2>
-      <span className="workspace-terminal-status" data-state={host.disconnected ? "failed" : status.type} role="status"
-        title={project.directory}>{host.disconnected ?? status.message}</span>
-      <div className="workspace-panel-actions">
-        <button type="button" className="workspace-icon-button" ref={searchButton} onClick={() => setFinding(current => !current)}
-          aria-label="Find in terminal" aria-pressed={finding} aria-controls={finding ? searchId : undefined}
-          title={`Find in terminal (${isMac ? "⌘F" : "Ctrl+Shift+F"})`}><Search size={15} aria-hidden="true" /></button>
-        {finding && <div className="workspace-terminal-search" id={searchId} role="search" aria-label="Find in terminal scrollback">
+      <span className="workspace-terminal-status" data-state={host.disconnected ? "failed" : status.type} role="status">
+        {host.disconnected ?? status.message}
+      </span>
+      {confirmEnd && canEnd ? <div className="workspace-panel-actions workspace-end-shell" role="group" aria-label="Confirm end shell">
+        <span>End shell and interrupt commands?</span>
+        <button className="workspace-action" type="button" ref={cancelEnd} onClick={cancelEnding}>Cancel</button>
+        <button className="workspace-action workspace-action--danger" type="button" onClick={stopShell}>End shell</button>
+      </div> : <div className="workspace-panel-actions">
+        {restartable && !host.disconnected && <button className="workspace-action workspace-action--restart" type="button" ref={restartShell}
+          onClick={() => {
+            setAttempt(value => (value ?? 0) + 1);
+            screen.current?.terminal.focus();
+          }}>Restart shell</button>}
+        {finding ? <div className="workspace-terminal-search" id={searchId} role="search" aria-label="Find in terminal scrollback">
           <input type="search" ref={searchInput} aria-label="Find in terminal output" value={query}
             placeholder="Find in terminal…" onChange={event => setQuery(event.target.value)}
             onKeyDown={event => {
@@ -225,20 +247,13 @@ function TerminalInstance({ project, visible, focusOnShow = true, onClose }: Ter
           <button type="button" className="workspace-icon-button" disabled={!query}
             aria-label="Next terminal match" title="Next match (Enter)"
             onClick={() => screen.current?.search.findNext(query, searchOptions)}><Icon name="arrowDown" /></button>
-        </div>}
-        {restartable
-          ? <button className="workspace-action" type="button" disabled={Boolean(host.disconnected)}
-            onClick={() => setAttempt(value => (value ?? 0) + 1)}>Restart shell</button>
-          : <button className="workspace-icon-button" type="button" aria-label="Stop shell" title="Stop shell" onClick={() => {
-            setAttempt(null);
-            setIssue("");
-            setStatus({ type: "stopped", message: "Shell stopped" });
-          }}><Icon name="stop" /></button>}
-        <button className="workspace-icon-button" type="button" onClick={() => {
-          onClose();
-          previousFocus.current?.focus();
-        }} aria-label="Hide terminal" title="Hide terminal"><Icon name="close" /></button>
-      </div>
+          <button type="button" className="workspace-icon-button" aria-label="Close terminal search" title="Close search (Esc)"
+            onClick={() => setFinding(false)}><Icon name="close" /></button>
+        </div> : <button type="button" className="workspace-icon-button" onClick={() => setFinding(true)}
+          aria-label="Find in terminal" title={`Find in terminal (${isMac ? "⌘F" : "Ctrl+Shift+F"})`}><Search size={16} aria-hidden="true" /></button>}
+        {canEnd && !finding && <button className="workspace-icon-button workspace-end-button" type="button" ref={endShell}
+          aria-label="End shell" title="End shell" onClick={() => setConfirmEnd(true)}><Icon name="stop" /></button>}
+      </div>}
     </header>
     {issue && <p className="workspace-terminal-issue" role="alert">{issue}</p>}
     <div className="workspace-terminal-body" ref={element} />

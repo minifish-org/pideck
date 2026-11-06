@@ -1,7 +1,7 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff, Virtualizer, WorkerPoolContextProvider, type FileDiffOptions } from "@pierre/diffs/react";
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
-import { ArrowUpRight, RefreshCw, WrapText } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, RefreshCw, WrapText } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Project, ReviewFile, ReviewPatch } from "../shared/api";
 import { Icon } from "./Icons";
@@ -86,6 +86,7 @@ function InlinePatch({ patch, onOpen }: { patch: string; onOpen?: () => void }) 
 
 type ReviewPanelProps = {
   project: Project;
+  overlay: boolean;
   onClose: () => void;
   selectedPath?: string;
   selectedPatch?: string;
@@ -98,8 +99,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
   return <ProjectReview key={props.project.id} {...props} />;
 }
 
-function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshVersion, selectionVersion }: ReviewPanelProps) {
+function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, refreshVersion, selectionVersion }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
+  const requestedGitPath = selectedPatch ? undefined : requestedPath;
   const initialPath = selectedPatch ? editSelection : requestedPath;
   const [path, setPath] = useState<string | symbol | undefined>(initialPath);
   const [style, setStyle] = useState<DiffStyle>("unified");
@@ -113,15 +115,18 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
   const lastRefreshVersion = useRef(refreshVersion);
   const files = list?.files ?? [];
   const editPath = requestedPath ?? "Edit patch";
-  const showEdit = Boolean(selectedPatch && (path === editSelection || files.length === 0));
-  const file = showEdit ? undefined : typeof path === "string" ? files.find(candidate => candidate.path === path) : files[0];
-  const currentPath = file?.path;
+  const showEdit = Boolean(selectedPatch && path === editSelection);
   const listReady = list?.revision === revision;
+  const selectedFile = typeof path === "string" ? files.find(candidate => candidate.path === path) : undefined;
+  const missingRequestedFile = listReady && !list?.error && !selectedFile && requestedGitPath !== undefined && requestedGitPath === path;
+  const file = showEdit || missingRequestedFile ? undefined : selectedFile ?? files[0];
+  const currentPath = file?.path;
   const currentResult = result?.path === currentPath ? result?.value : undefined;
   const patch = showEdit ? selectedPatch : currentResult?.patch;
   const parsed = usePatch(patch);
   const query = filter.trim().toLocaleLowerCase();
   const visibleFiles = files.filter(candidate => !query || candidate.path.toLocaleLowerCase().includes(query));
+  const fileTabStop = visibleFiles.find(candidate => candidate.path === currentPath) ?? visibleFiles[0];
 
   useEffect(() => {
     setPath(initialPath);
@@ -146,24 +151,24 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
   }, []);
 
   useEffect(() => {
-    const overlay = window.matchMedia("(max-width: 960px)");
-    const focusOverlay = () => {
-      if (overlay.matches && !panel.current?.contains(document.activeElement)) panel.current?.focus();
-    };
-    focusOverlay();
-    overlay.addEventListener("change", focusOverlay);
-    return () => overlay.removeEventListener("change", focusOverlay);
-  }, []);
+    if ((overlay || selectionVersion !== undefined) && !panel.current?.contains(document.activeElement)) panel.current?.focus();
+  }, [overlay, selectionVersion]);
 
   useEffect(() => {
-    if (!project.trusted) return;
+    if (!project.trusted || showEdit) return;
     let active = true;
     void window.pideck.invoke("review:list", { projectId: project.id }).then(
       next => { if (active) setList({ files: next, revision }); },
       cause => { if (active) setList(previous => ({ files: previous?.files ?? [], revision, error: message(cause) })); },
     );
     return () => { active = false; };
-  }, [project.id, project.trusted, revision]);
+  }, [project.id, project.trusted, revision, showEdit]);
+
+  useEffect(() => {
+    if (!listReady || !list || list.error) return;
+    setPath(current => typeof current === "string" && current !== requestedGitPath
+      && !list.files.some(candidate => candidate.path === current) ? undefined : current);
+  }, [list, listReady, requestedGitPath]);
 
   useEffect(() => {
     if (!project.trusted || !listReady || !currentPath || list?.error) return;
@@ -180,11 +185,11 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
     };
   }, [project.id, project.trusted, currentPath, listReady, list?.error, revision]);
 
-  const loading = !listReady || Boolean(currentPath && !list?.error
-    && (result?.path !== currentPath || result.revision !== revision));
+  const loading = !showEdit && (!listReady || Boolean(currentPath && !list?.error
+    && (result?.path !== currentPath || result.revision !== revision)));
   const hasDiff = parsed.some(item => item.hunks.length > 0);
-  const displayedPath = currentPath ?? (showEdit ? editPath : typeof path === "string" ? path : undefined);
-  const selectionHidden = currentPath && !visibleFiles.some(candidate => candidate.path === currentPath);
+  const displayedPath = showEdit ? editPath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
+  const showFileList = !showEdit && (files.length > 1 || Boolean(missingRequestedFile && files.length) || Boolean(filter));
   return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes" onKeyDown={event => {
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -193,42 +198,36 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
     else onClose();
   }}>
     <header className="workspace-panel-header">
-      <h2>Changes</h2>
-      {files.length > 0 && <span className="workspace-count" title={`${files.length} changed ${files.length === 1 ? "file" : "files"}`}>
-        {files.length}
-      </span>}
-      {selectionHidden && <span className="workspace-review-selection" title={currentPath}>{currentPath}</span>}
+      {overlay && <button type="button" className="workspace-icon-button workspace-back" onClick={onClose}
+        aria-label="Back to chat" title="Back to chat (Esc)"><ArrowLeft size={17} aria-hidden="true" /></button>}
+      <h2>{showEdit ? "Assistant edit" : "Changes"}</h2>
+      {!showEdit && files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
       <div className="workspace-panel-actions">
-        {displayedPath && <div className="workspace-segmented" role="group" aria-label="Diff layout">
-          <button type="button" disabled={!hasDiff} aria-pressed={style === "unified"} onClick={() => setStyle("unified")}>Unified</button>
-          <button type="button" disabled={!hasDiff} aria-pressed={style === "split"} onClick={() => setStyle("split")}>Split</button>
-        </div>}
-        {displayedPath && <button type="button" className="workspace-icon-button" disabled={!hasDiff}
-          aria-pressed={wrap} aria-label="Wrap diff lines" title="Wrap diff lines"
-          onClick={() => setWrap(value => !value)}><WrapText size={15} aria-hidden="true" /></button>}
-        <button type="button" className="workspace-icon-button" onClick={() => setRevision(value => value + 1)}
-          disabled={!project.trusted || !listReady} aria-label="Refresh changes" title="Refresh changes">
-          <RefreshCw size={15} aria-hidden="true" />
-        </button>
-        <button type="button" className="workspace-icon-button" onClick={onClose} aria-label="Close review" title="Close review">
-          <Icon name="close" />
-        </button>
+        {showEdit ? <button type="button" className="workspace-action" onClick={() => {
+          setPath(requestedPath);
+          setRevision(value => value + 1);
+          panel.current?.focus();
+        }}>Project changes</button>
+          : <button type="button" className="workspace-icon-button" onClick={() => setRevision(value => value + 1)}
+            disabled={!project.trusted || !listReady} aria-label="Refresh changes" title="Refresh changes">
+            <RefreshCw size={16} aria-hidden="true" />
+          </button>}
       </div>
     </header>
     {!project.trusted ? <p className="workspace-empty">Trust this project to review its changes.</p>
-      : !list && !selectedPatch ? <p className="workspace-empty" role="status">Reading changes…</p>
+      : !list && !showEdit ? <p className="workspace-empty" role="status">Reading changes…</p>
       : <>
-        {list?.error && <p className="workspace-empty" role="alert">{list.error}</p>}
-        {(files.length > 7 || filter) && <div className="workspace-file-filter">
+        {!showEdit && list?.error && <p className="workspace-empty" role="alert">{list.error}</p>}
+        {showFileList && (files.length > 7 || filter) && <div className="workspace-file-filter">
           <input type="search" value={filter} placeholder="Filter changed files…" aria-label="Filter changed files"
             onChange={event => setFilter(event.target.value)} onKeyDown={event => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
-                nav.current?.querySelector("button")?.focus();
+                nav.current?.querySelector<HTMLButtonElement>('button[tabindex="0"]')?.focus();
               }
             }} />
         </div>}
-        {(files.length > 0 || selectedPatch) && <nav className="workspace-file-list" aria-label="Changed files" ref={nav} onKeyDown={event => {
+        {showFileList && <nav className="workspace-file-list" aria-label="Changed files" ref={nav} onKeyDown={event => {
           if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
           const items = Array.from(event.currentTarget.querySelectorAll("button"));
           const index = items.findIndex(item => item === document.activeElement);
@@ -238,34 +237,44 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
           items[next]?.focus();
           items[next]?.click();
         }}>
-          {selectedPatch && <button type="button" title={`Assistant patch for ${editPath}`} aria-label={`Assistant change for ${editPath}`}
-            aria-current={showEdit ? "true" : undefined} onClick={() => setPath(editSelection)}>
-            <Icon name="mark" className="workspace-file-icon workspace-file-icon--assistant" width={14} height={14} />
-            <FileLabel path={editPath} context="Assistant change" />
-            {showEdit && <ChangeCount files={parsed} />}
-          </button>}
           {visibleFiles.map(candidate => {
-            const status = candidate.status.trim();
             const selected = candidate.path === currentPath;
-            const label = `${candidate.oldPath ? `${candidate.oldPath} → ` : ""}${candidate.path} · ${fileStatus(candidate.status)}`;
+            const label = fileDescription(candidate);
             return <button key={candidate.path} type="button" title={label} aria-label={label}
+              tabIndex={candidate === fileTabStop ? 0 : -1}
               aria-current={selected ? "true" : undefined} onClick={() => setPath(candidate.path)}>
-              <Icon name="file" className="workspace-file-icon" width={14} height={14} />
+              <Icon name="file" className="workspace-file-icon" />
               <FileLabel path={candidate.path} />
-              {selected && <ChangeCount files={parsed} />}
-              <span className="workspace-file-status" data-status={status[0]}>{status}</span>
+              <FileStatus status={candidate.status} />
             </button>;
           })}
           {query && visibleFiles.length === 0 && <p className="workspace-filter-empty">No matching paths.</p>}
         </nav>}
         {displayedPath ? <>
+          <div className="workspace-diff-header">
+            <h3 title={showEdit ? `Assistant patch for ${editPath}` : file ? fileDescription(file) : displayedPath}
+              aria-description={file ? fileStatus(file.status) : undefined}>
+              <Icon name="file" className="workspace-file-icon" />
+              <FileLabel path={displayedPath} />
+              {file && !showFileList && <FileStatus status={file.status} />}
+            </h3>
+            <ChangeCount files={parsed} />
+            {hasDiff && <div className="workspace-panel-actions">
+              <div className="workspace-segmented" role="group" aria-label="Diff layout">
+                <button type="button" aria-pressed={style === "unified"} onClick={() => setStyle("unified")}>Unified</button>
+                <button type="button" aria-pressed={style === "split"} onClick={() => setStyle("split")}>Split</button>
+              </div>
+              <button type="button" className="workspace-icon-button" aria-pressed={wrap} aria-label="Wrap diff lines"
+                title="Wrap diff lines" onClick={() => setWrap(value => !value)}><WrapText size={16} aria-hidden="true" /></button>
+            </div>}
+          </div>
           {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
             <Virtualizer key={`${showEdit ? "assistant" : "git"}-${displayedPath}`} className="workspace-review-scroll">
               <PatchView patch={patch} files={parsed} style={style} wrap={wrap} />
             </Virtualizer>
-          </WorkerPoolContextProvider> : <div className="workspace-review-scroll">
+          </WorkerPoolContextProvider> : !list?.error && <div className="workspace-review-scroll">
             <p className="workspace-empty" role={loading ? "status" : undefined}>
-              {loading ? "Reading diff…" : currentResult?.reason ?? <>No current changes in <code>{displayedPath}</code>.</>}
+              {loading ? "Reading diff…" : currentResult?.reason ?? "This file has no current Git changes."}
             </p>
           </div>}
         </> : !list?.error && <p className="workspace-empty">No Git changes in this project.</p>}
@@ -273,13 +282,17 @@ function ProjectReview({ project, onClose, selectedPath, selectedPatch, refreshV
   </aside>;
 }
 
-function FileLabel({ path, context }: { path: string; context?: string }) {
+function FileStatus({ status }: { status: string }) {
+  const code = status.trim();
+  return <span className="workspace-file-status" data-status={code[0]} aria-hidden="true">{code}</span>;
+}
+
+function FileLabel({ path }: { path: string }) {
   const slash = path.lastIndexOf("/");
   const folder = slash > 0 ? path.slice(0, slash) : "";
-  const detail = [context, folder].filter(Boolean).join(" · ");
   return <span className="workspace-file-label">
     <span className="workspace-file-name">{path.slice(slash + 1)}</span>
-    {detail && <span className="workspace-file-detail">{detail}</span>}
+    {folder && <span className="workspace-file-detail">{folder}</span>}
   </span>;
 }
 
@@ -292,6 +305,10 @@ function normalizePath(directory: string, path: string | undefined): string | un
   const scoped = (windows ? value.toLowerCase().startsWith(root.toLowerCase()) : value.startsWith(root))
     ? value.slice(root.length) : value;
   return scoped.replace(/^(?:\.\/)+/, "");
+}
+
+function fileDescription({ path, oldPath, status }: ReviewFile) {
+  return `${oldPath ? `${oldPath} → ` : ""}${path} · ${fileStatus(status)}`;
 }
 
 function fileStatus(status: string) {

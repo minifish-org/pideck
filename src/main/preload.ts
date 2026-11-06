@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { Pideck } from "../shared/api";
-import { eventChannel, invokeChannel } from "../shared/transport";
+import { eventChannel, invokeChannel, menuActionChannel, menuStateChannel } from "../shared/transport";
 
 const pideck: Pideck = {
   platform: process.platform,
@@ -11,6 +11,13 @@ const pideck: Pideck = {
     ipcRenderer.on(eventChannel, handler);
     return () => { ipcRenderer.removeListener(eventChannel, handler); };
   },
+  onMenuAction(listener) {
+    if (typeof listener !== "function") throw new TypeError("A menu listener is required.");
+    const handler: Parameters<typeof ipcRenderer.on>[1] = (_event, action) => listener(action);
+    ipcRenderer.on(menuActionChannel, handler);
+    return () => { ipcRenderer.removeListener(menuActionChannel, handler); };
+  },
+  updateMenu: state => ipcRenderer.send(menuStateChannel, state),
 };
 
 contextBridge.exposeInMainWorld("pideck", pideck);

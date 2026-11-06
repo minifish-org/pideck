@@ -3,6 +3,8 @@ import type { Credential } from "@earendil-works/pi-ai";
 
 export const invokeChannel = "pideck:invoke";
 export const eventChannel = "pideck:event";
+export const menuActionChannel = "pideck:menu-action";
+export const menuStateChannel = "pideck:menu-state";
 
 type Forwarded = Exclude<Command, "project:open" | "project:remove" | "session:remove">;
 export type RemovalTarget = { projectId: string; sessionId?: string };

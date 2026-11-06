@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,6 +8,7 @@ import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import type { Attachment, Draft, SendAttempt } from './preferences';
+import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
 
@@ -64,7 +65,7 @@ function ToolCard({ block, onReview }: {
           : <>
               {block.output && <pre className="tool-output">{block.output}</pre>}
               {showReview && <button className="inline-action tool-review" type="button"
-                onClick={() => onReview({ path })}>Open in review <span aria-hidden="true">↗</span></button>}
+                onClick={() => onReview({ path })}>Open review <span aria-hidden="true">↗</span></button>}
             </>}
         {block.images?.map((image, index) => <ImageBlock key={index} image={image} alt={`Output from ${block.name}`} />)}
       </div>
@@ -87,9 +88,17 @@ const Message = memo(function Message({ message, onReview, onFork }: {
   onFork?: (entryId: number) => void;
 }) {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
+  const author = message.role === 'user' ? 'You' : 'Pideck';
+  const entryId = message.entryId;
   return (
-    <article className={`chat-entry chat-entry--${message.role}`} aria-label={message.role === 'user' ? 'You' : 'Pideck'} data-message-id={message.id}>
-      {message.role === 'assistant' && <span className="message-avatar"><Icon name="mark" /></span>}
+    <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id}>
+      <header className="message-heading">
+        <span className="message-author">{author}</span>
+        {onFork && entryId !== undefined && <button type="button" className="message-fork"
+          onClick={() => onFork(entryId)} title="Start a new session from this message" aria-label="Branch from here">
+          <Icon name="fork" width={14} height={14} /> <span>Branch from here</span>
+        </button>}
+      </header>
       <div className="message-content">
         {message.blocks.map((block, index) => {
           switch (block.type) {
@@ -107,8 +116,6 @@ const Message = memo(function Message({ message, onReview, onFork }: {
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
-      {onFork && message.entryId !== undefined && <button type="button" className="icon-button message-fork"
-        aria-label="Fork here" title="Fork from this message" onClick={() => onFork(message.entryId!)}><Icon name="fork" width={14} height={14} /></button>}
     </article>
   );
 });
@@ -145,46 +152,6 @@ async function readAttachment(file: File): Promise<Attachment> {
   });
 }
 
-type Delivery = NonNullable<SendChat['delivery']>;
-
-function SessionActions({ busy, available, onCompact, onFork }: {
-  busy: boolean;
-  available: boolean;
-  onCompact: () => void;
-  onFork?: () => void;
-}) {
-  const disclosure = useRef<HTMLDetailsElement>(null);
-  function choose(action: () => void) {
-    if (disclosure.current) {
-      disclosure.current.open = false;
-      disclosure.current.querySelector('summary')?.focus();
-    }
-    action();
-  }
-  return <div className="session-tools">
-    <details ref={disclosure} className="session-actions"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.currentTarget.open = false;
-          event.currentTarget.querySelector('summary')?.focus();
-        }
-      }}>
-      <summary className="icon-button" title="Session actions" aria-label="Session actions"><Icon name="more" /></summary>
-      <div className="session-actions-list">
-        <button type="button" disabled={!available || !onFork} onClick={() => onFork && choose(onFork)}>
-          <Icon name="fork" /> Fork from latest turn
-        </button>
-        <button type="button" disabled={!available || busy} onClick={() => choose(onCompact)}>
-          <Icon name="layers" /> Compact context…
-        </button>
-      </div>
-    </details>
-  </div>;
-}
-
 function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: (instructions: string) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [instructions, setInstructions] = useState('');
@@ -200,10 +167,8 @@ function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm:
 
   return <dialog className="settings-dialog" ref={dialog} aria-labelledby="compact-title"
     onCancel={(event) => { event.preventDefault(); close(); }}>
-    <div className="dialog-heading"><h2 id="compact-title">Compact context</h2>
-      <button type="button" className="icon-button" aria-label="Close compaction" onClick={close}><Icon name="close" /></button>
-    </div>
-    <p className="dialog-copy">Summarize earlier turns to make room in the model’s context. The conversation history stays available.</p>
+    <div className="dialog-heading"><h2 id="compact-title">Summarize context</h2></div>
+    <p className="dialog-copy">Free up room for the model by summarizing earlier turns. You can still read the full conversation.</p>
     <form onSubmit={(event) => {
       event.preventDefault();
       dialog.current?.close();
@@ -213,12 +178,10 @@ function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm:
         <textarea rows={3} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
       </label></div>
       <div className="dialog-actions"><button type="button" className="button" onClick={close}>Cancel</button>
-        <button type="submit" className="button button--primary"><Icon name="layers" /> Compact context</button></div>
+        <button type="submit" className="button button--primary">Summarize</button></div>
     </form>
   </dialog>;
 }
-
-const starter = 'Inspect this project and explain its structure, entry points, and how to run the tests.';
 
 type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
 
@@ -240,7 +203,7 @@ function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
 }
 
 export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft,
-  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
+  onModelChosen, onSettings, onModalChange, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
   project: Project;
   session: Session;
   models: ModelOption[];
@@ -251,6 +214,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   updateDraft: (update: (draft: Draft) => Draft) => void;
   onModelChosen: (key: string) => void;
   onSettings: (provider?: string) => void;
+  onModalChange: (open: boolean) => void;
   onRetryModels: () => void;
   onReview: (selection: ReviewSelection) => void;
   onWorkspaceChange: () => void;
@@ -264,7 +228,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const [compactDialog, setCompactDialog] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [notice, setNotice] = useState<string>();
-  const [delivery, setDelivery] = useState<Delivery>('follow-up');
   const [stopping, setStopping] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
   const [readingHistory, setReadingHistory] = useState(false);
@@ -281,6 +244,13 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
   const { text, attachments } = draft;
 
+  const modalOpen = picker || compactDialog;
+  useLayoutEffect(() => {
+    if (!modalOpen) return;
+    onModalChange(true);
+    return () => onModalChange(false);
+  }, [modalOpen, onModalChange]);
+
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
   const busy = view?.status === 'running' || view?.status === 'cancelling';
   const agentCompacting = compacting || view?.activity?.kind === 'compacting';
@@ -295,10 +265,13 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const desiredThinking = busy ? view?.thinking : draft.thinking ?? (model && modelKey(model) === activeKey ? view?.thinking : undefined);
   const thinking = desiredThinking && model?.thinking.includes(desiredThinking) ? desiredThinking
     : model?.thinking.includes('off') ? 'off' : model?.thinking[0] ?? 'off';
+  const hasDraft = Boolean(text.trim() || attachments.length);
+  const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
   const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured)
-    && Boolean(text.trim() || attachments.length) && (!attachments.length || Boolean(model?.supportsImages));
-  const latestFork = view?.messages.findLast(({ entryId }) => entryId !== undefined)?.entryId;
+    && hasDraft && (!attachments.length || Boolean(model?.supportsImages));
+  const canCompact = connected && !busy && !agentCompacting && Boolean(activeKey)
+    && Boolean(view?.hasEarlier || view?.messages.some(({ role }) => role === 'assistant'));
   const gaps = view?.gaps ?? [];
 
   useLayoutEffect(() => {
@@ -370,19 +343,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     toolStates.current = next;
   }, [connected, onWorkspaceChange, view]);
 
-  async function send(event: FormEvent) {
-    event.preventDefault();
-    if (!canSend || !model) {
-      if (text.trim() || attachments.length) {
-        if (!connected) update({ error: 'Reconnect before sending. Your draft is still here.' });
-        else if (modelsReady && !model?.configured) update({ error: modelName
-          ? 'The selected model is unavailable. Check its provider or choose another model.'
-          : 'Connect a model provider to send this draft.' });
-        else if (attachments.length && !model?.supportsImages) update({ error: 'Choose a model that accepts images or remove the attachments.' });
-      }
-      return;
-    }
-    const deliveryMode = busy ? delivery : 'send';
+  async function send(whileRunning: 'follow-up' | 'steer' = 'follow-up') {
+    if (!canSend || !model) return;
+    const deliveryMode: SendChat['delivery'] = busy ? whileRunning : 'send';
     const previous = draft.attempt;
     const requestId = previous?.text === text && previous.attachments === attachments
       ? previous.input.requestId : crypto.randomUUID();
@@ -399,10 +362,10 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
       },
     };
     update({ attempt, sending: true, error: undefined });
+    textarea.current?.focus({ preventScroll: true });
     try {
       await window.pideck.invoke('chat:send', attempt.input);
       updateDraft((current) => completeAttempt(current, attempt));
-      setDelivery('follow-up');
       jumpToLatest();
       onSent();
     } catch (error) {
@@ -467,11 +430,11 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     update({ error: undefined });
     try {
       const result = await window.pideck.invoke('chat:compact', { ...selection, instructions: instructions || undefined });
-      if (result === 'failed') update({ error: 'Context compaction failed. Your conversation history is still available.' });
+      if (result === 'failed') update({ error: 'Couldn’t summarize context. You can still read the full conversation.' });
       else setNotice({
-        compacted: 'Context compacted.',
-        'no-change': 'There is no earlier context to compact yet.',
-        stopped: 'Context compaction stopped.',
+        compacted: 'Context summarized.',
+        'no-change': 'There’s no earlier context to summarize yet.',
+        stopped: 'Summarization stopped.',
       }[result]);
     } catch (error) {
       update({ error: readableError(error) });
@@ -502,25 +465,27 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const retryTime = view?.activity?.kind === 'retrying' && view.activity.retryAt
     ? new Date(view.activity.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined;
   const runStatus = stopping || view?.status === 'cancelling' ? 'Stopping…'
-    : agentCompacting ? 'Compacting context…'
+    : agentCompacting ? 'Summarizing context…'
     : view?.activity?.kind === 'retrying' ? retryTime ? `Model retry scheduled for ${retryTime}` : 'Retrying the model…'
     : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
     : busy ? 'Pideck is working' : undefined;
   const composerStatus = draft.sending ? 'Sending…'
     : draft.reading ? 'Attaching images…'
     : attachments.length > 0 && model && !model.supportsImages ? 'Choose a model that accepts images.'
-    : setupRequired && modelName ? `${modelName} is unavailable.`
     : !busy && modelsReady && !setupRequired && modelName && !model?.configured
       ? <><span>Selected model unavailable</span><button className="inline-action" type="button"
-        onClick={() => onSettings(desiredProvider)}>Provider settings</button></>
-      : busy && !agentCompacting && delivery === 'steer' ? 'Steer sends guidance to the current run.' : undefined;
-  const submitLabel = busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send';
+        onClick={() => onSettings(desiredProvider)}>Connect {desiredProvider ? providerLabel(desiredProvider) : 'provider'}</button></>
+      : undefined;
+  const queueing = busy && !agentCompacting;
+  const submitLabel = queueing ? 'Queue next' : 'Send';
 
   return (
-    <main className="chat" aria-label="Conversation">
-      {actionsSlot && hasMessages && createPortal(
-        <SessionActions busy={busy || agentCompacting} available={connected && !forking}
-          onCompact={() => setCompactDialog(true)} onFork={latestFork !== undefined ? () => void fork(latestFork) : undefined} />,
+    <main className={`chat${empty ? ' chat--empty' : ''}`} aria-label="Conversation">
+      {actionsSlot && canCompact && createPortal(
+        <button className="icon-button session-context-button" type="button" aria-label="Summarize context" aria-haspopup="dialog"
+          title="Summarize earlier turns to free up model context" onClick={() => setCompactDialog(true)}>
+          <Icon name="layers" /> <span>Summarize context</span>
+        </button>,
         actionsSlot,
       )}
       {!connected && (
@@ -530,7 +495,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
           {connectionError && <button className="button" type="button" onClick={retry}>Reconnect</button>}
         </div>
       )}
-      <div className={`chat-scroll ${hasMessages || view?.error || runStatus ? '' : 'chat-scroll--empty'}`} ref={scroll}
+      <div className={`chat-scroll${empty ? ' chat-scroll--empty' : ''}`} ref={scroll}
         onScroll={(event) => {
           const element = event.currentTarget;
           const previous = geometry.current;
@@ -542,7 +507,12 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
           }
           setJumpVisible(!pinned.current);
         }}>
-        {hasMessages || view?.error || runStatus ? (
+        {empty ? (
+          <div className="chat-welcome">
+            <h1>What would you like to work on?</h1>
+            <p>{setupRequired ? 'Connect a model provider to send your first message.' : 'Ask about the codebase or describe a change.'}</p>
+          </div>
+        ) : hasMessages || view?.error ? (
           <div className="chat-thread" ref={thread}>
             {view?.hasEarlier && <button className="button history-button" type="button" disabled={!connected || readingHistory}
               onClick={() => void showEarlier()}>{readingHistory ? 'Loading history…' : 'Load earlier messages'}</button>}
@@ -554,28 +524,21 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
               </div>
             ))}
             {renderGaps()}
-            {runStatus && <div className="run-state" role="status"><span className="run-state-dot" />{runStatus}</div>}
             {view?.error && <div className="notice" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
           </div>
-        ) : (
-          <div className="chat-welcome">
-            <div className="chat-welcome-content">
-              <Icon className="chat-welcome-mark" name="mark" width={26} height={26} />
-              <h1>What are we building?</h1>
-              <p>{setupRequired ? 'Connect a model provider to start working in this project.' : 'Ask about the codebase or describe a change.'}</p>
-              {model?.configured && <button type="button" className="button chat-starter" disabled={Boolean(text.trim())}
-                onClick={() => { update({ text: starter, error: undefined }); textarea.current?.focus(); }}>
-                <Icon name="code" width={14} height={14} /> Explore this project
-              </button>}
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
       {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" onClick={jumpToLatest}><Icon name="arrowDown" /> Latest</button></div>}
       <div className="composer-wrap">
-        {view?.queued?.length ? <div className="queued-list" aria-label="Queued messages">
-          {view.queued.map((item) => <div key={item.id}><span>{item.delivery === 'steer' ? 'Steer' : 'Follow-up'}</span><span title={item.preview}>{item.preview}</span></div>)}
-        </div> : null}
+        {runStatus && <div className="composer-run">
+          <div className="run-state" role="status"><span className="run-state-dot" />{runStatus}</div>
+          <button className="composer-stop" type="button" onClick={cancel}
+            title={agentCompacting ? 'Stop summarizing' : 'Stop the run'} aria-label={agentCompacting ? 'Stop summarizing' : 'Stop the run'}
+            disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
+        </div>}
+        {view?.queued?.length ? <ul className="queued-list" aria-label="Queued messages">
+          {view.queued.map((item) => <li key={item.id}><span>{item.delivery === 'steer' ? 'Steering' : 'Up next'}</span><span title={item.preview}>{item.preview}</span></li>)}
+        </ul> : null}
         {(draft.error || modelsError || notice) && <div className={`notice composer-notice ${draft.error || modelsError ? '' : 'notice--info'}`}
           role={draft.error || modelsError ? 'alert' : 'status'}>
           <Icon name={draft.error || modelsError ? 'alert' : 'check'} /><span>{draft.error ?? modelsError ?? notice}</span>
@@ -585,7 +548,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
               update({ error: undefined }); setNotice(undefined);
             }}><Icon name="close" /></button>}
         </div>}
-        <form className="composer" ref={form} onSubmit={send}>
+        <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {attachments.length > 0 && <div className="attachments">
             {attachments.map((attachment, index) => (
               <div className="attachment" key={index} title={attachment.name}>
@@ -597,7 +560,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             ))}
           </div>}
           <textarea ref={textarea} id="prompt" value={text} maxLength={200000} rows={2} aria-label="Message Pideck"
-            placeholder={busy && !agentCompacting ? 'Draft a follow-up or steer the current run…' : 'Message Pideck…'}
+            placeholder={queueing ? 'Write a follow-up…' : 'Message Pideck…'}
             onChange={(event) => update({ text: event.target.value, error: undefined })}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
@@ -608,7 +571,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             onPaste={(event) => {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
               if (images.length) {
-                if (model?.supportsImages) {
+                if (model?.configured && model.supportsImages) {
                   event.preventDefault();
                   void addFiles(images);
                 } else if (!event.clipboardData.getData('text/plain')) {
@@ -618,46 +581,38 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             }} />
           <div className="composer-controls">
             <div className="composer-models">
-              {setupRequired
-                ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
-                    <Icon name="key" width={14} height={14} /> Connect a provider
-                  </button>
-                : <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
-                    disabled={!models.length || busy}
-                    title={modelName ? `${desiredProvider ? providerLabel(desiredProvider) + ' · ' : ''}${modelName}` : 'Choose a model'}
-                    onClick={() => setPicker(true)}>
-                    <span>{modelName ?? (modelsReady ? 'Choose model' : 'Loading models…')}</span>
-                    {!busy && <Icon name="down" width={12} height={12} />}
-                  </button>}
-              {model && model.thinking.length > 1 && !busy && <div className="select-shell thinking-select">
-                <select aria-label="Thinking level" title="Thinking level" value={thinking}
-                  onChange={(event) => update({ thinking: event.target.value as Thinking })}>
-                  {model.thinking.map((level) => <option key={level} value={level}>Thinking · {thinkingLabels[level]}</option>)}
-                </select>
-                <Icon name="down" width={12} height={12} />
-              </div>}
-            </div>
-            <div className="composer-actions">
-              {busy && !agentCompacting && <div className="select-shell delivery-select">
-                <select aria-label="Message delivery" value={delivery} onChange={(event) => setDelivery(event.target.value as Delivery)}>
-                  <option value="follow-up">Follow-up</option><option value="steer">Steer</option>
-                </select><Icon name="down" width={12} height={12} />
-              </div>}
-              {model?.supportsImages && <>
+              {model?.configured && model.supportsImages && <>
                 <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
                   onChange={(event) => {
                     const files = [...(event.target.files ?? [])];
                     event.target.value = '';
                     void addFiles(files);
                   }} />
-                <button className="icon-button" type="button" title="Attach images" aria-label="Attach images"
+                <button className="icon-button composer-attach" type="button" title="Attach images" aria-label="Attach images"
                   disabled={draft.reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
               </>}
-              {(busy || agentCompacting) && <button className="button send-button stop-button" type="button" onClick={cancel}
-                title={agentCompacting ? 'Stop compaction' : 'Stop the run'} aria-label={agentCompacting ? 'Stop compaction' : 'Stop the run'}
-                disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>}
+              {busy || agentCompacting ? modelName && <span className="composer-current-model" title={modelName}>{modelName}</span> : setupRequired
+                ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
+                    <Icon name="key" width={14} height={14} /> Connect a provider
+                  </button>
+                : models.length > 0 ? <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
+                    title={modelName ? `${desiredProvider ? providerLabel(desiredProvider) + ' · ' : ''}${modelName}` : 'Choose a model'}
+                    onClick={() => setPicker(true)}>
+                    <span>{modelName ?? 'Choose a model'}</span><Icon name="down" width={12} height={12} />
+                  </button> : !modelsError && <span className="composer-current-model">Loading models…</span>}
+              {model?.configured && model.thinking.length > 1 && !busy && !agentCompacting && <div className="select-shell thinking-select">
+                <select aria-label="Thinking level" title={`Thinking level: ${thinkingLabels[thinking]}`} value={thinking}
+                  onChange={(event) => update({ thinking: event.target.value as Thinking })}>
+                  {model.thinking.map((level) => <option key={level} value={level}>Thinking {thinkingLabels[level].toLowerCase()}</option>)}
+                </select>
+                <Icon name="down" width={12} height={12} />
+              </div>}
+            </div>
+            <div className="composer-actions">
+              {queueing && <button className="button composer-steer" type="button" aria-label="Steer run"
+                title="Guide the current run at its next turn boundary" disabled={!canSend} onClick={() => void send('steer')}>Steer run</button>}
               <button className="button button--primary send-button" type="submit" title={`${submitLabel} (Enter)`} aria-label={submitLabel}
-                disabled={!canSend}><Icon name="arrowUp" /></button>
+                disabled={!canSend}>{submitLabel}<Icon name="arrowUp" width={14} height={14} /></button>
             </div>
           </div>
         </form>
@@ -665,11 +620,13 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
       </div>
       {picker && <ModelPicker models={models} selected={model} onClose={() => setPicker(false)} onChoose={(option) => {
         const key = modelKey(option);
-        update({ model: key, thinking: undefined, error: undefined });
-        if (option.configured) onModelChosen(key);
         setPicker(false);
         if (!option.configured) onSettings(option.provider);
-        else textarea.current?.focus();
+        else {
+          update({ model: key, thinking: undefined, error: undefined });
+          onModelChosen(key);
+          textarea.current?.focus();
+        }
       }} />}
       {compactDialog && <CompactDialog onClose={() => setCompactDialog(false)} onConfirm={compact} />}
     </main>

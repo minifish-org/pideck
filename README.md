@@ -11,9 +11,9 @@ npm ci
 npm run dev
 ```
 
-Open a project folder, confirm that you trust it, and create a session. **Model settings** lists the chat providers registered by pi-ai and offers each provider’s available connection methods. These may include an API key, browser sign-in, a device code, or a provider-specific configuration prompt. The model picker shows the native catalog and offers the thinking levels supported by each model. Use **Refresh catalog** for providers with dynamic model lists.
+Open a project folder, review its permissions, and create a session. The project switcher at the top of the sidebar lists your saved folders and lets you open another one. **Model providers** offers each provider’s available connection methods. These may include an API key, browser sign-in, a device code, or a provider-specific configuration prompt. The model picker shows the native catalog and offers the thinking levels supported by each model. Connected providers with dynamic catalogs can refresh their model list.
 
-During a run, **Steer** sends an instruction at Durable’s next turn boundary. **Queue next** runs the input as a follow-up. The conversation menu can compact model context or fork from a committed turn. Use **Load earlier** to open more of the transcript. The full conversation is stored in SQLite.
+During a run, **Steer run** sends an instruction at Durable’s next turn boundary. **Queue next** runs the input as a follow-up. Use **Summarize context** to free up model context and **Branch from here** on a committed message to create a separate session. **Load earlier** opens more of the transcript. The full conversation is stored in SQLite.
 
 **Remove** is available beside each project and session. Session removal clears its conversation, tool output, and draft. Remove any branches before removing their parent session. Project removal stops its terminal and clears all its sessions and local workspace settings. Files in the project folder are kept. Reopening a removed folder starts a new workspace and asks for trust again. Finish or stop work in other sessions before removing stored conversation data.
 
@@ -25,7 +25,7 @@ Provider credentials are encrypted through the operating system’s credential s
 | --- | --- |
 | Open folder | ⌘/Ctrl+O |
 | New session | ⌘/Ctrl+N |
-| Open settings | ⌘/Ctrl+, |
+| Open model providers | ⌘/Ctrl+, |
 | Toggle navigation | ⌘/Ctrl+Shift+B |
 | Toggle review | ⌘/Ctrl+Shift+D |
 | Toggle terminal | ⌘/Ctrl+` |

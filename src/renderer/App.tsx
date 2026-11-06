@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { ModelOption, Project, Selection, Session } from '../shared/api';
+import type { MenuAction, ModelOption, Project, Selection, Session } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
@@ -28,7 +28,7 @@ function RemoveRowButton({ label, current, disabled, onClick }: {
 }
 
 function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
-  if (!(event.target instanceof HTMLButtonElement) || !event.target.classList.contains('nav-row')) return;
+  if (!(event.target instanceof HTMLButtonElement) || !event.target.matches('.nav-item > .nav-row')) return;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
   if (event.key === 'Delete' || event.key === 'Backspace') {
     const remove = event.target.nextElementSibling;
@@ -39,7 +39,7 @@ function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
     }
     return;
   }
-  const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.nav-row')];
+  const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.nav-item > .nav-row')];
   const index = rows.indexOf(event.target);
   const positions: Record<string, number> = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: rows.length - 1 };
   const next = Object.hasOwn(positions, event.key) ? positions[event.key] : undefined;
@@ -77,6 +77,7 @@ function Desktop() {
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 960px)').matches);
   const reviewOpener = useRef<HTMLElement | null>(null);
   const [settings, setSettings] = useState<{ provider?: string }>();
+  const [chatModalOpen, setChatModalOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [workspaceEpoch, refreshWorkspace] = useState(0);
   const [sessionsEpoch, refreshSessions] = useState(0);
@@ -84,6 +85,9 @@ function Desktop() {
   const [opening, setOpening] = useState(false);
   const [trusting, setTrusting] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [projectPicker, setProjectPicker] = useState(false);
+  const projectPickerArea = useRef<HTMLElement>(null);
+  const projectPickerTrigger = useRef<HTMLButtonElement>(null);
 
   const { navigation } = preferences;
   const project = projects?.find(({ id }) => id === preferences.projectId) ?? projects?.[0];
@@ -97,6 +101,9 @@ function Desktop() {
   const sessionsIssue = sessionsError?.projectId === projectId ? sessionsError?.message : undefined;
   const activeReview = review?.projectId === projectId ? review : undefined;
   const terminalVisible = Boolean(projectId && terminals[projectId]);
+  const canUseWorkspace = Boolean(project?.trusted && !removingProject);
+  const canCreateSession = canUseWorkspace && Boolean(sessions) && !creating;
+  const showProviders = models.some(({ configured }) => configured) || !session;
   const reviewOverlaysChat = narrow && Boolean(project?.trusted && activeReview);
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
@@ -107,6 +114,15 @@ function Desktop() {
     viewport.addEventListener('change', update);
     return () => viewport.removeEventListener('change', update);
   }, []);
+
+  useEffect(() => {
+    if (!projectPicker) return;
+    function dismiss(event: PointerEvent) {
+      if (event.target instanceof Node && !projectPickerArea.current?.contains(event.target)) setProjectPicker(false);
+    }
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [projectPicker]);
 
   useEffect(() => {
     let active = true;
@@ -184,20 +200,29 @@ function Desktop() {
     if (!target || (target instanceof HTMLButtonElement && target.disabled)) return;
     target.focus();
     setFocusWorkspace(undefined);
-  }, [focusWorkspace, project, session, trusting, opening]);
+  }, [focusWorkspace, project, session, sessions, trusting, opening]);
 
   useLayoutEffect(() => {
     if (!removalFocus) return;
     const targetId = removalFocus === 'session'
       ? sessionId ? `nav-session-${sessionId}` : 'workspace-new-session'
-      : projectId ? `nav-project-${projectId}` : 'workspace-open-project';
+      : projectId ? projectPicker ? `nav-project-${projectId}` : 'nav-project-picker' : 'workspace-open-project';
     const target = document.getElementById(targetId);
     (target instanceof HTMLButtonElement && !target.disabled ? target : document.getElementById('toggle-navigation'))?.focus();
     setRemovalFocus(undefined);
-  }, [removalFocus, projectId, sessionId]);
+  }, [removalFocus, projectId, projectPicker, sessionId]);
 
   function toggleNavigation() {
+    if (showNavigation && document.activeElement?.closest('.navigation')) {
+      document.getElementById('toggle-navigation')?.focus();
+    }
+    setProjectPicker(false);
     setPreferences((current) => ({ ...current, navigation: !current.navigation }));
+  }
+
+  function closeProjectPicker(restoreFocus = false) {
+    if (restoreFocus) projectPickerTrigger.current?.focus();
+    setProjectPicker(false);
   }
 
   function selectProject(id: string) {
@@ -257,6 +282,7 @@ function Desktop() {
       if (result) {
         saveProject(result);
         selectProject(result.id);
+        closeProjectPicker();
         setFocusWorkspace(result.id);
       }
     } catch (cause) {
@@ -298,6 +324,7 @@ function Desktop() {
       setSessionList((previous) => previous?.projectId === project.id
         ? { projectId: project.id, items: [created, ...previous.items] } : previous);
       selectSession(project.id, created.id);
+      if (reviewOverlaysChat) setReview(undefined);
       setFocusedSession({ projectId: project.id, sessionId: created.id });
       refreshSessions((current) => current + 1);
     } catch (cause) {
@@ -442,92 +469,154 @@ function Desktop() {
     document.getElementById('prompt')?.focus();
   }
 
+  function handleMenuAction(action: MenuAction) {
+    if (document.querySelector('dialog[open]')) return;
+    switch (action) {
+      case 'open-project': void openProject(); break;
+      case 'new-session': void createSession(); break;
+      case 'settings': setSettings({}); break;
+      case 'toggle-navigation': if (project) toggleNavigation(); break;
+      case 'toggle-review': toggleReview(); break;
+      case 'toggle-terminal': toggleTerminal(); break;
+      case 'focus-composer': if (!reviewOverlaysChat) focusComposer(); break;
+    }
+  }
+
+  const modalOpen = Boolean(settings || chatModalOpen);
+  const reviewVisible = Boolean(activeReview);
   useEffect(() => {
+    const unsubscribe = api.onMenuAction?.(handleMenuAction);
     function handleShortcut(event: KeyboardEvent) {
       if (!(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.repeat || event.defaultPrevented) return;
       const key = event.key.toLowerCase();
       if (document.querySelector('dialog[open]')) return;
       const inTerminal = event.target instanceof Element && Boolean(event.target.closest('.xterm'));
       if (!isMac && inTerminal && !event.shiftKey && event.code !== 'Backquote') return;
-      if (event.shiftKey && key === 'b') toggleNavigation();
-      else if (event.shiftKey && key === 'd') toggleReview();
+      let action: MenuAction;
+      if (event.shiftKey && key === 'b') action = 'toggle-navigation';
+      else if (event.shiftKey && key === 'd') action = 'toggle-review';
       else if (event.shiftKey) return;
-      else if (event.code === 'Backquote') toggleTerminal();
-      else if (key === 'o') void openProject();
-      else if (key === 'n') void createSession();
-      else if (key === ',') setSettings({});
-      else if (key === 'l') focusComposer();
+      else if (event.code === 'Backquote') action = 'toggle-terminal';
+      else if (key === 'o') action = 'open-project';
+      else if (key === 'n') action = 'new-session';
+      else if (key === ',') action = 'settings';
+      else if (key === 'l') action = 'focus-composer';
       else return;
       event.preventDefault();
       event.stopPropagation();
+      handleMenuAction(action);
     }
 
+    if (isMac && api.onMenuAction) return unsubscribe;
     window.addEventListener('keydown', handleShortcut, true);
-    return () => window.removeEventListener('keydown', handleShortcut, true);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener('keydown', handleShortcut, true);
+    };
   });
+
+  useEffect(() => {
+    api.updateMenu?.({
+      canOpenProject: !opening && !modalOpen,
+      canOpenSettings: !modalOpen,
+      canCreateSession: canCreateSession && !modalOpen,
+      canFocusComposer: Boolean(sessionId && !modalOpen && !reviewOverlaysChat),
+      canToggleNavigation: Boolean(projectId && !modalOpen),
+      canUseWorkspace: canUseWorkspace && !modalOpen,
+      navigationVisible: showNavigation,
+      reviewVisible,
+      terminalVisible,
+    });
+  }, [api, opening, modalOpen, canCreateSession, reviewOverlaysChat, sessionId, projectId, canUseWorkspace, showNavigation, reviewVisible, terminalVisible]);
 
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${showNavigation ? ' app--nav' : ''}`}>
       <header className="titlebar">
         <div className="titlebar-leading">
-          <div className="wordmark"><Icon name="mark" /> Pideck</div>
-          {project && <button className="icon-button" id="toggle-navigation" type="button" aria-label="Toggle navigation"
-            title={`Navigation (${modifier}${shift}B)`} aria-pressed={showNavigation} onClick={toggleNavigation}><Icon name="sidebar" /></button>}
+          {!project && <div className="wordmark"><Icon name="mark" /> Pideck</div>}
+          {project && <button className="icon-button" id="toggle-navigation" type="button"
+            aria-label={showNavigation ? 'Hide sidebar' : 'Show sidebar'} aria-controls={showNavigation ? 'workspace-navigation' : undefined}
+            title={`${showNavigation ? 'Hide' : 'Show'} sidebar (${modifier}${shift}B)`} aria-expanded={showNavigation}
+            onClick={toggleNavigation}><Icon name="sidebar" /></button>}
         </div>
         <div className="titlebar-content">
           <div className="title-context">
-            {project && <div className="breadcrumb" aria-label="Current workspace">
-              <span title={project.directory} className={session ? 'breadcrumb-parent' : 'breadcrumb-current'}>{project.name}</span>
-              {session && <><Icon className="breadcrumb-parent" name="chevron" width={12} height={12} />
-                <span className="breadcrumb-current" title={session.title}>{session.title}</span></>}
+            {project && <div className="workspace-title">
+              {!showNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
+              <span className="workspace-title-current" title={session?.title ?? project.directory}>
+                {session?.title ?? (!showNavigation ? project.name : project.trusted ? 'Sessions' : 'Project setup')}
+              </span>
             </div>}
             <div id="session-actions-slot" inert={reviewOverlaysChat} />
           </div>
           <div className="title-actions">
-            {project && !showNavigation && <button className="icon-button" type="button" aria-label="Open a project folder"
-              title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}><Icon name="folderPlus" /></button>}
             {!showNavigation && project?.trusted && session && <button className="icon-button" type="button"
-              aria-label="New session" title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}><Icon name="plus" /></button>}
+              aria-label="New session" title={`New session (${modifier}N)`} disabled={!canCreateSession} onClick={createSession}><Icon name="plus" /></button>}
             {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
-              <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Toggle review"
+              <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
                 title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
                 disabled={removingProject} onClick={toggleReview}><Icon name="diff" /><span>Changes</span></button>
-              <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Toggle terminal"
+              <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
                 title={`Terminal (${modifier}\`)`} aria-pressed={terminalVisible}
                 disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /><span>Terminal</span></button>
             </div>}
-            <button className="icon-button" type="button" aria-label="Model settings"
-              title={`Model settings (${modifier},)`} onClick={() => setSettings({})}><Icon name="settings" /></button>
           </div>
         </div>
       </header>
       <div className="app-body">
-        {showNavigation && (
-          <aside className="navigation" aria-label="Workspace navigation">
-            <div className="nav-scroll">
-              <section className="nav-group" aria-labelledby="projects-label" onKeyDown={navigateRows}>
-                <div className="nav-heading">
-                  <h2 id="projects-label">Projects</h2>
-                  <button className="icon-button" id="nav-open-project" type="button" title="Open a project folder" aria-label="Open a project folder"
-                    disabled={opening} onClick={openProject}><Icon name="plus" /></button>
+        {project && showNavigation && (
+          <aside className="navigation" id="workspace-navigation" aria-label="Workspace navigation">
+            <section className="nav-project" aria-label="Project" ref={projectPickerArea} onKeyDown={(event) => {
+              if (event.key === 'Escape' && projectPicker) {
+                event.preventDefault();
+                closeProjectPicker(true);
+              } else navigateRows(event);
+            }}>
+              <button className="project-picker" id="nav-project-picker" type="button" ref={projectPickerTrigger}
+                title={project.directory} aria-label={`Switch project, current project ${project.name}`}
+                aria-expanded={projectPicker} aria-controls={projectPicker ? 'nav-projects' : undefined}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowDown') return;
+                  event.preventDefault();
+                  setProjectPicker(true);
+                  requestAnimationFrame(() => document.getElementById(`nav-project-${project.id}`)?.focus());
+                }}
+                onClick={() => setProjectPicker((current) => !current)}>
+                <span className="project-picker-icon"><Icon name={project.trusted ? 'folder' : 'lock'} /></span>
+                <span className="project-picker-name"><small>Project</small><strong>{project.name}</strong></span>
+                <Icon name="down" className="project-picker-caret" width={14} height={14} />
+              </button>
+              {projectPicker && <div className="project-picker-options" id="nav-projects">
+                <div className="project-picker-list" role="group" aria-label="Saved projects">
+                  {projects?.map((item) => <div className="nav-item" key={item.id}>
+                    <button className="nav-row" id={`nav-project-${item.id}`} type="button" title={item.directory}
+                      aria-label={item.name} aria-description={item.directory}
+                      aria-current={item.id === projectId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace"
+                      onClick={() => { selectProject(item.id); closeProjectPicker(true); }}>
+                      <Icon name={item.trusted ? 'folder' : 'lock'} />
+                      <span className="project-option"><strong>{item.name}</strong><small>{item.directory}</small></span>
+                    </button>
+                    <RemoveRowButton label={`Remove project ${item.name}`} current={item.id === projectId} disabled={Boolean(removing)}
+                      onClick={(button) => void remove({ projectId: item.id }, button)} />
+                  </div>)}
                 </div>
-                {projects?.map((item) => <div className="nav-item" key={item.id}>
-                  <button className="nav-row" id={`nav-project-${item.id}`} type="button" title={item.directory}
-                    aria-current={item.id === projectId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace" onClick={() => selectProject(item.id)}>
-                    <Icon name={item.trusted ? 'folder' : 'lock'} /><span>{item.name}</span>
-                  </button>
-                  <RemoveRowButton label={`Remove project ${item.name}`} current={item.id === projectId} disabled={Boolean(removing)}
-                    onClick={(button) => void remove({ projectId: item.id }, button)} />
-                </div>)}
-                {projectsError && <p className="nav-empty" role="alert">Could not refresh projects. <button className="inline-action"
-                  type="button" onClick={() => refreshWorkspace((current) => current + 1)}>Retry</button></p>}
-              </section>
-              {project?.trusted && Boolean(sessions?.length) && <section className="nav-group" aria-labelledby="sessions-label" onKeyDown={navigateRows}>
-                <div className="nav-heading">
-                  <h2 id="sessions-label">Sessions</h2>
-                  <button className="icon-button" id="nav-new-session" type="button" aria-label="New session"
-                    title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}><Icon name="plus" /></button>
-                </div>
+                <button className="nav-row nav-open-folder" id="nav-open-project" type="button"
+                  title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}>
+                  <Icon name="folderPlus" /><span>Open folder…</span>
+                </button>
+              </div>}
+              {projectsError && <p className="nav-empty" role="alert">Could not refresh projects. <button className="inline-action"
+                type="button" onClick={() => refreshWorkspace((current) => current + 1)}>Retry</button></p>}
+            </section>
+            {project.trusted && Boolean(sessions?.length) && <section className="nav-sessions" aria-labelledby="sessions-label" onKeyDown={navigateRows}>
+              <div className="nav-session-header">
+                <h2 id="sessions-label">Sessions</h2>
+                <button className="nav-row nav-create-session" id="nav-new-session" type="button"
+                  title={`New session (${modifier}N)`} disabled={!canCreateSession} onClick={createSession}>
+                  <Icon name="plus" /><span>New session</span>
+                </button>
+              </div>
+              <div className="nav-scroll">
                 {sessions?.map((item) => {
                   const draft = projectDrafts?.[item.id];
                   const hasDraft = Boolean(draft?.text || draft?.attachments.length);
@@ -535,7 +624,10 @@ function Desktop() {
                     <button className="nav-row" id={`nav-session-${item.id}`} type="button" title={item.title}
                       aria-current={item.id === sessionId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace"
                       aria-description={hasDraft ? 'Unsent draft' : undefined}
-                      onClick={() => selectSession(project.id, item.id)}>
+                      onClick={() => {
+                        selectSession(project.id, item.id);
+                        if (reviewOverlaysChat) setReview(undefined);
+                      }}>
                       <Icon name="chat" /><span>{item.title}</span>
                       {hasDraft && <span className="nav-draft" title="Draft" aria-hidden="true" />}
                     </button>
@@ -545,8 +637,13 @@ function Desktop() {
                 })}
                 {sessionsIssue && <p className="nav-empty" role="alert">Could not load sessions. <button className="inline-action"
                   type="button" onClick={() => refreshSessions((current) => current + 1)}>Retry</button></p>}
-              </section>}
-            </div>
+              </div>
+            </section>}
+            {showProviders && <div className="nav-footer">
+              <button className="nav-row" type="button" title={`Model providers (${modifier},)`} onClick={() => setSettings({})}>
+                <Icon name="settings" /><span>Model providers</span>
+              </button>
+            </div>}
           </aside>
         )}
         <section className="workspace" aria-label="Workspace">
@@ -572,11 +669,11 @@ function Desktop() {
                         </button>
                       </EmptyScene>
                 : !project.trusted
-                  ? <EmptyScene icon="lock" title="Trust this project">
-                      <p>Pideck needs your permission to edit files and run commands.</p>
+                  ? <EmptyScene icon="lock" title="Project permissions">
+                      <p>Review what Pideck can do before running commands or editing files here.</p>
                       <p className="empty-path">{project.directory}</p>
                       <button className="button button--primary" id="workspace-trust" type="button" onClick={trustProject}
-                        disabled={trusting || removingProject}><Icon name="shield" /> Trust project</button>
+                        disabled={trusting || removingProject}><Icon name="shield" /> Review permissions</button>
                     </EmptyScene>
                   : session
                     ? <Chat key={session.id} project={project} session={session} models={models}
@@ -585,6 +682,7 @@ function Desktop() {
                         onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
                         onRetryModels={() => refreshModels((current) => current + 1)}
                         onSettings={(provider) => setSettings({ provider })}
+                        onModalChange={setChatModalOpen}
                         onReview={openReview} onWorkspaceChange={refreshReview}
                         onSent={() => refreshSessions((current) => current + 1)} onFork={forkSession} />
                     : sessionsIssue
@@ -604,18 +702,14 @@ function Desktop() {
                           </EmptyScene>}
             </div>
             {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
-              <ReviewPanel project={project} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+              <ReviewPanel project={project} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
                 refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
             </Suspense>}
           </div>
           {projects?.filter((item) => item.trusted && Object.hasOwn(terminals, item.id)).map((item) => {
             const visible = item.id === projectId && terminals[item.id];
             return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
-              <TerminalPanel project={item} visible={visible} focusOnShow={focusTerminal === item.id}
-                onClose={() => {
-                  setTerminals((current) => ({ ...current, [item.id]: false }));
-                  setFocusTerminal((current) => current === item.id ? undefined : current);
-                }} />
+              <TerminalPanel project={item} visible={visible} focusOnShow={focusTerminal === item.id} />
             </Suspense>;
           })}
         </section>

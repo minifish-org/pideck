@@ -139,6 +139,18 @@ export type Commands = {
   "terminal:sync": [TerminalRef & { through: number; replay?: true }, TerminalEvent[]];
 };
 export type Command = keyof Commands;
+export type MenuAction = "open-project" | "new-session" | "settings" | "toggle-navigation" | "toggle-review" | "toggle-terminal" | "focus-composer";
+export type MenuState = {
+  canOpenProject: boolean;
+  canOpenSettings: boolean;
+  canCreateSession: boolean;
+  canFocusComposer: boolean;
+  canToggleNavigation: boolean;
+  canUseWorkspace: boolean;
+  navigationVisible: boolean;
+  reviewVisible: boolean;
+  terminalVisible: boolean;
+};
 export type HostEvent =
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))
   | ({ type: "chat:error"; subscriptionId: string; message: string } & Selection)
@@ -153,6 +165,8 @@ export type Pideck = {
   platform: string;
   invoke<C extends Command>(command: C, ...args: Commands[C][0] extends undefined ? [] : [Commands[C][0]]): Promise<Commands[C][1]>;
   onEvent(listener: (event: HostEvent) => void): () => void;
+  onMenuAction?(listener: (action: MenuAction) => void): () => void;
+  updateMenu?(state: MenuState): void;
 };
 
 declare global {
