@@ -48,8 +48,12 @@ function openWindow() {
     height: 930,
     minWidth: 760,
     minHeight: 560,
-    backgroundColor: "#191b1b",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    backgroundColor: "#14181e",
+    ...(process.platform === "darwin" ? {
+      titleBarStyle: "hidden",
+      // Match the renderer toolbar so AppKit centers its controls within it.
+      titleBarOverlay: { height: 56 },
+    } : {}),
     show: false,
     webPreferences: {
       preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),

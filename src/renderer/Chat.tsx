@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -152,35 +152,39 @@ async function readAttachment(file: File): Promise<Attachment> {
   });
 }
 
-function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: (instructions: string) => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
+function CompactPopover({ onConfirm }: { onConfirm: (instructions: string) => void }) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const [instructions, setInstructions] = useState('');
-  useLayoutEffect(() => {
-    if (!dialog.current?.open) dialog.current?.showModal();
-    dialog.current?.querySelector('textarea')?.focus();
-  }, []);
 
-  function close() {
-    dialog.current?.close();
-    onClose();
-  }
-
-  return <dialog className="settings-dialog" ref={dialog} aria-labelledby="compact-title"
-    onCancel={(event) => { event.preventDefault(); close(); }}>
-    <div className="dialog-heading"><h2 id="compact-title">Summarize context</h2></div>
-    <p className="dialog-copy">Free up room for the model by summarizing earlier turns. You can still read the full conversation.</p>
-    <form onSubmit={(event) => {
-      event.preventDefault();
-      dialog.current?.close();
-      onConfirm(instructions.trim());
-    }}>
-      <div className="settings-fields"><label>What should the summary preserve? (optional)
-        <textarea rows={3} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
-      </label></div>
-      <div className="dialog-actions"><button type="button" className="button" onClick={close}>Cancel</button>
-        <button type="submit" className="button button--primary">Summarize</button></div>
-    </form>
-  </dialog>;
+  return <>
+    <button className="icon-button session-context-button" type="button" ref={trigger} aria-label="Summarize context"
+      title="Summarize context" popoverTarget={id}><Icon name="layers" /></button>
+    <div className="chat-popover compact-popover" id={id} ref={panel} popover="auto" role="region"
+      aria-label="Summarize context" onBlur={(event) => {
+        if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger.current
+          && !event.currentTarget.contains(event.relatedTarget) && event.currentTarget.matches(':popover-open')) {
+          event.currentTarget.hidePopover();
+        }
+      }} onToggle={(event) => {
+        if (event.newState === 'open') panel.current?.querySelector('textarea')?.focus({ preventScroll: true });
+        else setInstructions('');
+      }}>
+      <h2>Summarize context</h2>
+      <p>Free up room for the model. Your full conversation stays available.</p>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        panel.current?.hidePopover();
+        onConfirm(instructions.trim());
+      }}>
+        <label>What should the summary preserve? <span>(optional)</span>
+          <textarea rows={2} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
+        </label>
+        <button type="submit" className="button button--primary">Summarize</button>
+      </form>
+    </div>
+  </>;
 }
 
 type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
@@ -203,7 +207,7 @@ function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
 }
 
 export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft,
-  onModelChosen, onSettings, onModalChange, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
+  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
   project: Project;
   session: Session;
   models: ModelOption[];
@@ -214,7 +218,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   updateDraft: (update: (draft: Draft) => Draft) => void;
   onModelChosen: (key: string) => void;
   onSettings: (provider?: string) => void;
-  onModalChange: (open: boolean) => void;
   onRetryModels: () => void;
   onReview: (selection: ReviewSelection) => void;
   onWorkspaceChange: () => void;
@@ -223,9 +226,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
 }) {
   const selection = { projectId: project.id, sessionId: session.id };
   const { view, connected, error: connectionError, retry, loadEarlier } = useConversation(selection);
-  const [picker, setPicker] = useState(false);
   const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
-  const [compactDialog, setCompactDialog] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [stopping, setStopping] = useState(false);
@@ -243,13 +244,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const toolStates = useRef<Map<string, string> | undefined>(undefined);
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
   const { text, attachments } = draft;
-
-  const modalOpen = picker || compactDialog;
-  useLayoutEffect(() => {
-    if (!modalOpen) return;
-    onModalChange(true);
-    return () => onModalChange(false);
-  }, [modalOpen, onModalChange]);
 
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
   const busy = view?.status === 'running' || view?.status === 'cancelling';
@@ -424,7 +418,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   }
 
   async function compact(instructions: string) {
-    setCompactDialog(false);
     setCompacting(true);
     setNotice(undefined);
     update({ error: undefined });
@@ -478,16 +471,15 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
       : undefined;
   const queueing = busy && !agentCompacting;
   const submitLabel = queueing ? 'Queue next' : 'Send';
+  const thinkingOptions = model?.configured && model.thinking.length > 1 ? { level: thinking, labels: thinkingLabels } : undefined;
+  const modelDescription = modelName
+    ? [desiredProvider && providerLabel(desiredProvider), modelName, thinkingOptions && `Thinking ${thinkingLabels[thinking].toLowerCase()}`]
+      .filter(Boolean).join(' · ')
+    : 'Choose a model';
 
   return (
     <main className={`chat${empty ? ' chat--empty' : ''}`} aria-label="Conversation">
-      {actionsSlot && canCompact && createPortal(
-        <button className="icon-button session-context-button" type="button" aria-label="Summarize context" aria-haspopup="dialog"
-          title="Summarize earlier turns to free up model context" onClick={() => setCompactDialog(true)}>
-          <Icon name="layers" /> <span>Summarize context</span>
-        </button>,
-        actionsSlot,
-      )}
+      {actionsSlot && canCompact && createPortal(<CompactPopover onConfirm={compact} />, actionsSlot)}
       {!connected && (
         <div className={`notice ${connectionError ? '' : 'notice--info'}`} role={connectionError ? 'alert' : 'status'}>
           <Icon name={connectionError ? 'alert' : 'chat'} />
@@ -595,18 +587,16 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
                 ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
                     <Icon name="key" width={14} height={14} /> Connect a provider
                   </button>
-                : models.length > 0 ? <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
-                    title={modelName ? `${desiredProvider ? providerLabel(desiredProvider) + ' · ' : ''}${modelName}` : 'Choose a model'}
-                    onClick={() => setPicker(true)}>
-                    <span>{modelName ?? 'Choose a model'}</span><Icon name="down" width={12} height={12} />
-                  </button> : !modelsError && <span className="composer-current-model">Loading models…</span>}
-              {model?.configured && model.thinking.length > 1 && !busy && !agentCompacting && <div className="select-shell thinking-select">
-                <select aria-label="Thinking level" title={`Thinking level: ${thinkingLabels[thinking]}`} value={thinking}
-                  onChange={(event) => update({ thinking: event.target.value as Thinking })}>
-                  {model.thinking.map((level) => <option key={level} value={level}>Thinking {thinkingLabels[level].toLowerCase()}</option>)}
-                </select>
-                <Icon name="down" width={12} height={12} />
-              </div>}
+                : models.length > 0 ? <ModelPicker models={models} selected={model} label={modelName ?? 'Choose a model'}
+                    description={modelDescription} thinking={thinkingOptions}
+                    onThinkingChange={(level) => update({ thinking: level })}
+                    onChoose={(option) => {
+                      if (!option.configured) { onSettings(option.provider); return; }
+                      const key = modelKey(option);
+                      update({ model: key, thinking: undefined, error: undefined });
+                      onModelChosen(key);
+                      textarea.current?.focus();
+                    }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
             </div>
             <div className="composer-actions">
               {queueing && <button className="button composer-steer" type="button" aria-label="Steer run"
@@ -618,17 +608,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
         </form>
         {composerStatus && <div className="composer-status" role="status">{composerStatus}</div>}
       </div>
-      {picker && <ModelPicker models={models} selected={model} onClose={() => setPicker(false)} onChoose={(option) => {
-        const key = modelKey(option);
-        setPicker(false);
-        if (!option.configured) onSettings(option.provider);
-        else {
-          update({ model: key, thinking: undefined, error: undefined });
-          onModelChosen(key);
-          textarea.current?.focus();
-        }
-      }} />}
-      {compactDialog && <CompactDialog onClose={() => setCompactDialog(false)} onConfirm={compact} />}
     </main>
   );
 }

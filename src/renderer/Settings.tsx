@@ -271,7 +271,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
       {(!provider.configured || changeConnection) && <>
         {provider.methods.length > 0
           ? <div className="provider-methods">
-              <p className="provider-message">{changeConnection ? 'Choose how to reconnect.' : 'Choose how to connect.'}</p>
+              {provider.methods.length > 1 && <p className="provider-message">{changeConnection ? 'Choose how to reconnect.' : 'Choose how to connect.'}</p>}
               <div className="provider-manage">
                 {changeConnection && <button type="button" className="button provider-quiet" onClick={() => setChangeConnection(false)}>Back</button>}
                 {provider.methods.map((method) => <button key={method.type} type="button"

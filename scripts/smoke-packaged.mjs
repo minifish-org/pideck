@@ -29,6 +29,44 @@ async function clickNativeMenu(app, id) {
   }, id);
 }
 
+async function verifyNativeTitlebar(app, page) {
+  if (process.platform !== "darwin") return;
+  const { bounds, minimum } = await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    return { bounds: window.getBounds(), minimum: window.getMinimumSize() };
+  });
+  async function measure() {
+    await page.waitForFunction(() => navigator.windowControlsOverlay?.visible);
+    return page.evaluate(() => {
+      const safeArea = navigator.windowControlsOverlay.getTitlebarAreaRect();
+      const titlebar = document.querySelector(".titlebar").getBoundingClientRect();
+      const toggle = document.getElementById("toggle-navigation").getBoundingClientRect();
+      return {
+        nativeInset: safeArea.x,
+        nativeHeight: safeArea.height,
+        titlebarHeight: titlebar.height,
+        buttonX: toggle.x,
+        buttonCenterY: toggle.y + toggle.height / 2,
+      };
+    });
+  }
+  const wide = await measure();
+  try {
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), minimum);
+    await page.waitForFunction(width => innerWidth === width, minimum[0]);
+    const narrow = await measure();
+    for (const chrome of [wide, narrow]) {
+      assert.ok(chrome.nativeInset > 0 && chrome.buttonX >= chrome.nativeInset);
+      assert.ok(Math.abs(chrome.titlebarHeight - chrome.nativeHeight) <= 1);
+      assert.ok(Math.abs(chrome.buttonCenterY - chrome.nativeHeight / 2) <= 1);
+    }
+    assert.equal(wide.buttonX, narrow.buttonX);
+  } finally {
+    await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), bounds);
+    await page.waitForFunction(width => innerWidth === width, bounds.width);
+  }
+}
+
 const path = await executable();
 const temporary = await mkdtemp(join(tmpdir(), "pideck-packaged-"));
 const data = join(temporary, "profile");
@@ -123,6 +161,7 @@ try {
   await page.getByRole("button", { name: "Smoke session", exact: true }).click();
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   await prompt.waitFor();
+  await verifyNativeTitlebar(app, page);
   await prompt.blur();
   await clickNativeMenu(app, "focus-composer");
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
@@ -132,10 +171,7 @@ try {
   assert.equal(azure?.configured, true);
   await clickNativeMenu(app, "settings");
   const providers = page.getByRole("dialog", { name: "Model providers" });
-  await providers.getByRole("button", { name: "Close settings" }).click();
-  const modelPicker = page.getByRole("button", { name: "Model", exact: true });
-  await modelPicker.click();
-  await page.getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
+  await providers.waitFor();
   assert.equal(await app.evaluate(async ({ Menu }) => {
     const ids = ["open-project", "settings", "new-session", "toggle-review", "toggle-terminal"];
     const disabled = () => ids.every(id => !Menu.getApplicationMenu().getMenuItemById(id).enabled);
@@ -143,6 +179,10 @@ try {
     while (!disabled() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
     return disabled();
   }), true);
+  await providers.getByRole("button", { name: "Close settings" }).click();
+  const modelPicker = page.getByRole("button", { name: "Model", exact: true });
+  await modelPicker.click();
+  await page.getByRole("region", { name: "Choose a model" }).getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
   await page.getByRole("button", { name: /GPT-4\.1.*Azure|Azure.*GPT-4\.1/i }).first().click();
   await prompt.fill("Edit example.ts and verify it.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -154,7 +194,7 @@ try {
 
   await clickNativeMenu(app, "toggle-review");
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
-  await page.getByRole("button", { name: "Split" }).click();
+  await page.getByRole("combobox", { name: "Diff layout" }).selectOption("split");
   await page.locator("diffs-container").filter({ hasText: "after" }).last().waitFor();
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /long-change.ts/ }).click();
   const highlighted = page.locator("diffs-container").filter({ hasText: "afterMarker" });
@@ -180,6 +220,23 @@ try {
     throw new Error("Terminal search status was " + text.join(" "), { cause: error });
   });
   await page.getByRole("searchbox", { name: "Find in terminal output" }).press("Escape");
+
+  const boundsBeforeReview = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
+  await terminal.focus();
+  await page.keyboard.insertText(process.platform === "win32"
+    ? 'Start-Sleep -Seconds 1; Write-Host ("REVIEW_" + "PTY_OK")'
+    : 'sleep 1; printf \'REVIEW_%s\\n\' PTY_OK');
+  await page.keyboard.press("Enter");
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
+  const review = page.getByRole("complementary", { name: "Review changes" });
+  const terminalRegion = page.getByRole("region", { name: "Project terminal" });
+  await review.getByRole("button", { name: "Back to chat" }).waitFor();
+  await terminalRegion.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await review.waitFor({ state: "detached" });
+  await page.locator(".xterm-rows").getByText("REVIEW_PTY_OK", { exact: true }).waitFor();
+  await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), boundsBeforeReview);
+  await page.getByRole("button", { name: /Switch project, current project/ }).waitFor();
 
   await terminal.focus();
   const continueInBackground = process.platform === "win32"

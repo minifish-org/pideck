@@ -48,11 +48,21 @@ async page => {
   await page.keyboard.press("Enter");
   if (await prompt.inputValue() !== "Update and verify the status.") throw new Error("Draft did not survive a session switch.");
 
-  await page.getByRole("button", { name: "Model", exact: true }).click();
-  const picker = page.getByRole("dialog", { name: "Choose a model" });
-  await picker.getByRole("searchbox", { name: "Search models" }).fill("fixture");
-  await picker.getByRole("button", { name: /Fixture model/ }).click();
-  await page.getByLabel("Thinking level").selectOption("high");
+  const model = page.getByRole("button", { name: "Model", exact: true });
+  const picker = page.getByRole("region", { name: "Choose a model" });
+  await model.press("ArrowDown");
+  const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
+  await modelSearch.fill("fixture");
+  await modelSearch.press("ArrowDown");
+  await page.waitForFunction(() => document.activeElement?.classList.contains("model-option"));
+  await page.keyboard.press("Enter");
+  await picker.waitFor({ state: "hidden" });
+  await model.click();
+  await picker.getByRole("combobox", { name: "Thinking level" }).selectOption("high");
+  await page.screenshot({ path: "output/playwright/pideck-ui-model-menu.png" });
+  await picker.getByRole("combobox", { name: "Thinking level" }).press("Escape");
+  await picker.waitFor({ state: "hidden" });
+  if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
@@ -69,7 +79,7 @@ async page => {
   await page.getByRole("button", { name: "Load earlier messages" }).click();
   await page.getByText("An earlier coding request.").waitFor();
   await page.getByRole("button", { name: "Summarize context" }).click();
-  const compact = page.getByRole("dialog", { name: "Summarize context" });
+  const compact = page.getByRole("region", { name: "Summarize context" });
   await compact.getByLabel(/What should the summary preserve/).fill("Keep the testing details.");
   await compact.getByRole("button", { name: "Summarize", exact: true }).click();
   await page.getByText("Context summarized.").waitFor();
@@ -85,12 +95,20 @@ async page => {
   await forked.click();
   await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
-  await page.getByRole("button", { name: "Changes", exact: true }).click();
-  const split = page.getByRole("button", { name: "Split", exact: true });
-  await split.click();
-  if (await split.getAttribute("aria-pressed") !== "true") throw new Error("Split layout did not activate.");
-  await page.getByRole("complementary", { name: "Review changes" }).locator("diffs-container").filter({ hasText: "verified" }).last().waitFor();
+  const changes = page.getByRole("button", { name: "Changes", exact: true });
+  const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
+  const terminal = page.getByRole("region", { name: "Project terminal" });
+  await changes.click();
   const review = page.getByRole("complementary", { name: "Review changes" });
+  const layout = review.getByRole("combobox", { name: "Diff layout" });
+  const singleDiff = review.locator("diffs-container [data-diff-type=single]").first();
+  const splitDiff = review.locator("diffs-container [data-diff-type=split]").first();
+  await singleDiff.waitFor();
+  if (await layout.inputValue() !== "auto") throw new Error("Diff layout does not start in Auto.");
+  await layout.selectOption("split");
+  await splitDiff.waitFor();
+  await layout.selectOption("auto");
+  await singleDiff.waitFor();
   if (await review.getByRole("button", { name: "Back to chat" }).count()) throw new Error("Wide review has a duplicate close action.");
   const viewport = page.viewportSize();
   const aligned = await page.evaluate(() => {
@@ -100,15 +118,63 @@ async page => {
   });
   if (!aligned) throw new Error("The titlebar and sidebar, or the transcript and composer, do not align.");
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
+  await page.setViewportSize({ width: 1920, height: 960 });
+  await splitDiff.waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-wide.png" });
+  await page.setViewportSize({ width: 1100, height: 680 });
+  const back = review.getByRole("button", { name: "Back to chat" });
+  await back.waitFor();
+  const sidebar = page.locator("#toggle-navigation");
+  await sidebar.click();
+  await back.waitFor({ state: "detached" });
+  await sidebar.click();
+  await back.waitFor();
   await page.setViewportSize({ width: 760, height: 560 });
   await page.waitForFunction(() => document.querySelector(".workspace-conversation").inert
     && document.querySelector("#review-panel").contains(document.activeElement));
-  await review.getByRole("button", { name: "Back to chat" }).waitFor();
+  await back.waitFor();
+  await nav.waitFor({ state: "detached" });
+  const reviewWidth = await review.evaluate(panel => panel.getBoundingClientRect().width);
+  if (reviewWidth < 755) throw new Error("The compact review does not use the full window.");
   await page.screenshot({ path: "output/playwright/pideck-ui-narrow.png" });
   await page.keyboard.press("Escape");
   await review.waitFor({ state: "detached" });
   await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
     && document.activeElement?.id === "toggle-review");
+  await model.click();
+  await modelSearch.waitFor();
+  const compactMenuFits = await picker.evaluate(panel => {
+    const bounds = panel.getBoundingClientRect();
+    return bounds.top >= 0 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.bottom <= innerHeight;
+  });
+  if (!compactMenuFits) throw new Error("The model dropdown overflows a narrow window.");
+  await page.locator(".workspace-title-current").click();
+  await picker.waitFor({ state: "hidden" });
+  await sidebar.click();
+  await nav.waitFor();
+  await page.waitForFunction(() => document.querySelector(".workspace").inert
+    && document.activeElement?.id.startsWith("nav-session-"));
+  if (await page.locator(".workspace").evaluate(panel => panel.getBoundingClientRect().width) !== 760) throw new Error("Compact sidebar squeezed the workspace.");
+  await page.screenshot({ path: "output/playwright/pideck-ui-sidebar.png" });
+  await page.keyboard.press("Escape");
+  await nav.waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.activeElement?.id === "toggle-navigation");
+  await sidebar.click();
+  await nav.waitFor();
+  await terminalToggle.click();
+  await nav.waitFor({ state: "detached" });
+  await terminal.getByText("Shell running").waitFor();
+  const screen = terminal.locator(".xterm-helper-textarea");
+  await screen.waitFor();
+  await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
+  await changes.click();
+  await terminal.waitFor({ state: "hidden" });
+  await terminalToggle.click();
+  await terminal.waitFor();
+  await review.waitFor({ state: "detached" });
+  if (await screen.getAttribute("data-workspace-fixture") !== "same") throw new Error("Returning from review replaced the live terminal.");
+  await page.screenshot({ path: "output/playwright/pideck-ui-terminal.png" });
+  await terminalToggle.click();
   await page.setViewportSize(viewport);
   await page.getByRole("button", { name: "Open review", exact: true }).click();
   await review.getByTitle("Assistant patch for example.ts").waitFor();
@@ -152,8 +218,10 @@ async page => {
   await page.getByText("Shell running").waitFor();
   const projectPicker = nav.getByRole("button", { name: /Switch project, current project/ });
   if (await nav.getByRole("group", { name: "Saved projects" }).count()) throw new Error("The project list obscures sessions by default.");
+  const sessionTop = (await fallback.boundingBox()).y;
   await projectPicker.press("ArrowDown");
   await page.getByRole("group", { name: "Saved projects" }).waitFor();
+  if (Math.abs((await fallback.boundingBox()).y - sessionTop) > 1) throw new Error("The project menu moves the sessions beneath it.");
   await page.waitForFunction(() => document.activeElement?.id.startsWith("nav-project-")
     && document.activeElement?.id !== "nav-project-picker");
   await nav.getByRole("button", { name: "Sample project", exact: true }).press("Escape");

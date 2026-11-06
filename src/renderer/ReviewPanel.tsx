@@ -1,13 +1,15 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff, Virtualizer, WorkerPoolContextProvider, type FileDiffOptions } from "@pierre/diffs/react";
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
-import { ArrowLeft, ArrowUpRight, RefreshCw, WrapText } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowUpRight, RefreshCw } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Project, ReviewFile, ReviewPatch } from "../shared/api";
 import { Icon } from "./Icons";
 import "./workspace.css";
 
 type DiffStyle = "unified" | "split";
+type DiffLayout = "auto" | DiffStyle;
+const splitMinimumWidth = 700;
 const workerOptions = { workerFactory: () => new DiffWorker(), poolSize: 1, mainThreadMaxCharacters: 12_000 };
 const highlighterOptions = {
   theme: "pierre-dark", preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
@@ -104,8 +106,8 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const requestedGitPath = selectedPatch ? undefined : requestedPath;
   const initialPath = selectedPatch ? editSelection : requestedPath;
   const [path, setPath] = useState<string | symbol | undefined>(initialPath);
-  const [style, setStyle] = useState<DiffStyle>("unified");
-  const [wrap, setWrap] = useState(true);
+  const [layout, setLayout] = useState<DiffLayout>("auto");
+  const [wide, setWide] = useState(false);
   const [filter, setFilter] = useState("");
   const [revision, setRevision] = useState(0);
   const [list, setList] = useState<{ files: ReviewFile[]; revision: number; error?: string }>();
@@ -113,6 +115,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const panel = useRef<HTMLElement>(null);
   const nav = useRef<HTMLElement>(null);
   const lastRefreshVersion = useRef(refreshVersion);
+  const style = layout === "auto" ? (wide ? "split" : "unified") : layout;
   const files = list?.files ?? [];
   const editPath = requestedPath ?? "Edit patch";
   const showEdit = Boolean(selectedPatch && path === editSelection);
@@ -127,6 +130,16 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const query = filter.trim().toLocaleLowerCase();
   const visibleFiles = files.filter(candidate => !query || candidate.path.toLocaleLowerCase().includes(query));
   const fileTabStop = visibleFiles.find(candidate => candidate.path === currentPath) ?? visibleFiles[0];
+
+  useLayoutEffect(() => {
+    const element = panel.current;
+    if (!element) return;
+    const resize = () => setWide(element.clientWidth >= splitMinimumWidth);
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     setPath(initialPath);
@@ -190,7 +203,8 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const hasDiff = parsed.some(item => item.hunks.length > 0);
   const displayedPath = showEdit ? editPath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
   const showFileList = !showEdit && (files.length > 1 || Boolean(missingRequestedFile && files.length) || Boolean(filter));
-  return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes" onKeyDown={event => {
+  return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes"
+    data-overlay={overlay || undefined} onKeyDown={event => {
     if (event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
@@ -259,18 +273,19 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
               {file && !showFileList && <FileStatus status={file.status} />}
             </h3>
             <ChangeCount files={parsed} />
-            {hasDiff && <div className="workspace-panel-actions">
-              <div className="workspace-segmented" role="group" aria-label="Diff layout">
-                <button type="button" aria-pressed={style === "unified"} onClick={() => setStyle("unified")}>Unified</button>
-                <button type="button" aria-pressed={style === "split"} onClick={() => setStyle("split")}>Split</button>
-              </div>
-              <button type="button" className="workspace-icon-button" aria-pressed={wrap} aria-label="Wrap diff lines"
-                title="Wrap diff lines" onClick={() => setWrap(value => !value)}><WrapText size={16} aria-hidden="true" /></button>
+            {hasDiff && <div className="workspace-layout">
+              <select aria-label="Diff layout" title="Diff layout" value={layout}
+                onChange={event => setLayout(event.target.value as DiffLayout)}>
+                <option value="auto">Auto layout</option>
+                <option value="unified">Unified</option>
+                <option value="split">Side by side</option>
+              </select>
+              <Icon name="down" width={12} height={12} />
             </div>}
           </div>
           {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
             <Virtualizer key={`${showEdit ? "assistant" : "git"}-${displayedPath}`} className="workspace-review-scroll">
-              <PatchView patch={patch} files={parsed} style={style} wrap={wrap} />
+              <PatchView patch={patch} files={parsed} style={style} wrap />
             </Virtualizer>
           </WorkerPoolContextProvider> : !list?.error && <div className="workspace-review-scroll">
             <p className="workspace-empty" role={loading ? "status" : undefined}>

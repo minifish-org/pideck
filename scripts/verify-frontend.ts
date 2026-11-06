@@ -10,7 +10,7 @@ import { fauxRuntime, toolResponse, waitForView } from "../test/support/faux-run
 const name = `pideck-${randomUUID().slice(0, 12)}`;
 const output = "output/playwright";
 const screenshot = `${output}/${name}.png`;
-const workspaceScreens = ["welcome", "providers", "running", "conversation", "workspace", "narrow"]
+const workspaceScreens = ["welcome", "providers", "model-menu", "running", "conversation", "workspace", "wide", "narrow", "sidebar", "terminal"]
   .map(stage => `${output}/pideck-ui-${stage}.png`);
 const log = `${output}/${name}.log`;
 const data = await mkdtemp(join(tmpdir(), "pideck-frontend-"));

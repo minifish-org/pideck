@@ -52,7 +52,7 @@
 .markdown p, .markdown ul, .markdown ol, .markdown blockquote { margin: .65em 0; }
 .markdown ul, .markdown ol { padding-left: 1.5em; }
 .markdown blockquote { border-left: 2px solid var(--border); padding-left: 10px; color: var(--muted); }
-.markdown pre, .tool-output, .thinking pre { font: 12px/1.5 var(--mono); overflow: auto; padding: 11px; margin: .65em 0; border: 1px solid var(--border); border-radius: 6px; background: #121416; }
+.markdown pre, .tool-output, .thinking pre { font: 12px/1.5 var(--mono); overflow: auto; padding: 11px; margin: .65em 0; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg); }
 .markdown code { font: .9em var(--mono); }
 .markdown :not(pre) > code { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; color: var(--accent); background: var(--surface); }
 .markdown table { display: block; overflow: auto; border-collapse: collapse; margin: .65em 0; }
@@ -102,13 +102,6 @@
 .composer-actions { flex: 0 0 auto; margin-left: auto; }
 .composer-attach { width: 34px; height: 34px; }
 .composer-current-model { padding: 0 7px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
-.select-shell { position: relative; min-width: 0; color: var(--muted); display: inline-flex; align-items: center; }
-.select-shell select {
-  appearance: none; min-width: 0; max-width: 100%; width: auto; height: 34px; overflow: hidden; text-overflow: ellipsis;
-  border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; padding: 0 22px 0 7px; font-size: 12px;
-}
-.select-shell select:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
-.select-shell svg { position: absolute; right: 6px; pointer-events: none; }
 .composer .send-button, .composer .composer-steer { height: 34px; padding: 0 9px; white-space: nowrap; font-size: 12px; }
 .composer .send-button:disabled { color: var(--dim); background: var(--surface-hover); border-color: var(--border); opacity: 1; }
 .composer .composer-steer { background: transparent; color: var(--muted); }
@@ -121,11 +114,6 @@
 .attachment span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
 .attachment button { width: 20px; height: 20px; }
 .tool-review { margin-top: 5px; font-size: 12px; }
-.session-context-button.icon-button { width: auto; padding-inline: 8px; gap: 6px; white-space: nowrap; font-size: 12px; }
-@media (max-width: 1110px) {
-  .session-context-button.icon-button { width: 32px; padding-inline: 0; }
-  .session-context-button span { display: none; }
-}
 .chat-turn { min-width: 0; display: flex; flex-direction: column; }
 .history-button { align-self: center; margin: 0 auto 7px; color: var(--muted); font-size: 12px; }
 .composer-wrap .composer-notice { margin: 0 0 6px; }
@@ -140,34 +128,69 @@
 .model-trigger {
   display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 28px; max-width: 225px;
   height: 34px; padding: 0 7px; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px;
-  white-space: nowrap; font-size: 12px;
+  white-space: nowrap; font-size: 12px; anchor-name: --composer-model;
 }
-.model-trigger:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.session-context-button { anchor-name: --session-context; }
+.model-trigger:hover, .model-trigger:has(+ :popover-open), .session-context-button:has(+ :popover-open) {
+  color: var(--text); background: var(--surface-hover);
+}
 .model-trigger svg { flex: none; }
 .model-trigger span { overflow: hidden; text-overflow: ellipsis; }
 .composer .provider-setup-trigger {
   min-height: 34px; padding: 4px 9px; font-size: 12px; color: var(--accent);
   background: color-mix(in srgb, var(--surface) 91%, var(--accent)); border-color: color-mix(in srgb, var(--border) 68%, var(--accent));
 }
-.thinking-select { flex: 0 0 auto; }
-.model-dialog { width: min(500px, calc(100% - 32px)); }
-.model-search { position: relative; margin: 10px 0 7px; }
-.model-search > svg { position: absolute; top: 11px; left: 10px; color: var(--muted); pointer-events: none; }
-.model-search input {
-  width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 8px 9px 8px 33px;
-  background: var(--bg); color: var(--text);
+.chat-popover {
+  position: fixed; inset: auto; margin: 0; overflow: auto; padding: 8px;
+  background: var(--surface-raised, var(--surface)); color: var(--text); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 12px 35px #0008;
 }
-.model-results { display: grid; gap: 9px; max-height: min(380px, 54vh); overflow: auto; padding: 3px; margin-inline: -3px; }
+.model-popover {
+  position-anchor: --composer-model;
+  left: anchor(left); bottom: anchor(top); margin-bottom: 6px;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  inline-size: min(354px, 76cqw); max-block-size: min(352px, 46vh);
+}
+.chat--empty .model-popover { top: anchor(bottom); bottom: auto; margin: 6px 0 0; }
+.model-popover:popover-open { display: flex; flex-direction: column; gap: 6px; }
+.compact-popover {
+  position-anchor: --session-context;
+  left: anchor(left); top: anchor(bottom); margin-top: 6px;
+  position-try-fallbacks: flip-inline;
+  inline-size: min(326px, 60vw); max-block-size: calc(100vh - 70px); padding: 14px;
+}
+.compact-popover h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.compact-popover p { margin: 4px 0 12px; font-size: 12px; color: var(--muted); }
+.compact-popover label { display: block; font-size: 12px; color: var(--text); }
+.compact-popover label span { color: var(--muted); }
+.compact-popover textarea, .model-effort select {
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit;
+}
+.compact-popover textarea { display: block; width: 100%; resize: vertical; padding: 6px 8px; margin-block: 5px 10px; }
+.compact-popover form > button { display: flex; margin-left: auto; }
+.model-search { position: relative; flex: none; }
+.model-search > svg { position: absolute; top: 9px; left: 8px; color: var(--muted); pointer-events: none; }
+.model-search input {
+  width: 100%; height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 0 7px 0 28px;
+  background: var(--bg); color: var(--text); font-size: 12px;
+}
+.model-results { display: grid; gap: 6px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 3px; margin-inline: -3px; }
 .model-section h3 { margin: 4px 7px; font-size: 11px; font-weight: 620; color: var(--muted); }
 .model-section ul { list-style: none; padding: 0; margin: 0; }
 .model-option {
-  width: 100%; min-height: 42px; display: flex; align-items: center; gap: 9px; text-align: left; padding: 5px 8px;
+  width: 100%; min-height: 40px; display: flex; align-items: center; gap: 8px; text-align: left; padding: 4px 7px;
   background: transparent; border: 1px solid transparent; border-radius: 6px;
 }
-.model-option:hover, .model-option[aria-current='true'] { border-color: var(--border); background: var(--surface-hover); }
+.model-option:hover { background: var(--surface-hover); }
+.model-option[aria-current='true'] { border-color: var(--accent-border, var(--border)); background: var(--accent-soft, var(--surface-hover)); }
 .model-option-mark { flex: none; color: var(--accent); }
 .model-option-connect { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--muted); font-size: 11px; }
-.model-footer { margin: 12px 0 0; padding-top: 11px; border-top: 1px solid var(--border-soft); font-size: 12px; }
+.model-more { align-self: flex-start; padding: 3px 7px; font-size: 12px; }
+.model-effort {
+  display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 3px 0 7px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px;
+}
+.model-effort select { max-width: 58%; min-height: 28px; padding: 0 4px; }
 .model-option-label { display: grid; min-width: 0; flex: 1; }
 .model-option-label strong { font-weight: 570; font-size: 13px; overflow-wrap: anywhere; }
 .model-option-label small, .model-empty { color: var(--muted); font-size: 11px; }

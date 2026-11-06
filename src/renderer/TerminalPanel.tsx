@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
 import { Search } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Project } from "../shared/api";
 import { Icon } from "./Icons";
 import { connectTerminal, type TerminalStatus } from "./terminal-connection";
@@ -11,13 +11,6 @@ import "./workspace.css";
 
 type TerminalProps = { project: Project; visible: boolean; focusOnShow?: boolean };
 const opening: TerminalStatus = { type: "opening", message: "Starting shell…" };
-const searchOptions: ISearchOptions = {
-  decorations: {
-    matchBackground: "#34423A", matchOverviewRuler: "#839872",
-    activeMatchBorder: "#C9EE95", activeMatchColorOverviewRuler: "#C9EE95",
-  },
-};
-
 function announceNewShell(terminal: Terminal, notice: string) {
   const normal = terminal.buffer.normal;
   let row = terminal.rows - 1;
@@ -53,11 +46,12 @@ function ProjectTerminal({ project, visible, focusOnShow }: TerminalProps) {
 
 function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProps) {
   const element = useRef<HTMLDivElement>(null);
-  const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon } | null>(null);
+  const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon; searchOptions: ISearchOptions } | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const endShell = useRef<HTMLButtonElement>(null);
   const cancelEnd = useRef<HTMLButtonElement>(null);
   const restartShell = useRef<HTMLButtonElement>(null);
+  const toolbarFocus = useRef<"end" | "restart" | undefined>(undefined);
   const previousHost = useRef(0);
   const [host, setHost] = useState<{ generation: number; disconnected?: string }>({ generation: 0 });
   const [attempt, setAttempt] = useState<number | null>(0);
@@ -74,7 +68,7 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
     if (!container) return;
     const tokens = getComputedStyle(container);
     const token = (name: string, fallback: string) => tokens.getPropertyValue(name).trim() || fallback;
-    const accent = token("--accent", "#c9ee95");
+    const accent = token("--accent", "#a5b8ff");
     const terminal = new Terminal({
       // SearchAddon's match decorations use xterm's registerDecoration API.
       allowProposedApi: true,
@@ -86,10 +80,11 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
       scrollback: 5_000,
       overviewRuler: { width: 8 },
       theme: {
-        background: token("--bg", "#191b1b"), foreground: token("--text", "#ebede8"), cursor: accent,
-        overviewRulerBorder: token("--border", "#303439"),
-        selectionBackground: "#485441", red: token("--danger", "#ff9b96"), green: accent,
-        yellow: "#e8cc8e", blue: "#9fb9f5", magenta: "#c7a6e5", cyan: "#8dc9c8",
+        background: token("--terminal-bg", token("--bg", "#171a20")), foreground: token("--text", "#ebedf2"), cursor: accent,
+        overviewRulerBorder: token("--border", "#303643"),
+        selectionBackground: token("--accent-border", "#3a4d78"),
+        red: token("--danger", "#ff9b96"), green: token("--success", "#83d9ad"),
+        yellow: token("--warning", "#e8cc8e"), blue: "#9fb9f5", magenta: "#c7a6e5", cyan: "#8dc9c8",
       },
     });
     const addon = new FitAddon();
@@ -104,7 +99,10 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
       if (size.cols > 500 || size.rows > 300) terminal.resize(Math.min(size.cols, 500), Math.min(size.rows, 300));
       else addon.fit();
     };
-    screen.current = { terminal, fit, search };
+    screen.current = { terminal, fit, search, searchOptions: { decorations: {
+      matchBackground: token("--accent-soft", "#283754"), matchOverviewRuler: token("--accent-border", "#6b83ab"),
+      activeMatchBorder: accent, activeMatchColorOverviewRuler: accent,
+    } } };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(container);
@@ -164,32 +162,37 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
   }, [visible, finding]);
 
   useEffect(() => {
-    const search = screen.current?.search;
-    if (finding && query) search?.findNext(query, { ...searchOptions, incremental: true });
+    const active = screen.current;
+    if (finding && query) active?.search.findNext(query, { ...active.searchOptions, incremental: true });
     else {
-      search?.clearDecorations();
+      active?.search.clearDecorations();
       setMatches(undefined);
     }
   }, [finding, query]);
 
   const restartable = status.type === "exited" || status.type === "failed" || status.type === "stopped";
   const canEnd = !host.disconnected && !restartable;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (confirmEnd && (!visible || !canEnd)) setConfirmEnd(false);
     else if (confirmEnd) cancelEnd.current?.focus();
+    else if (toolbarFocus.current) {
+      const target = toolbarFocus.current === "end" ? endShell : restartShell;
+      toolbarFocus.current = undefined;
+      if (visible) target.current?.focus();
+    }
   }, [canEnd, confirmEnd, visible]);
 
   function cancelEnding() {
+    toolbarFocus.current = "end";
     setConfirmEnd(false);
-    requestAnimationFrame(() => endShell.current?.focus());
   }
 
   function stopShell() {
+    toolbarFocus.current = "restart";
     setAttempt(null);
     setIssue("");
     setStatus({ type: "stopped", message: "Shell ended" });
     setConfirmEnd(false);
-    requestAnimationFrame(() => restartShell.current?.focus());
   }
 
   const matchLabel = query
@@ -197,8 +200,14 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
       : matches.resultIndex < 0 ? `${matches.resultCount} results` : `${matches.resultIndex + 1} of ${matches.resultCount}`
     : "";
   const isMac = window.pideck.platform === "darwin";
-  const searchId = `terminal-find-${project.id}`;
-  return <div className="workspace-terminal-content" onKeyDownCapture={event => {
+  function findMatch(previous: boolean) {
+    const active = screen.current;
+    if (!active || !query) return;
+    if (previous) active.search.findPrevious(query, active.searchOptions);
+    else active.search.findNext(query, active.searchOptions);
+  }
+
+  return <div className="workspace-terminal-content" data-toolbar={confirmEnd ? "confirm" : finding ? "find" : undefined} onKeyDownCapture={event => {
     const findKey = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && event.shiftKey;
     if (event.key === "Escape" && confirmEnd) {
       event.preventDefault();
@@ -226,27 +235,26 @@ function TerminalInstance({ project, visible, focusOnShow = true }: TerminalProp
         <button className="workspace-action" type="button" ref={cancelEnd} onClick={cancelEnding}>Cancel</button>
         <button className="workspace-action workspace-action--danger" type="button" onClick={stopShell}>End shell</button>
       </div> : <div className="workspace-panel-actions">
-        {restartable && !host.disconnected && <button className="workspace-action workspace-action--restart" type="button" ref={restartShell}
+        {restartable && !host.disconnected && !finding && <button className="workspace-action workspace-action--restart" type="button" ref={restartShell}
           onClick={() => {
             setAttempt(value => (value ?? 0) + 1);
             screen.current?.terminal.focus();
           }}>Restart shell</button>}
-        {finding ? <div className="workspace-terminal-search" id={searchId} role="search" aria-label="Find in terminal scrollback">
+        {finding ? <div className="workspace-terminal-search" role="search" aria-label="Find in terminal scrollback">
           <input type="search" ref={searchInput} aria-label="Find in terminal output" value={query}
             placeholder="Find in terminal…" onChange={event => setQuery(event.target.value)}
             onKeyDown={event => {
               if (event.key !== "Enter" || !query) return;
               event.preventDefault();
-              if (event.shiftKey) screen.current?.search.findPrevious(query, searchOptions);
-              else screen.current?.search.findNext(query, searchOptions);
+              findMatch(event.shiftKey);
             }} />
           <span className="workspace-search-results" role="status">{matchLabel}</span>
           <button type="button" className="workspace-icon-button" disabled={!query}
             aria-label="Previous terminal match" title="Previous match (Shift+Enter)"
-            onClick={() => screen.current?.search.findPrevious(query, searchOptions)}><Icon name="arrowUp" /></button>
+            onClick={() => findMatch(true)}><Icon name="arrowUp" /></button>
           <button type="button" className="workspace-icon-button" disabled={!query}
             aria-label="Next terminal match" title="Next match (Enter)"
-            onClick={() => screen.current?.search.findNext(query, searchOptions)}><Icon name="arrowDown" /></button>
+            onClick={() => findMatch(false)}><Icon name="arrowDown" /></button>
           <button type="button" className="workspace-icon-button" aria-label="Close terminal search" title="Close search (Esc)"
             onClick={() => setFinding(false)}><Icon name="close" /></button>
         </div> : <button type="button" className="workspace-icon-button" onClick={() => setFinding(true)}
