@@ -1,4 +1,4 @@
-import { useDeferredValue, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ModelOption, ModelRef, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 
@@ -15,7 +15,7 @@ export function providerLabel(provider: string) {
 export function ModelPicker({ models, selected, label, description, thinking, onThinkingChange, onChoose }: {
   models: ModelOption[];
   selected: ModelOption | undefined;
-  label: string;
+  label: ReactNode;
   description: string;
   thinking: { level: Thinking; labels: Record<Thinking, string> } | undefined;
   onThinkingChange: (level: Thinking) => void;
@@ -27,25 +27,19 @@ export function ModelPicker({ models, selected, label, description, thinking, on
   const search = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [showAll, setShowAll] = useState(false);
   const terms = query.trim();
   const deferredQuery = useDeferredValue(terms);
   const currentKey = selected && modelKey(selected);
-  const hasUnconfigured = models.some((model) => !model.configured);
+  const available = useMemo(() => models.filter(({ configured }) => configured), [models]);
   const results = useMemo(() => {
     const words = deferredQuery.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    return models.filter((model) => {
-      if (!model.configured && !showAll && !words.length) return false;
+    if (!words.length) return available.toSorted((left, right) =>
+      Number(modelKey(right) === currentKey) - Number(modelKey(left) === currentKey));
+    return available.filter((model) => {
       const label = `${model.name} ${providerLabel(model.provider)} ${model.id}`.toLocaleLowerCase();
       return words.every((word) => label.includes(word));
-    }).sort((left, right) => Number(right.configured) - Number(left.configured)
-      || (words.length ? 0 : Number(modelKey(right) === currentKey) - Number(modelKey(left) === currentKey)));
-  }, [currentKey, deferredQuery, models, showAll]);
-  const sections = [
-    { label: 'Available', options: results.filter(({ configured }) => configured) },
-    { label: 'Requires connection', options: results.filter(({ configured }) => !configured) },
-  ];
-  const showSections = sections.every(({ options }) => options.length > 0);
+    });
+  }, [available, currentKey, deferredQuery]);
 
   useLayoutEffect(() => {
     if (open) search.current?.focus({ preventScroll: true });
@@ -64,7 +58,7 @@ export function ModelPicker({ models, selected, label, description, thinking, on
         event.preventDefault();
         event.currentTarget.click();
       }}>
-      <span>{label}</span><Icon name="down" width={12} height={12} />
+      {label}<Icon name="down" width={12} height={12} />
     </button>
     <div className="chat-popover model-popover" id={id} popover="auto" role="region" aria-label="Choose a model" ref={panel}
       onBlur={(event) => {
@@ -76,10 +70,7 @@ export function ModelPicker({ models, selected, label, description, thinking, on
       onToggle={(event) => {
         const visible = event.newState === 'open';
         setOpen(visible);
-        if (!visible) {
-          setQuery('');
-          setShowAll(false);
-        }
+        if (!visible) setQuery('');
       }}>
       {open && <>
         <div className="model-search">
@@ -106,29 +97,22 @@ export function ModelPicker({ models, selected, label, description, thinking, on
           if (next) next.focus();
           else if (event.key === 'ArrowUp') search.current?.focus();
         }}>
-          {sections.map(({ label, options }) => options.length > 0 && <section key={label} className="model-section" aria-label={label}>
-            {showSections && <h3>{label}</h3>}
-            <ul>
-              {options.map((option) => {
-                const current = currentKey === modelKey(option);
-                const context = option.contextWindow ? ` · ${Math.round(option.contextWindow / 1000).toLocaleString()}k context` : '';
-                return <li key={modelKey(option)}>
-                  <button className="model-option" type="button" tabIndex={option === results[0] ? 0 : -1}
-                    aria-current={current ? 'true' : undefined} onClick={() => choose(option)}>
-                    <span className="model-option-label"><strong>{option.name}</strong>
-                      <small>{providerLabel(option.provider)}{context}{option.supportsImages ? ' · Images' : ''}</small>
-                    </span>
-                    {current && option.configured ? <Icon className="model-option-mark" name="check" />
-                      : !option.configured && <span className="model-option-connect">Connect <Icon name="chevron" width={12} height={12} /></span>}
-                  </button>
-                </li>;
-              })}
-            </ul>
-          </section>)}
-          {!results.length && <p className="model-empty">{models.length ? 'No models match your search.' : 'No models are available.'}</p>}
+          {results.length > 0 ? <ul>
+            {results.map((option, index) => {
+              const current = currentKey === modelKey(option);
+              const context = option.contextWindow ? ` · ${Math.round(option.contextWindow / 1000).toLocaleString()}k context` : '';
+              return <li key={modelKey(option)}>
+                <button className="model-option" type="button" tabIndex={index === 0 ? 0 : -1}
+                  aria-current={current ? 'true' : undefined} onClick={() => choose(option)}>
+                  <span className="model-option-label"><strong>{option.name}</strong>
+                    <small>{providerLabel(option.provider)}{context}{option.supportsImages ? ' · Images' : ''}</small>
+                  </span>
+                  {current && <Icon className="model-option-mark" name="check" />}
+                </button>
+              </li>;
+            })}
+          </ul> : <p className="model-empty">{available.length ? 'No models match your search.' : 'No models are available.'}</p>}
         </div>
-        {hasUnconfigured && !terms && <button className="model-more inline-action" type="button" aria-expanded={showAll}
-          onClick={() => setShowAll(!showAll)}>{showAll ? 'Show connected models' : 'Browse all models'}</button>}
         {thinking && selected && <label className="model-effort">
           Thinking level
           <select value={thinking.level} onChange={(event) => onThinkingChange(event.target.value as Thinking)}>

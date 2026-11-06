@@ -193,8 +193,15 @@ try {
   await providers.getByRole("button", { name: "Close settings" }).click();
   const modelPicker = page.getByRole("button", { name: "Model", exact: true });
   await modelPicker.click();
-  await page.getByRole("region", { name: "Choose a model" }).getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
-  await page.getByRole("button", { name: /GPT-4\.1.*Azure|Azure.*GPT-4\.1/i }).first().click();
+  const modelMenu = page.getByRole("region", { name: "Choose a model" });
+  const modelSearch = modelMenu.getByRole("searchbox", { name: "Search models" });
+  await modelSearch.waitFor();
+  assert.equal(await modelMenu.getByRole("button", { name: "Browse all models", exact: true }).count(), 0);
+  await modelSearch.fill("gpt-4.1");
+  await modelMenu.getByRole("button", { name: /\bAzure\b/i })
+    .filter({ has: page.getByText(azure.name, { exact: true }) }).click();
+  await modelPicker.getByText(azure.name, { exact: true }).waitFor();
+  await modelPicker.locator(".model-summary-thinking").filter({ hasText: /^Thinking \S/ }).waitFor();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
   await page.getByText("Package stream verified with the real coding tools.").waitFor();

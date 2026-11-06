@@ -453,8 +453,14 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const queueing = busy && !agentCompacting;
   const submitLabel = queueing ? 'Queue next' : 'Send';
   const thinkingOptions = model?.configured && model.thinking.length > 1 ? { level: thinking, labels: thinkingLabels } : undefined;
+  const displayedThinking = busy ? view?.thinking ?? (activeKey ? 'off' : undefined) : model?.configured ? thinking : undefined;
+  const thinkingLabel = displayedThinking && `Thinking ${thinkingLabels[displayedThinking].toLowerCase()}`;
+  const modelLabel = <span className="model-summary">
+    <span className="model-summary-name">{modelName ?? 'Choose a model'}</span>
+    {thinkingLabel && <span className="model-summary-thinking">{thinkingLabel}</span>}
+  </span>;
   const modelDescription = modelName
-    ? [desiredProvider && providerLabel(desiredProvider), modelName, thinkingOptions && `Thinking ${thinkingLabels[thinking].toLowerCase()}`]
+    ? [desiredProvider && providerLabel(desiredProvider), modelName, thinkingLabel]
       .filter(Boolean).join(' · ')
     : 'Choose a model';
 
@@ -569,15 +575,14 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                   disabled={startingSession || draft.reading || attachments.length >= 4}
                   onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
               </>}
-              {busy || agentCompacting ? modelName && <span className="composer-current-model" title={modelName}>{modelName}</span> : setupRequired
+              {busy || agentCompacting ? modelName && <span className="composer-current-model" title={modelDescription}>{modelLabel}</span> : setupRequired
                 ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
                     <Icon name="key" width={14} height={14} /> Connect a provider
                   </button>
-                : models.length > 0 ? <ModelPicker models={models} selected={model} label={modelName ?? 'Choose a model'}
+                : models.length > 0 ? <ModelPicker models={models} selected={model} label={modelLabel}
                     description={modelDescription} thinking={thinkingOptions}
                     onThinkingChange={(level) => update({ thinking: level })}
                     onChoose={(option) => {
-                      if (!option.configured) { onSettings(option.provider); return; }
                       const key = modelKey(option);
                       update({ model: key, thinking: undefined, error: undefined });
                       onModelChosen(key);

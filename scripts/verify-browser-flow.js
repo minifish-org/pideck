@@ -63,21 +63,46 @@ async page => {
 
   const model = page.getByRole("button", { name: "Model", exact: true });
   const picker = page.getByRole("region", { name: "Choose a model" });
-  await model.press("ArrowDown");
   const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
-  await modelSearch.fill("fixture");
+  const thinkingLevel = picker.getByRole("combobox", { name: "Thinking level" });
+  await model.getByText("Thinking off", { exact: true }).waitFor();
+  await model.press("ArrowDown");
+  if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
+    throw new Error("The picker still offers unconfigured models.");
+  }
+  await modelSearch.fill("anthropic");
+  await picker.getByText("No models match your search.", { exact: true }).waitFor();
+  await modelSearch.fill("fixture fixed");
+  await picker.getByRole("button", { name: /Fixture fixed model/ }).click();
+  await model.getByText("Thinking off", { exact: true }).waitFor();
+  await model.click();
+  await modelSearch.waitFor();
+  if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
+  const fixedLevelFits = await model.evaluate(button => {
+    const level = button.querySelector(".model-summary-thinking");
+    const chevron = button.querySelector("svg");
+    const bounds = button.getBoundingClientRect();
+    return level && chevron && level.getBoundingClientRect().right <= chevron.getBoundingClientRect().left
+      && chevron.getBoundingClientRect().right < bounds.right;
+  });
+  if (!fixedLevelFits) throw new Error("The long model name clipped its thinking level or menu chevron.");
+  await modelSearch.fill("fixture model");
+  await picker.getByRole("button", { name: /^Fixture model/ }).waitFor();
   await modelSearch.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.classList.contains("model-option"));
   await page.keyboard.press("Enter");
   await picker.waitFor({ state: "hidden" });
   await model.click();
-  await picker.getByRole("combobox", { name: "Thinking level" }).selectOption("high");
+  await thinkingLevel.selectOption("high");
+  await model.getByText("Thinking high", { exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-model-menu.png" });
-  await picker.getByRole("combobox", { name: "Thinking level" }).press("Escape");
+  await thinkingLevel.press("Escape");
   await picker.waitFor({ state: "hidden" });
   if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
+  await page.locator(".composer").screenshot({ path: "output/playwright/pideck-ui-model-thinking.png" });
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
+  await page.locator(".composer-current-model").getByText("Thinking high", { exact: true }).waitFor();
   const runningSessionId = await nav.locator(".nav-session-row[aria-current=true]").getAttribute("id");
   const runningSession = nav.locator(`#${runningSessionId}`);
   await runningSession.locator("[data-activity=running] svg.lucide-loader-circle").waitFor();

@@ -12,6 +12,8 @@ async page => {
     const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", trusted: true, createdAt: 2 };
     const secondSession = { id: "0c1bd9dc-58bd-4918-92ee-bc30609f0dbd", projectId: secondProject.id, title: "Other task", createdAt: 2, updatedAt: 2 };
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
+    const fixedModel = { ...model, id: "fixture-fixed", name: "Fixture fixed model with a long display name to exercise truncation", thinking: ["off"] };
+    const unavailableModel = { ...model, provider: "anthropic", id: "unavailable-fixture", name: "Unconnected fixture model" };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
@@ -184,7 +186,7 @@ async page => {
             setTimeout(() => release?.(), 50);
             return loseReply ? loseRemovalReply() : result;
           }
-          case "model:list": return [{ ...model }];
+          case "model:list": return [{ ...model }, { ...fixedModel, configured: state.configured }, unavailableModel];
           case "model:providers": return [{
             id: model.provider, name: "Fixture provider", configured: state.configured, credential: state.configured ? "oauth" : undefined,
             dynamic: true, methods: [{ type: "api_key", name: "API key" }, { type: "oauth", name: "Sign in with browser" }],
