@@ -129,6 +129,18 @@
   border-left: 2px solid var(--border);
 }
 .queued-row { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12px; }
+.queued-message { display: flex; align-items: center; align-self: stretch; gap: 8px; flex: 1; min-width: 0; }
+.queued-message[draggable='true'] { cursor: grab; }
+.queued-message[draggable='true']:active { cursor: grabbing; }
+.queued-message:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.queued-list li[data-dragging] { opacity: .48; }
+.queued-list li[data-drop] { position: relative; }
+.queued-list li[data-drop]::after {
+  content: ''; position: absolute; inset-inline: 0; height: 2px; border-radius: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.queued-list li[data-drop='before']::after { top: -2px; }
+.queued-list li[data-drop='after']::after { bottom: -2px; }
 .queued-mode { flex: none; color: var(--accent); font-size: 11px; }
 .queued-preview { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-actions { flex: none; display: flex; align-items: center; gap: 2px; }

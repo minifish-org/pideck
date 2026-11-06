@@ -348,7 +348,9 @@ try {
   await queuedRow(editedQueued).waitFor();
   await queueAction(discardedQueued, "Delete message");
   await queuedRow(discardedQueued).waitFor({ state: "detached" });
-  await queueAction(movedQueued, "Move up");
+  await queuedRow(movedQueued).locator(".queued-message").dragTo(queuedRow(editedQueued).locator(".queued-row"), {
+    sourcePosition: { x: 14, y: 15 }, targetPosition: { x: 14, y: 5 },
+  });
   await queue.getByRole("listitem").nth(1).getByText(movedQueued, { exact: true }).waitFor();
   await queueAction(firstQueued, "Steer current run");
   await queuedRow(firstQueued).getByText("Steering", { exact: true }).waitFor();

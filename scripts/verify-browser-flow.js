@@ -105,6 +105,15 @@ async page => {
   const row = text => queue.getByRole("listitem").filter({ hasText: text });
   const queueActions = text => row(text).getByRole("group", { name: "Queued message actions", exact: true });
   const queueButton = (text, name) => queueActions(text).getByRole("button", { name, exact: true });
+  const dragRow = text => row(text).locator(".queued-row");
+  const dragSource = text => row(text).locator(".queued-message");
+  async function dragMessage(text, targetText, position) {
+    const target = dragRow(targetText);
+    const { height } = await target.boundingBox();
+    await dragSource(text).dragTo(target, {
+      sourcePosition: { x: 14, y: 15 }, targetPosition: { x: 14, y: position === "before" ? 5 : height - 5 },
+    });
+  }
   for (const text of ["Prefer a focused check.", "Report the verification.", "Drop this duplicate.", "List follow-up work."]) {
     await prompt.fill(text);
     await prompt.press("Enter");
@@ -113,9 +122,8 @@ async page => {
   if (await queue.getByRole("button", { name: "Queued message actions", exact: true }).count()) {
     throw new Error("The queue still requires opening an actions menu.");
   }
-  if (await queueButton("Prefer a focused check.", "Move up").isEnabled()
-    || await queueButton("List follow-up work.", "Move down").isEnabled()) {
-    throw new Error("A queued message can move past the end of its group.");
+  if (await queue.getByRole("button", { name: /^(Move up|Move down)$/ }).count()) {
+    throw new Error("The queue still shows separate reorder buttons.");
   }
   await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
   const queueViewport = page.viewportSize();
@@ -123,14 +131,14 @@ async page => {
   const editableText = "Report the verification.";
   const narrowActions = queueActions(editableText);
   await narrowActions.scrollIntoViewIfNeeded();
-  for (const name of ["Steer current run", "Edit message", "Move up", "Move down", "Delete message"]) {
+  for (const name of ["Steer current run", "Edit message", "Delete message"]) {
     await queueButton(editableText, name).waitFor();
   }
   const inlineButtonsFit = await narrowActions.evaluate(group => {
     const preview = group.closest("li")?.querySelector(".queued-preview")?.getBoundingClientRect();
     const list = group.closest("ol")?.getBoundingClientRect();
     const buttons = [...group.querySelectorAll("button")].map(button => button.getBoundingClientRect());
-    return preview && list && preview.width >= 40 && buttons.length === 5 && buttons.every((bounds, index) =>
+    return preview && list && preview.width >= 40 && buttons.length === 3 && buttons.every((bounds, index) =>
       bounds.width >= 24 && bounds.height >= 24 && bounds.left >= preview.right - 1 && bounds.right <= innerWidth
         && bounds.top >= Math.max(0, list.top - 1) && bounds.bottom <= Math.min(innerHeight, list.bottom + 1)
         && bounds.top < preview.bottom && bounds.bottom > preview.top
@@ -150,21 +158,64 @@ async page => {
   if (!await queueEditButton.evaluate(button => button === document.activeElement)) {
     throw new Error("Closing the inline queue editor lost keyboard focus.");
   }
+
+  const extraRows = ["Scroll fixture one.", "Scroll fixture two.", "Scroll fixture three.", "Scroll fixture four."];
+  for (const text of extraRows) {
+    await prompt.fill(text);
+    await prompt.press("Enter");
+    await row(text).waitFor();
+  }
+  const lastText = extraRows.at(-1);
+  const lastRow = dragSource(lastText);
+  await lastRow.scrollIntoViewIfNeeded();
+  if (!await queue.evaluate(list => list.scrollTop > 0)) throw new Error("The long queue is not scrolled.");
+  const sourceBounds = await lastRow.boundingBox();
+  const queueBounds = await queue.boundingBox();
+  const dragX = sourceBounds.x + 14;
+  await page.mouse.move(dragX, sourceBounds.y + sourceBounds.height / 2);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(dragX, queueBounds.y + 7, { steps: 12 });
+    await row(lastText).and(queue.locator('[data-dragging="true"]')).waitFor({ state: "attached" });
+    await page.waitForFunction(() => document.querySelector(".queued-list").scrollTop <= 1);
+    const firstBounds = await dragRow("Prefer a focused check.").boundingBox();
+    await page.mouse.move(dragX, firstBounds.y + 5);
+    await page.mouse.move(dragX + 2, firstBounds.y + 5);
+    await row("Prefer a focused check.").and(queue.locator('[data-drop="before"]')).waitFor({ state: "attached" });
+    await page.mouse.move(dragX + 2, firstBounds.y - 1);
+    await page.mouse.move(dragX + 3, firstBounds.y - 1);
+  } finally {
+    await page.mouse.up();
+  }
+  await queue.getByRole("listitem").first().getByText(lastText, { exact: true }).waitFor();
+  for (const text of extraRows) {
+    await queueButton(text, "Delete message").click();
+    await row(text).waitFor({ state: "detached" });
+  }
   await page.setViewportSize(queueViewport);
   await queueEditButton.click();
   await queueEdit.fill("Report the final verification.");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await row("Report the final verification.").waitFor();
-  const moveDown = queueButton("Report the final verification.", "Move down");
-  await moveDown.press("Enter");
+  const editedRow = dragSource("Report the final verification.");
+  await editedRow.press("Alt+ArrowDown");
   await queue.getByRole("listitem").nth(2).getByText("Report the final verification.", { exact: true }).waitFor();
-  if (!await moveDown.evaluate(button => button === document.activeElement)) throw new Error("Reordering lost the active button.");
+  if (!await editedRow.evaluate(element => element === document.activeElement)) throw new Error("Reordering lost the focused message.");
+  await editedRow.press("Alt+ArrowUp");
+  await queue.getByRole("listitem").nth(1).getByText("Report the final verification.", { exact: true }).waitFor();
+  await dragMessage("Report the final verification.", "Report the final verification.", "before");
+  await prompt.fill("Keep this unsent draft.");
+  await editedRow.dragTo(prompt, { sourcePosition: { x: 14, y: 15 } });
+  if (await prompt.inputValue() !== "Keep this unsent draft.") throw new Error("A canceled queue drag changed the draft.");
+  await prompt.fill("");
+  await dragMessage("Report the final verification.", "Drop this duplicate.", "after");
+  await queue.getByRole("listitem").nth(2).getByText("Report the final verification.", { exact: true }).waitFor();
   await queueButton("Drop this duplicate.", "Delete message").press("Enter");
   await row("Drop this duplicate.").waitFor({ state: "detached" });
   if (!await queueButton("Report the final verification.", "Edit message").evaluate(button => button === document.activeElement)) {
     throw new Error("Deleting a queued message lost keyboard focus.");
   }
-  await queueButton("List follow-up work.", "Move up").click();
+  await dragMessage("List follow-up work.", "Report the final verification.", "before");
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
   await page.mouse.move(0, 0);
   await page.screenshot({ path: "output/playwright/pideck-ui-queue.png" });
@@ -175,7 +226,12 @@ async page => {
     throw new Error("Steering a queued message lost keyboard focus.");
   }
   if (await steer.count() && await steer.isEnabled()) throw new Error("A steering message still offers Steer.");
+  await dragMessage("List follow-up work.", "Prefer a focused check.", "before");
+  await queue.getByRole("listitem").nth(0).getByText("Prefer a focused check.", { exact: true }).waitFor();
+  await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
+  if (await page.locator(".queued-messages [role=alert]").count()) throw new Error("An invalid drop reached the host.");
   await nav.locator(`.nav-scroll .nav-row:not([id="${runningSessionId}"])`).first().click();
+  await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-queue")));
   const finishedBadge = runningSession.locator("[data-activity=finished]");
   await finishedBadge.waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-background.png" });

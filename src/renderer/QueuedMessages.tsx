@@ -1,15 +1,15 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import type { ChatView, QueueUpdate, Selection } from '../shared/api';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
 
 type Item = NonNullable<ChatView['queued']>[number];
 type Edit = { id: number; text: string; original: string; hasImages: boolean };
+type Move = Extract<QueueUpdate, { action: 'move' }>;
+type Drop = Pick<Move, 'targetId' | 'position'>;
 
-function QueueActions({ item, before, after, canSteer, blocked, onEdit, onUpdate }: {
+function QueueActions({ item, canSteer, blocked, onEdit, onUpdate }: {
   item: Item;
-  before?: Item;
-  after?: Item;
   canSteer: boolean;
   blocked: boolean;
   onEdit: () => void;
@@ -28,18 +28,6 @@ function QueueActions({ item, before, after, canSteer, blocked, onEdit, onUpdate
       onClick={() => { if (!blocked) onEdit(); }}>
       <Icon name="edit" />
     </button>
-    {(before || after) && <>
-      <button className="icon-button" type="button" aria-label="Move up" title="Move up"
-        aria-disabled={blocked || !before || undefined} tabIndex={before ? undefined : -1}
-        onClick={() => before && update({ action: 'move', targetId: before.id, position: 'before' })}>
-        <Icon name="arrowUp" />
-      </button>
-      <button className="icon-button" type="button" aria-label="Move down" title="Move down"
-        aria-disabled={blocked || !after || undefined} tabIndex={after ? undefined : -1}
-        onClick={() => after && update({ action: 'move', targetId: after.id, position: 'after' })}>
-        <Icon name="arrowDown" />
-      </button>
-    </>}
     <button className="icon-button queue-action-delete" type="button"
       aria-label="Delete message" title="Delete message" aria-disabled={blocked || undefined}
       onClick={() => update({ action: 'remove' })}>
@@ -58,23 +46,45 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
   const [editing, setEditing] = useState<Edit>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [drag, setDrag] = useState<{ id: number; over?: Drop }>();
+  const dragSource = useRef<number | undefined>(undefined);
   const busy = useRef(false);
   const editor = useRef<HTMLFormElement>(null);
   const list = useRef<HTMLOListElement>(null);
-  const restore = useRef<{ id: number; removed?: number; steered?: true } | undefined>(undefined);
+  const restore = useRef<{ id: number; removed?: number; steered?: true; move?: Drop } | undefined>(undefined);
   // A steer enters the current run at its next boundary. Follow-ups wait for the run's end.
   const ordered = items.toSorted((left, right) => Number(right.delivery === 'steer') - Number(left.delivery === 'steer'));
   const missing = editing !== undefined && !items.some(({ id }) => id === editing.id);
+  const canReorder = enabled && !pending && !editing;
+
+  function clearDrag() {
+    dragSource.current = undefined;
+    setDrag(undefined);
+  }
+
+  useLayoutEffect(() => {
+    if (dragSource.current !== undefined && (!canReorder || !items.some(({ id }) => id === dragSource.current))) clearDrag();
+  }, [canReorder, items]);
 
   useLayoutEffect(() => {
     const focus = restore.current;
     if (!focus || editing || items.some(({ id, delivery }) => id === focus.removed
       || (focus.steered && canSteer && id === focus.id && delivery === 'follow-up'))) return;
-    const target = list.current?.querySelector<HTMLButtonElement>(`[data-queue-id="${focus.id}"] .queue-action-edit`);
+    if (focus.move) {
+      const from = items.findIndex(({ id }) => id === focus.id);
+      const to = items.findIndex(({ id }) => id === focus.move?.targetId);
+      if (from >= 0 && to >= 0 && (from < to) !== (focus.move.position === 'before')) return;
+    }
+    const row = list.current?.querySelector(`[data-queue-id="${focus.id}"]`);
+    const target = (focus.move && row?.querySelector<HTMLElement>('.queued-message[tabindex]'))
+      || row?.querySelector<HTMLElement>('.queue-action-edit');
     restore.current = undefined;
-    if (document.activeElement !== document.body) return;
-    if (target) target.focus({ preventScroll: true });
-    else onFocusComposer();
+    if (document.activeElement === document.body) {
+      if (target) target.focus({ preventScroll: !focus.move });
+      else onFocusComposer();
+    } else if (focus.move && target && target === document.activeElement) {
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }, [canSteer, editing, items, onFocusComposer]);
 
   async function run<T>(action: () => Promise<T>, complete?: (result: T) => void) {
@@ -103,10 +113,26 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
       try {
         await window.pideck.invoke('chat:queue-update', { ...selection, id, ...change });
       } catch (cause) {
-        if (restore.current?.removed === id || (restore.current?.id === id && restore.current.steered)) restore.current = undefined;
+        if (restore.current?.removed === id || restore.current?.id === id) restore.current = undefined;
         throw cause;
       }
     }, complete);
+  }
+
+  function dropAt(event: DragEvent<HTMLOListElement>): Drop | undefined {
+    if (!canReorder || busy.current || !(event.target instanceof Element)) return;
+    const source = ordered.findIndex(({ id }) => id === dragSource.current);
+    if (source < 0) return;
+    // A drop on the insertion line can land in the gap between rows.
+    const row = event.target.closest('[data-queue-id]')
+      ?? Array.from(event.currentTarget.children).find(child => event.clientY < child.getBoundingClientRect().bottom)
+      ?? event.currentTarget.lastElementChild;
+    const target = ordered.findIndex(({ id }) => id === Number(row?.getAttribute('data-queue-id')));
+    if (!row || source === target || ordered[source].delivery !== ordered[target]?.delivery) return;
+    const bounds = row.getBoundingClientRect();
+    const before = event.clientY < bounds.top + bounds.height / 2;
+    if (source === target + (before ? -1 : 1)) return;
+    return { targetId: ordered[target].id, position: before ? 'before' : 'after' };
   }
 
   function startEdit(id: number) {
@@ -159,14 +185,40 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
   if (!ordered.length && !editing && !error) return null;
 
   const rows = ordered.map((item, index) => {
-    const previous = ordered[index - 1];
-    const following = ordered[index + 1];
-    return <li key={item.id} data-queue-id={item.id} data-delivery={item.delivery}>
+    const previous = ordered[index - 1]?.delivery === item.delivery ? ordered[index - 1] : undefined;
+    const following = ordered[index + 1]?.delivery === item.delivery ? ordered[index + 1] : undefined;
+    const hasPeers = Boolean(previous || following);
+    const draggable = hasPeers && canReorder;
+    return <li key={item.id} data-queue-id={item.id} data-delivery={item.delivery}
+      data-dragging={drag?.id === item.id || undefined} data-drop={drag?.over?.targetId === item.id ? drag.over.position : undefined}>
       {editing?.id === item.id ? renderEditor(editing) : <div className="queued-row">
-        {item.delivery === 'steer' && <span className="queued-mode">Steering</span>}
-        <span className="queued-preview" title={item.preview}>{item.preview}</span>
-        <QueueActions item={item} before={previous?.delivery === item.delivery ? previous : undefined}
-          after={following?.delivery === item.delivery ? following : undefined}
+        <div className="queued-message" draggable={draggable} tabIndex={hasPeers ? 0 : undefined}
+          title={draggable ? `${item.preview}\nDrag to reorder` : item.preview}
+          aria-keyshortcuts={hasPeers ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+          onDragStart={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (!draggable || busy.current) { event.preventDefault(); return; }
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('application/x-pideck-queue-message', '');
+            dragSource.current = item.id;
+            setDrag({ id: item.id });
+          }}
+          onDragEnd={() => { if (dragSource.current === item.id) clearDrag(); }}
+          onKeyDown={(event) => {
+            if (!draggable || busy.current || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+              || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+            event.preventDefault();
+            const up = event.key === 'ArrowUp';
+            const peer = up ? previous : following;
+            if (!peer) return;
+            const move: Drop = { targetId: peer.id, position: up ? 'before' : 'after' };
+            restore.current = { id: item.id, move };
+            update(item.id, { action: 'move', ...move });
+          }}>
+          {item.delivery === 'steer' && <span className="queued-mode">Steering</span>}
+          <span className="queued-preview">{item.preview}</span>
+        </div>
+        <QueueActions item={item}
           canSteer={canSteer} blocked={!enabled || pending || Boolean(editing)} onEdit={() => startEdit(item.id)}
           onUpdate={(change) => update(item.id, change)} />
       </div>}
@@ -177,7 +229,28 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
   return <div className="queued-messages">
     {rows.length > 0 && <>
       <div className="queued-heading" aria-hidden="true">Queued messages <span>{ordered.length}</span></div>
-      <ol className="queued-list" aria-label="Queued messages" ref={list}>
+      <ol className="queued-list" aria-label="Queued messages" ref={list}
+        onDragOver={(event) => {
+          const id = dragSource.current;
+          if (id === undefined) return;
+          const over = dropAt(event);
+          event.dataTransfer.dropEffect = over ? 'move' : 'none';
+          if (over) event.preventDefault();
+          setDrag(current => current?.over?.targetId === over?.targetId && current?.over?.position === over?.position
+            ? current : { id, over });
+        }}
+        onDragLeave={(event) => {
+          if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+          setDrag(current => current?.over ? { id: current.id } : current);
+        }}
+        onDrop={(event) => {
+          const id = dragSource.current;
+          if (id === undefined) return;
+          event.preventDefault();
+          const over = dropAt(event);
+          clearDrag();
+          if (over) update(id, { action: 'move', ...over });
+        }}>
         {rows}
       </ol>
     </>}

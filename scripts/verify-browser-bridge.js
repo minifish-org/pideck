@@ -320,7 +320,7 @@ async page => {
                 ["follow-up", "List follow-up work."],
                 ["follow-up", "Report the final verification."],
               ])) throw new Error("Queue operations did not leave the expected order and content.");
-              setTimeout(() => {
+              window.addEventListener("pideck-fixture-finish-queue", () => {
                 const reply = { id: "reply", entryId: 8, role: "assistant", blocks: [
                   { type: "text", text: "I updated the status and checked the result." },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
@@ -329,7 +329,7 @@ async page => {
                 ] };
                 for (const { id } of queued) queuedTexts.delete(id);
                 change(sessionId, { messages: [state.views[sessionId].messages[0], reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
-              }, 700);
+              }, { once: true });
             }
             return;
           }
