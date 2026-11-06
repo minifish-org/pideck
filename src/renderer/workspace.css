@@ -5,7 +5,7 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  background: var(--sidebar);
+  background: var(--bg);
   border-left: 1px solid var(--border-soft);
 }
 
@@ -37,7 +37,7 @@
   gap: 8px;
   padding-inline: var(--workspace-inset, 16px);
   border-bottom: 1px solid var(--border-soft);
-  background: var(--sidebar);
+  background: var(--bg);
 }
 
 .workspace-panel-header h2 {
@@ -141,11 +141,10 @@
 .workspace-file-list button:hover { color: var(--text); background: var(--surface); }
 .workspace-file-list button[aria-current="true"] {
   color: var(--text);
-  background: var(--accent-soft, color-mix(in srgb, var(--accent) 9%, var(--sidebar)));
+  background: var(--surface-control);
 }
 
 .workspace-file-icon { flex: none; color: var(--dim); }
-.workspace-file-list button[aria-current="true"] .workspace-file-icon { color: var(--accent); }
 .workspace-file-label { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; }
 .workspace-file-name { flex: 0 1 auto; font-weight: 550; }
 .workspace-file-label:has(.workspace-file-detail) .workspace-file-name { max-width: 80%; }

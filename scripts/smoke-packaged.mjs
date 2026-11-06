@@ -101,40 +101,43 @@ async function verifyNativeTitlebar(app, page) {
     return { bounds: window.getBounds(), minimum: window.getMinimumSize(), position: window.getWindowButtonPosition() };
   });
   assert.deepEqual(position, { x: 20, y: 21 });
-  async function measure(width, inset) {
-    await page.waitForFunction(({ width, inset }) => {
+  async function measure(width, docked, inset) {
+    await page.waitForFunction(({ width, docked, inset }) => {
       const overlay = navigator.windowControlsOverlay;
-      if (!overlay?.visible || innerWidth !== width) return false;
+      if (!overlay?.visible || innerWidth !== width || document.querySelector(".app")?.classList.contains("app--nav") !== docked) return false;
       const area = overlay.getTitlebarAreaRect();
       return area.right === width && (inset === undefined || area.x === inset);
-    }, { width, inset });
+    }, { width, docked, inset });
     return page.evaluate(() => {
       const safeArea = navigator.windowControlsOverlay.getTitlebarAreaRect();
       const titlebar = document.querySelector(".titlebar").getBoundingClientRect();
       const toggle = document.getElementById("toggle-navigation").getBoundingClientRect();
+      const openFolder = document.getElementById("nav-open-project")?.getBoundingClientRect();
       return {
         nativeInset: safeArea.x,
         nativeHeight: safeArea.height,
         titlebarHeight: titlebar.height,
         buttonX: toggle.x,
         buttonCenterY: toggle.y + toggle.height / 2,
+        sidebarAlignment: openFolder ? toggle.left + toggle.width / 2 - (openFolder.left + openFolder.width / 2) : undefined,
       };
     });
   }
-  const wide = await measure(bounds.width);
+  const wide = await measure(bounds.width, true);
   try {
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), minimum);
     // AppKit can report an intermediate button inset before the overlay settles.
-    const narrow = await measure(minimum[0], wide.nativeInset);
+    const narrow = await measure(minimum[0], false, wide.nativeInset);
     for (const chrome of [wide, narrow]) {
       assert.ok(chrome.nativeInset > 0 && chrome.buttonX - chrome.nativeInset >= 8);
       assert.ok(Math.abs(chrome.titlebarHeight - chrome.nativeHeight) <= 1);
       assert.ok(Math.abs(chrome.buttonCenterY - chrome.nativeHeight / 2) <= 1);
     }
-    assert.equal(wide.buttonX, narrow.buttonX);
+    assert.ok(Math.abs(wide.sidebarAlignment) <= 1);
+    assert.ok(Math.abs(narrow.buttonX - narrow.nativeInset - 8) <= 1);
   } finally {
     await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), bounds);
-    await measure(bounds.width, wide.nativeInset);
+    await measure(bounds.width, true, wide.nativeInset);
   }
 }
 

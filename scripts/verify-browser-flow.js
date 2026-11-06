@@ -386,6 +386,18 @@ async page => {
 
   const changes = page.getByRole("button", { name: "Changes", exact: true });
   const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
+  const sidebar = page.locator("#toggle-navigation");
+  for (const toggle of [sidebar, changes, terminalToggle]) {
+    if (!await toggle.evaluate(button => !button.textContent.trim() && Boolean(button.title && button.querySelector("svg")))) {
+      throw new Error("A workspace toggle needs a visible icon and a tooltip.");
+    }
+  }
+  const hasSelectedToggleColors = toggle => toggle.evaluate(button => {
+    const style = getComputedStyle(button);
+    return style.backgroundColor === "rgba(101, 108, 118, 0.2)"
+      && style.color === "rgb(240, 246, 252)"
+      && style.borderTopColor === "rgba(0, 0, 0, 0)";
+  });
   const terminal = page.getByRole("region", { name: "Project terminal" });
   await page.evaluate(() => sessionStorage.setItem("pideck-review-list-failure", "1"));
   await changes.click();
@@ -428,10 +440,21 @@ async page => {
   const viewport = page.viewportSize();
   const aligned = await page.evaluate(() => {
     const bounds = selector => document.querySelector(selector).getBoundingClientRect();
-    return Math.abs(bounds(".titlebar-leading").right - bounds(".navigation").right) <= 1
+    const centerX = selector => { const rect = bounds(selector); return rect.left + rect.width / 2; };
+    const sidebarEdge = bounds(".navigation").right;
+    return Math.abs(bounds(".titlebar-leading").right - sidebarEdge) <= 1
+      && Math.abs(centerX("#toggle-navigation") - centerX("#nav-open-project")) <= 1
       && Math.abs(bounds(".chat-thread").left - bounds(".composer").left) <= 1;
   });
-  if (!aligned) throw new Error("The titlebar and sidebar, or the transcript and composer, do not align.");
+  if (!aligned) throw new Error("The titlebar, sidebar toggle, or conversation layout does not align.");
+  const darkCanvas = await page.evaluate(() => {
+    const background = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
+    return background(".titlebar") === "rgb(13, 17, 23)" && background(".navigation") === "rgb(13, 17, 23)"
+      && background(".nav-session-row[aria-current=true]") === "rgb(33, 40, 48)";
+  });
+  if (!darkCanvas || !await hasSelectedToggleColors(sidebar) || !await hasSelectedToggleColors(changes)) {
+    throw new Error("The workspace chrome does not use the GitHub Dark canvas and neutral selections.");
+  }
   await divider.blur();
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
   await page.setViewportSize({ width: 1920, height: 960 });
@@ -440,7 +463,6 @@ async page => {
   await page.setViewportSize({ width: 1100, height: 680 });
   const back = review.getByRole("button", { name: "Back to chat" });
   await back.waitFor();
-  const sidebar = page.locator("#toggle-navigation");
   await sidebar.click();
   await back.waitFor({ state: "detached" });
   await sidebar.click();
@@ -467,20 +489,29 @@ async page => {
   if (!compactMenuFits) throw new Error("The model dropdown overflows a narrow window.");
   await page.locator(".titlebar").click({ position: { x: 380, y: 25 } });
   await picker.waitFor({ state: "hidden" });
-  await sidebar.click();
+  await sidebar.press("Enter");
   await nav.waitFor();
   await page.waitForFunction(() => document.querySelector(".workspace").inert
     && document.activeElement?.id.startsWith("nav-session-"));
+  const compactToggleAligned = await page.evaluate(() => {
+    const centerX = id => { const rect = document.getElementById(id).getBoundingClientRect(); return rect.left + rect.width / 2; };
+    return Math.abs(centerX("toggle-navigation") - centerX("nav-open-project")) <= 1;
+  });
+  if (!compactToggleAligned) throw new Error("The compact sidebar toggle does not align with Open folder.");
   if (await page.locator(".workspace").evaluate(panel => panel.getBoundingClientRect().width) !== 760) throw new Error("Compact sidebar squeezed the workspace.");
   await page.screenshot({ path: "output/playwright/pideck-ui-sidebar.png" });
   await page.keyboard.press("Escape");
   await nav.waitFor({ state: "detached" });
   await page.waitForFunction(() => document.activeElement?.id === "toggle-navigation");
+  if (await sidebar.getAttribute("aria-label") !== "Show sidebar") throw new Error("The closed sidebar cannot be reopened by its toggle.");
   await sidebar.click();
   await nav.waitFor();
   await terminalToggle.click();
   await nav.waitFor({ state: "detached" });
   await terminal.getByText("Shell running").waitFor();
+  if (await terminalToggle.getAttribute("aria-pressed") !== "true" || !await hasSelectedToggleColors(terminalToggle)) {
+    throw new Error("The active terminal toggle does not use GitHub Dark neutral selection.");
+  }
   const screen = terminal.locator(".xterm-helper-textarea");
   await screen.waitFor();
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);

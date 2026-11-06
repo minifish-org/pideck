@@ -759,13 +759,13 @@ function Desktop() {
   }, [api, opening, modalOpen, canCreateSession, reviewOverlaysChat, projectId, canUseWorkspace, showNavigation, reviewVisible, terminalVisible]);
 
   return (
-    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${compactNavigation ? ' app--compact' : ''}`}>
+    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}`}>
       <header className="titlebar" onKeyDown={(event) => {
         if (drawerOpen && event.key === 'Escape') closeDrawer(true);
       }}>
         <div className="titlebar-leading">
           {!project && <div className="wordmark"><Icon name="mark" /> Pideck</div>}
-          {project && <button className="icon-button" id="toggle-navigation" type="button"
+          {project && <button className="icon-button panel-toggle" id="toggle-navigation" type="button"
             aria-label={showNavigation ? 'Hide sidebar' : 'Show sidebar'} aria-controls={showNavigation ? 'workspace-navigation' : undefined}
             title={`${showNavigation ? 'Hide' : 'Show'} sidebar (${modifier}${shift}B)`} aria-expanded={showNavigation}
             onClick={toggleNavigation}><Icon name="sidebar" /></button>}
@@ -794,10 +794,10 @@ function Desktop() {
             {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
               {!reviewOverlaysChat && <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
                 title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
-                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /><span>Changes</span></button>}
+                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>}
               <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
                 title={`Terminal (${modifier}\`)`} aria-pressed={terminalVisible}
-                disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /><span>Terminal</span></button>
+                disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
             </div>}
           </div>
         </div>
