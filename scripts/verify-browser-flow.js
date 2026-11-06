@@ -97,11 +97,9 @@ async page => {
 
   await page.getByRole("button", { name: "Load earlier messages" }).click();
   await page.getByText("An earlier coding request.").waitFor();
-  await page.getByRole("button", { name: "Summarize context" }).click();
-  const compact = page.getByRole("region", { name: "Summarize context" });
-  await compact.getByLabel(/What should the summary preserve/).fill("Keep the testing details.");
-  await compact.getByRole("button", { name: "Summarize", exact: true }).click();
-  await page.getByText("Context summarized.").waitFor();
+  if (await page.getByRole("button", { name: "Summarize context" }).count()) {
+    throw new Error("The title bar still exposes manual context compaction.");
+  }
   await page.getByRole("article", { name: "Pideck" }).filter({ hasText: "I updated the status and checked the result." })
     .getByRole("button", { name: "Branch from here" }).click();
   const forked = nav.getByRole("button", { name: "Verify status (fork)", exact: true });

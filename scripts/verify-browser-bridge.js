@@ -261,9 +261,6 @@ async page => {
             }
             return;
           }
-          case "chat:compact":
-            if (payload.instructions !== "Keep the testing details.") throw new Error("Expected compaction instructions.");
-            return "compacted";
           case "chat:fork": {
             const view = state.views[payload.sessionId];
             const index = view.messages.findIndex((message) => message.entryId === payload.entryId);

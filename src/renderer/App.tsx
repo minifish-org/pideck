@@ -737,7 +737,6 @@ function Desktop() {
                     {!dockedNavigation ? project.name : project.trusted ? 'Sessions' : 'Project setup'}
                   </span>}
             </div>}
-            <div id="session-actions-slot" inert={reviewOverlaysChat || drawerOpen} />
           </div>
           <div className="title-actions">
             {!showNavigation && !reviewOverlaysChat && project?.trusted && session && <button className="icon-button" type="button"

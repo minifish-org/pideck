@@ -130,8 +130,7 @@
   height: 34px; padding: 0 7px; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px;
   white-space: nowrap; font-size: 12px; anchor-name: --composer-model;
 }
-.session-context-button { anchor-name: --session-context; }
-.model-trigger:hover, .model-trigger:has(+ :popover-open), .session-context-button:has(+ :popover-open) {
+.model-trigger:hover, .model-trigger:has(+ :popover-open) {
   color: var(--text); background: var(--surface-hover);
 }
 .model-trigger svg { flex: none; }
@@ -153,21 +152,9 @@
 }
 .chat--empty .model-popover { top: anchor(bottom); bottom: auto; margin: 6px 0 0; }
 .model-popover:popover-open { display: flex; flex-direction: column; gap: 6px; }
-.compact-popover {
-  position-anchor: --session-context;
-  left: anchor(left); top: anchor(bottom); margin-top: 6px;
-  position-try-fallbacks: flip-inline;
-  inline-size: min(326px, 60vw); max-block-size: calc(100vh - 70px); padding: 14px;
-}
-.compact-popover h2 { margin: 0; font-size: 14px; font-weight: 650; }
-.compact-popover p { margin: 4px 0 12px; font-size: 12px; color: var(--muted); }
-.compact-popover label { display: block; font-size: 12px; color: var(--text); }
-.compact-popover label span { color: var(--muted); }
-.compact-popover textarea, .model-effort select {
+.model-effort select {
   border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit;
 }
-.compact-popover textarea { display: block; width: 100%; resize: vertical; padding: 6px 8px; margin-block: 5px 10px; }
-.compact-popover form > button { display: flex; margin-left: auto; }
 .model-search { position: relative; flex: none; }
 .model-search > svg { position: absolute; top: 9px; left: 8px; color: var(--muted); pointer-events: none; }
 .model-search input {

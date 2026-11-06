@@ -104,8 +104,6 @@ const validators = {
   "chat:cancel": (value) => object(value) && selection(value),
   "chat:fork": (value) => object(value) && selection(value) && entry(value.entryId)
     && (value.title === undefined || string(value.title, sessionTitleLimit)),
-  "chat:compact": (value) => object(value) && selection(value)
-    && (value.instructions === undefined || string(value.instructions, 8_192)),
   "review:list": (value) => object(value) && project(value),
   "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
   "terminal:open": (value) => object(value) && project(value) && size(value),

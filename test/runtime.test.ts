@@ -282,41 +282,48 @@ test("native transcript retains watched entries, loads earlier history, and fork
   }
 });
 
-test("native manual compaction reports progress and preserves prior transcript entries", async () => {
+test("native automatic compaction preserves history and continues the waiting request", async () => {
   const { root, runtime, project, selection, input, faux } = await openFixture();
   const release = Promise.withResolvers<void>();
   try {
     runtime.trustProject(project.id);
-    faux.setResponses([fauxAssistantMessage("Short reply.")]);
-    const short = waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Short reply."));
-    await runtime.send(input);
-    await short;
-    assert.equal(await runtime.compact(selection), "no-change");
+    // Keep the first two requests below the faux model's background threshold.
+    // The next input crosses its blocking threshold while an older turn can be cut.
+    const earlier = "Earlier working context." + " .".repeat(60_000);
+    const latest = "Latest working context." + " .".repeat(60_000);
+    const next = "Continue the work." + " .".repeat(99_000);
     faux.setResponses([fauxAssistantMessage("Earlier reply."), fauxAssistantMessage("Latest reply.")]);
-    for (const [label, answer] of [["Earlier", "Earlier reply."], ["Latest", "Latest reply."]]) {
+    for (const [text, answer] of [[earlier, "Earlier reply."], [latest, "Latest reply."]]) {
       const idle = waitForView(runtime, selection, view => view.status === "idle" && textIn(view, answer));
-      await runtime.send({ ...input, text: label + " .".repeat(42_000) });
+      await runtime.send({ ...input, text });
       await idle;
     }
-    let modelSawInstructions = false;
-    faux.setResponses([async request => {
-      modelSawInstructions = request.messages.some(message => message.role === "user" && (
-        typeof message.content === "string" ? message.content : message.content.flatMap(
-          block => block.type === "text" ? [block.text] : [],
-        ).join(" ")
-      ).includes("Keep the project rule."));
-      await release.promise;
-      return fauxAssistantMessage("A native summary.");
-    }]);
+    let nextRequestUsedSummary = false;
+    const summary = "A native summary of the earlier work.";
+    faux.setResponses([
+      async () => {
+        await release.promise;
+        return fauxAssistantMessage(summary);
+      },
+      request => {
+        const userText = request.messages.flatMap(message => message.role !== "user" ? []
+          : typeof message.content === "string" ? [message.content]
+          : message.content.flatMap(block => block.type === "text" ? [block.text] : []));
+        nextRequestUsedSummary = userText.some(text => text.includes(summary))
+          && userText.includes(next) && !userText.includes(earlier);
+        return fauxAssistantMessage("Continued after compaction.");
+      },
+    ]);
     const active = waitForView(runtime, selection, view => view.activity?.kind === "compacting");
-    const compaction = runtime.compact(selection, "Keep the project rule.");
+    await runtime.send({ ...input, text: next });
     await active;
     release.resolve();
-    assert.equal(await compaction, "compacted");
-    assert.equal(modelSawInstructions, true);
-    const view = await waitForView(runtime, selection, view => view.status === "idle");
+    const view = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Continued after compaction."));
+    assert.equal(nextRequestUsedSummary, true);
+    assert.ok(textIn(view, earlier));
     assert.ok(textIn(view, "Earlier reply."));
     assert.ok(textIn(view, "Latest reply."));
+    assert.ok(textIn(view, next));
   } finally {
     release.resolve();
     await runtime.close();

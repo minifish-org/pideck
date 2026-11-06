@@ -140,7 +140,6 @@ export type Commands = {
   "chat:send": [SendChat, void];
   "chat:cancel": [Selection, void];
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];
-  "chat:compact": [Selection & { instructions?: string }, "compacted" | "no-change" | "stopped" | "failed"];
   "review:list": [{ projectId: string }, ReviewFile[]];
   "review:patch": [{ projectId: string; path: string }, ReviewPatch];
   "terminal:open": [{ projectId: string } & TerminalSize, TerminalOpen];

@@ -1,6 +1,5 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, SendChat, Session, Thinking } from '../shared/api';
@@ -154,41 +153,6 @@ async function readAttachment(file: File): Promise<Attachment> {
   });
 }
 
-function CompactPopover({ onConfirm }: { onConfirm: (instructions: string) => void }) {
-  const id = useId();
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLDivElement>(null);
-  const [instructions, setInstructions] = useState('');
-
-  return <>
-    <button className="icon-button session-context-button" type="button" ref={trigger} aria-label="Summarize context"
-      title="Summarize context" popoverTarget={id}><Icon name="layers" /></button>
-    <div className="chat-popover compact-popover" id={id} ref={panel} popover="auto" role="region"
-      aria-label="Summarize context" onBlur={(event) => {
-        if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger.current
-          && !event.currentTarget.contains(event.relatedTarget) && event.currentTarget.matches(':popover-open')) {
-          event.currentTarget.hidePopover();
-        }
-      }} onToggle={(event) => {
-        if (event.newState === 'open') panel.current?.querySelector('textarea')?.focus({ preventScroll: true });
-        else setInstructions('');
-      }}>
-      <h2>Summarize context</h2>
-      <p>Free up room for the model. Your full conversation stays available.</p>
-      <form onSubmit={(event) => {
-        event.preventDefault();
-        panel.current?.hidePopover();
-        onConfirm(instructions.trim());
-      }}>
-        <label>What should the summary preserve? <span>(optional)</span>
-          <textarea rows={2} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
-        </label>
-        <button type="submit" className="button button--primary">Summarize</button>
-      </form>
-    </div>
-  </>;
-}
-
 type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
 
 function visibleReadingPosition(element: HTMLElement): ReadingPosition | undefined {
@@ -252,9 +216,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const currentPosition = useRef(readingPosition);
   const lastWatch = useRef<string | undefined>(undefined);
   const { view, watchId, connected, error: connectionError, retry, loadEarlier } = useConversation(selection, currentPosition);
-  const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
-  const [compacting, setCompacting] = useState(false);
-  const [notice, setNotice] = useState<string>();
   const [stopping, setStopping] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
   const [readingHistory, setReadingHistory] = useState(false);
@@ -273,7 +234,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
 
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
   const busy = view?.status === 'running' || view?.status === 'cancelling';
-  const agentCompacting = compacting || view?.activity?.kind === 'compacting';
+  const agentCompacting = view?.activity?.kind === 'compacting';
   const activeKey = view?.model && modelKey(view.model);
   const desiredModel = busy ? activeKey : draft.model || activeKey || defaultModel;
   const model = desiredModel
@@ -290,13 +251,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured)
     && hasDraft && (!attachments.length || Boolean(model?.supportsImages));
-  const canCompact = connected && !busy && !agentCompacting && Boolean(activeKey)
-    && Boolean(view?.hasEarlier || view?.messages.some(({ role }) => role === 'assistant'));
   const gaps = view?.gaps ?? [];
-
-  useLayoutEffect(() => {
-    setActionsSlot(document.getElementById('session-actions-slot'));
-  }, []);
 
   useEffect(() => {
     if (!connected || (!busy && !agentCompacting)) setStopping(false);
@@ -466,25 +421,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     }
   }
 
-  async function compact(instructions: string) {
-    setCompacting(true);
-    setNotice(undefined);
-    update({ error: undefined });
-    try {
-      const result = await window.pideck.invoke('chat:compact', { ...selection, instructions: instructions || undefined });
-      if (result === 'failed') update({ error: 'Couldn’t summarize context. You can still read the full conversation.' });
-      else setNotice({
-        compacted: 'Context summarized.',
-        'no-change': 'There’s no earlier context to summarize yet.',
-        stopped: 'Summarization stopped.',
-      }[result]);
-    } catch (error) {
-      update({ error: readableError(error) });
-    } finally {
-      setCompacting(false);
-    }
-  }
-
   const fork = useCallback(async (entryId: number) => {
     if (!connected || forking) return;
     setForking(true);
@@ -528,7 +464,6 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
 
   return (
     <main className={`chat${empty ? ' chat--empty' : ''}`} aria-label="Conversation">
-      {actionsSlot && canCompact && createPortal(<CompactPopover onConfirm={compact} />, actionsSlot)}
       {!connected && (
         <div className={`notice ${connectionError ? '' : 'notice--info'}`} role={connectionError ? 'alert' : 'status'}>
           <Icon name={connectionError ? 'alert' : 'chat'} />
@@ -580,20 +515,18 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
         {runStatus && <div className="composer-run">
           <div className="run-state" role="status"><span className="run-state-dot" />{runStatus}</div>
           <button className="composer-stop" type="button" onClick={cancel}
-            title={agentCompacting ? 'Stop summarizing' : 'Stop the run'} aria-label={agentCompacting ? 'Stop summarizing' : 'Stop the run'}
+            title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
             disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
         </div>}
         {view?.queued?.length ? <ul className="queued-list" aria-label="Queued messages">
           {view.queued.map((item) => <li key={item.id}><span>{item.delivery === 'steer' ? 'Steering' : 'Up next'}</span><span title={item.preview}>{item.preview}</span></li>)}
         </ul> : null}
-        {(draft.error || modelsError || notice) && <div className={`notice composer-notice ${draft.error || modelsError ? '' : 'notice--info'}`}
-          role={draft.error || modelsError ? 'alert' : 'status'}>
-          <Icon name={draft.error || modelsError ? 'alert' : 'check'} /><span>{draft.error ?? modelsError ?? notice}</span>
+        {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
+          <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
           {modelsError && !draft.error
             ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry models</button>
-            : <button className="icon-button" type="button" aria-label="Dismiss chat notice" onClick={() => {
-              update({ error: undefined }); setNotice(undefined);
-            }}><Icon name="close" /></button>}
+            : <button className="icon-button" type="button" aria-label="Dismiss chat notice"
+              onClick={() => update({ error: undefined })}><Icon name="close" /></button>}
         </div>}
         <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {attachments.length > 0 && <div className="attachments">

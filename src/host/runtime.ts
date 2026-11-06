@@ -335,21 +335,6 @@ export class Runtime {
     return this.metadata.createSession(selection.projectId, fork.id, (title && sessionTitle(title)) || branchTitle(source.title));
   }
 
-  async compact(selection: Selection, instructions?: string): Promise<"compacted" | "no-change" | "stopped" | "failed"> {
-    const { harness, taskId } = await this.admit(async () => {
-      this.requireTrustedProject(selection.projectId);
-      const harness = this.harness;
-      const conversation = await this.conversation(selection);
-      return { harness, taskId: await conversation.compact(instructions, context) };
-    });
-    const { outcome } = (await harness.waitForTask(taskId, context)).state;
-    if (outcome.status === "aborted") return "stopped";
-    if (outcome.status !== "completed") return "failed";
-    if (outcome.result.submissionId === undefined) return "no-change";
-    const summary = await harness.submission(outcome.result.submissionId, context);
-    return (await summary?.wait(context))?.status === "done" ? "compacted" : "no-change";
-  }
-
   cancel(selection: Selection): Promise<void> {
     return this.admit(async () => {
       const conversation = await this.conversation(selection);

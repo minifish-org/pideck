@@ -175,8 +175,6 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.cancel(payload);
     case "chat:fork":
       return runtime.fork(payload, payload.entryId, payload.title);
-    case "chat:compact":
-      return runtime.compact(payload, payload.instructions);
     case "chat:unwatch":
       return unwatch(owner, payload.subscriptionId);
     case "chat:earlier": {
