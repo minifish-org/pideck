@@ -408,6 +408,7 @@ async page => {
       && Math.abs(bounds(".chat-thread").left - bounds(".composer").left) <= 1;
   });
   if (!aligned) throw new Error("The titlebar and sidebar, or the transcript and composer, do not align.");
+  await divider.blur();
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
   await page.setViewportSize({ width: 1920, height: 960 });
   await splitDiff.waitFor();

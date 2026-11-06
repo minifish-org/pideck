@@ -168,7 +168,7 @@
 
 .workspace-file-status {
   flex: 0 0 20px;
-  color: var(--warning, #e8cc8e);
+  color: var(--warning);
   font: 10px var(--mono, monospace);
   text-align: right;
 }

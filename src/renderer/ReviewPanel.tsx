@@ -12,7 +12,7 @@ type DiffLayout = "auto" | DiffStyle;
 const splitMinimumWidth = 700;
 const workerOptions = { workerFactory: () => new DiffWorker(), poolSize: 1, mainThreadMaxCharacters: 12_000 };
 const highlighterOptions = {
-  theme: "pierre-dark", preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
+  theme: "github-dark-default", preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
 } as const;
 const diffOptions: FileDiffOptions<undefined, undefined> = {
   ...highlighterOptions,

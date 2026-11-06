@@ -64,7 +64,10 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
     if (!container) return;
     const tokens = getComputedStyle(container);
     const token = (name: string, fallback: string) => tokens.getPropertyValue(name).trim() || fallback;
-    const accent = token("--accent", "#a5b8ff");
+    const accent = token("--accent", "#58a6ff");
+    const background = token("--terminal-bg", token("--bg", "#0d1117"));
+    const border = token("--border", "#30363d");
+    const selection = token("--accent-border", "#1f6feb");
     const terminal = new Terminal({
       // SearchAddon's match decorations use xterm's registerDecoration API.
       allowProposedApi: true,
@@ -76,11 +79,16 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
       scrollback: 5_000,
       overviewRuler: { width: 8 },
       theme: {
-        background: token("--terminal-bg", token("--bg", "#171a20")), foreground: token("--text", "#ebedf2"), cursor: accent,
-        overviewRulerBorder: token("--border", "#303643"),
-        selectionBackground: token("--accent-border", "#3a4d78"),
-        red: token("--danger", "#ff9b96"), green: token("--success", "#83d9ad"),
-        yellow: token("--warning", "#e8cc8e"), blue: "#9fb9f5", magenta: "#c7a6e5", cyan: "#8dc9c8",
+        background, foreground: token("--text", "#f0f6fc"), cursor: accent, cursorAccent: background,
+        overviewRulerBorder: border, scrollbarSliderBackground: border,
+        scrollbarSliderHoverBackground: token("--dim", "#8b949e"),
+        scrollbarSliderActiveBackground: token("--muted", "#9198a1"),
+        selectionBackground: selection, selectionInactiveBackground: token("--surface-hover", "#21262d"),
+        // Primer Dark Default ANSI colors.
+        black: "#2f3742", red: "#ff7b72", green: "#3fb950", yellow: "#d29922",
+        blue: "#58a6ff", magenta: "#be8fff", cyan: "#39c5cf", white: "#f0f6fc",
+        brightBlack: "#656c76", brightRed: "#ffa198", brightGreen: "#56d364", brightYellow: "#e3b341",
+        brightBlue: "#79c0ff", brightMagenta: "#d2a8ff", brightCyan: "#56d4dd", brightWhite: "#ffffff",
       },
     });
     const addon = new FitAddon();
@@ -96,7 +104,7 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
       else addon.fit();
     };
     screen.current = { terminal, fit, search, searchOptions: { decorations: {
-      matchBackground: token("--accent-soft", "#283754"), matchOverviewRuler: token("--accent-border", "#6b83ab"),
+      matchBackground: token("--accent-soft", "#1f6feb26"), matchOverviewRuler: selection,
       activeMatchBorder: accent, activeMatchColorOverviewRuler: accent,
     } } };
     fit();

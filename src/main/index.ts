@@ -50,7 +50,7 @@ function openWindow() {
     ...initial.bounds,
     minWidth: minimumWindow.width,
     minHeight: minimumWindow.height,
-    backgroundColor: "#14181e",
+    backgroundColor: "#0d1117",
     ...(process.platform === "darwin" ? {
       titleBarStyle: "hidden",
       trafficLightPosition: { x: 20, y: 21 },

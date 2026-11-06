@@ -33,7 +33,6 @@
 }
 .message-heading { display: flex; align-items: center; gap: 8px; min-height: 26px; margin-block: 0 3px; }
 .message-author { flex: 1; font-size: 12px; font-weight: 650; color: var(--muted); }
-.chat-entry--assistant .message-author { color: var(--accent); }
 .message-fork {
   display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 6px; margin-right: -6px;
   border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; opacity: 0;
@@ -54,7 +53,7 @@
 .markdown blockquote { border-left: 2px solid var(--border); padding-left: 10px; color: var(--muted); }
 .markdown pre, .tool-output, .thinking pre { font: 12px/1.5 var(--mono); overflow: auto; padding: 11px; margin: .65em 0; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg); }
 .markdown code { font: .9em var(--mono); }
-.markdown :not(pre) > code { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; color: var(--accent); background: var(--surface); }
+.markdown :not(pre) > code { border: 1px solid var(--border-soft); border-radius: 4px; padding: 1px 4px; background: var(--surface); }
 .markdown table { display: block; overflow: auto; border-collapse: collapse; margin: .65em 0; }
 .markdown td, .markdown th { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
 .markdown hr { border: 0; border-bottom: 1px solid var(--border); }
@@ -90,7 +89,7 @@
 
 .composer-wrap { align-self: center; flex: none; padding-block: 8px 16px; }
 .composer { background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 7px; }
-.composer:focus-within { border-color: color-mix(in srgb, var(--border) 65%, var(--accent)); }
+.composer:focus-within { border-color: color-mix(in srgb, var(--border) 42%, var(--accent)); }
 .composer textarea {
   display: block; width: 100%; min-height: 54px; max-height: min(180px, 25vh); resize: none; field-sizing: content;
   border: 0; outline: 0; background: transparent; color: var(--text); padding: 6px calc(var(--chat-inset) - 7px); line-height: 1.55;
@@ -176,7 +175,7 @@
 .model-trigger svg { flex: none; }
 .composer .provider-setup-trigger {
   min-height: 34px; padding: 4px 9px; font-size: 12px; color: var(--accent);
-  background: color-mix(in srgb, var(--surface) 91%, var(--accent)); border-color: color-mix(in srgb, var(--border) 68%, var(--accent));
+  background: var(--accent-soft); border-color: var(--accent-border);
 }
 .chat-popover {
   position: fixed; inset: auto; margin: 0; overflow: auto; padding: 8px;
