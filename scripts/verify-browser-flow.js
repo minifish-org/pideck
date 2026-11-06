@@ -115,10 +115,20 @@ async page => {
   const picker = page.getByRole("region", { name: "Choose a model" });
   const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
   const thinkingLevel = picker.getByRole("combobox", { name: "Thinking level" });
-  await model.getByText("Off", { exact: true }).waitFor();
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await page.waitForFunction(() => document.body.dataset.savedModelCatalog === "pending");
+  await model.getByText("Choose a model", { exact: true }).waitFor();
+  if (await connect.count()) throw new Error("A pending saved connection prompted the user to connect again.");
+  await send.click();
+  await page.getByRole("alert").getByText("The fixture unlock was cancelled.").waitFor();
+  if (await prompt.inputValue() !== "Update and verify the status." || await sessionCount() !== 0) {
+    throw new Error("Cancelling a saved connection lost the unsent draft or started a session.");
+  }
   await expectColors(composer, { "background-color": canvas });
   await expectColors(prompt, { "color": foreground });
   await model.press("ArrowDown");
+  await page.waitForFunction(() => document.body.dataset.savedModelCatalog === "available");
+  await model.getByText("Off", { exact: true }).waitFor();
   await expectColors(picker, { "background-color": overlay, "color": foreground });
   await expectColors(modelSearch, { "background-color": canvas });
   if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
@@ -127,10 +137,14 @@ async page => {
   await modelSearch.fill("anthropic");
   await picker.getByText("No models match your search.", { exact: true }).waitFor();
   await modelSearch.fill("fixture fixed");
-  await picker.getByRole("button", { name: /Fixture fixed model/ }).click();
+  await picker.getByRole("button", { name: /Fixture fixed model/ }).waitFor();
+  await modelSearch.press("Enter");
+  await model.getByText(/^Fixture fixed model/).waitFor();
   await model.getByText("Off", { exact: true }).waitFor();
-  await modelSearch.waitFor();
-  if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
+  await picker.waitFor({ state: "hidden" });
+  if (!await model.evaluate(button => button === document.activeElement)) {
+    throw new Error("Choosing a fixed thinking level did not return focus to the model button.");
+  }
   const fixedLevelFits = await model.evaluate(button => {
     const level = button.querySelector(".model-summary-thinking");
     const chevron = button.querySelector("svg");
@@ -139,6 +153,9 @@ async page => {
       && chevron.getBoundingClientRect().right < bounds.right;
   });
   if (!fixedLevelFits) throw new Error("The long model name clipped its thinking level or menu chevron.");
+  await model.press("ArrowDown");
+  await modelSearch.waitFor();
+  if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
   await modelSearch.fill("fixture model");
   await picker.getByRole("button", { name: /^Fixture model/ }).waitFor();
   await modelSearch.press("ArrowDown");
@@ -159,7 +176,7 @@ async page => {
   await picker.waitFor({ state: "hidden" });
   if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
   await composer.screenshot({ path: "output/playwright/pideck-ui-model-thinking.png" });
-  const send = page.getByRole("button", { name: "Send", exact: true });
+  await prompt.hover();
   await expectColors(send, { "background-color": green });
   await send.click();
   await page.getByRole("status").getByText("Running command…", { exact: true }).waitFor();
@@ -195,8 +212,12 @@ async page => {
   await newSession.press("Enter");
   await prompt.fill("Start a separate session.");
   await runningSession.click();
-  await projectRow.hover();
-  await newSession.click();
+  const resumeDraft = nav.getByRole("button", { name: "Resume unsent draft in Sample project", exact: true });
+  await prompt.hover();
+  if (!await resumeDraft.evaluate(button => button.textContent.trim() === "Draft" && getComputedStyle(button).opacity === "1")) {
+    throw new Error("An unsent draft did not leave a visible cue on its project row.");
+  }
+  await resumeDraft.click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Start a separate session.");
   if (await sessionCount() !== 1) throw new Error("Switching away from a draft created a session.");
   await prompt.press("Enter");
@@ -487,7 +508,10 @@ async page => {
   await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem("pideck.workspace.v1")).reviewPaths).includes("second.ts"));
   await page.reload();
   await changeButton.click();
-  await page.getByRole("complementary", { name: "Review changes" }).getByRole("heading", { name: "second.ts", exact: true }).waitFor();
+  await page.locator('#review-panel [aria-current="true"]').filter({ hasText: "second.ts" }).waitFor();
+  if (await page.locator("#review-panel .workspace-diff-header").count()) {
+    throw new Error("The review repeats the name of the selected file.");
+  }
   await changeButton.click();
   await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   await forked.click();
@@ -511,11 +535,16 @@ async page => {
   const tools = page.locator("#workspace-tools");
   const screen = terminal.locator(".xterm-helper-textarea");
   const divider = page.getByRole("separator", { name: "Resize right sidebar" });
-  await page.evaluate(() => sessionStorage.setItem("pideck-review-list-failure", "1"));
+  const togglePositions = async () => Promise.all([changes, terminalToggle].map(async button => (await button.boundingBox()).x));
+  const closedTogglePositions = await togglePositions();
+  await page.evaluate(() => {
+    sessionStorage.setItem("pideck-review-list-failure", "1");
+    window.dispatchEvent(new Event("pideck-fixture-review-change"));
+  });
   await changes.click();
   const review = page.getByRole("complementary", { name: "Review changes" });
   const expectActiveTool = async (active) => {
-    await review.waitFor({ state: active === "changes" ? "visible" : "detached" });
+    await review.waitFor({ state: active === "changes" ? "visible" : "hidden" });
     await terminal.waitFor({ state: active === "terminal" ? "visible" : "hidden" });
     await tools.waitFor({ state: active ? "visible" : "hidden" });
     if (await changes.getAttribute("aria-pressed") !== String(active === "changes")
@@ -528,9 +557,11 @@ async page => {
     }
   };
   const retry = review.getByRole("button", { name: "Retry", exact: true });
-  await retry.waitFor();
-  await page.evaluate(() => sessionStorage.removeItem("pideck-review-list-failure"));
-  await retry.click();
+  const clearReviewErrorAndRetry = key => retry.evaluate((button, storageKey) => {
+    sessionStorage.removeItem(storageKey);
+    button.click();
+  }, key);
+  await clearReviewErrorAndRetry("pideck-review-list-failure");
   const layout = review.getByRole("combobox", { name: "Diff layout" });
   const singleDiff = review.locator("diffs-container [data-diff-type=single]").first();
   const splitDiff = review.locator("diffs-container [data-diff-type=split]").first();
@@ -540,9 +571,7 @@ async page => {
     sessionStorage.setItem("pideck-review-patch-failure", "1");
     window.dispatchEvent(new Event("pideck-fixture-review-change"));
   });
-  await retry.waitFor();
-  await page.evaluate(() => sessionStorage.removeItem("pideck-review-patch-failure"));
-  await retry.click();
+  await clearReviewErrorAndRetry("pideck-review-patch-failure");
   await retry.waitFor({ state: "hidden" });
   await page.evaluate(() => {
     sessionStorage.setItem("pideck-review-edit", "1");
@@ -584,8 +613,8 @@ async page => {
         && sameEdge(bounds(".chat-thread").left, bounds(".composer").left)
         && sameEdge(middleHeader.left, sidebarEdge)
         && sameEdge(middleHeader.right, right.left)
-        && reviewToggle.left > middleHeader.left && terminalToggle.left >= reviewToggle.right
-        && terminalToggle.right <= middleHeader.right && middleHeader.right - terminalToggle.right <= 24
+        && reviewToggle.left - middleHeader.left <= 24 && reviewToggle.left > middleHeader.left
+        && terminalToggle.left >= reviewToggle.right && terminalToggle.right <= middleHeader.right
         && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
@@ -611,6 +640,9 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectDockedTool("#workspace-terminal");
+  if ((await togglePositions()).some((position, index) => Math.abs(position - closedTogglePositions[index]) > 1)) {
+    throw new Error("Opening a right panel moved the workspace toggles.");
+  }
   await expectColors(terminalToggle, selectedToggleColors);
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
@@ -641,13 +673,18 @@ async page => {
   await page.setViewportSize({ width: 1920, height: 960 });
   await splitDiff.waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-wide.png" });
-  await page.setViewportSize({ width: 1100, height: 680 });
+  await page.setViewportSize({ width: 1045, height: 680 });
   const back = review.getByRole("button", { name: "Back to chat" });
-  await back.waitFor();
-  await sidebar.click();
-  await back.waitFor({ state: "detached" });
-  await sidebar.click();
-  await back.waitFor();
+  await nav.waitFor();
+  await divider.waitFor();
+  await back.waitFor({ state: "hidden" });
+  if (!await prompt.isVisible() || await prompt.evaluate(input => Boolean(input.closest("[inert]")))) {
+    throw new Error("Changes covered the composer at an intermediate window width.");
+  }
+  await page.setViewportSize({ width: 940, height: 680 });
+  await nav.waitFor({ state: "detached" });
+  await divider.waitFor();
+  await back.waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 760, height: 560 });
   await page.waitForFunction(() => document.querySelector(".workspace-conversation").inert
     && document.querySelector("#review-panel").contains(document.activeElement));
@@ -726,6 +763,30 @@ async page => {
   await chatPatch.waitFor();
   await expectActiveTool("changes");
   await expectSameShell();
+  await layout.selectOption("split");
+  await splitDiff.waitFor();
+  const reviewScrollTop = await review.locator(".workspace-review-scroll").evaluate(async scroller => {
+    scroller.scrollTop = 900;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return scroller.scrollTop;
+  });
+  if (reviewScrollTop < 800) throw new Error("The historical review did not scroll.");
+  const expectRetainedReview = async () => {
+    await chatPatch.waitFor();
+    await expectActiveTool("changes");
+    if (await layout.inputValue() !== "split") throw new Error("Reopening Changes reset the review layout.");
+    await page.waitForFunction(top =>
+      Math.abs(document.querySelector("#review-panel .workspace-review-scroll")?.scrollTop - top) <= 2, reviewScrollTop);
+  };
+  await terminalToggle.click();
+  await expectActiveTool("terminal");
+  await changes.click();
+  await expectRetainedReview();
+  await changes.click();
+  await expectActiveTool();
+  await changes.click();
+  await expectRetainedReview();
+  await layout.selectOption("auto");
   await review.getByRole("heading", { name: "Changes", exact: true }).waitFor();
   await review.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example\.ts/ }).click();
   await chatPatch.waitFor({ state: "detached" });
@@ -829,8 +890,7 @@ async page => {
   await prompt.fill("A draft only in Other project.");
   await fallback.click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Draft to remove with the project.");
-  await otherProjectRow.hover();
-  await otherNewSession.click();
+  await nav.getByRole("button", { name: "Resume unsent draft in Other project", exact: true }).click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "A draft only in Other project.");
   if (await otherBranch.locator(".nav-session-row").count() !== 1) throw new Error("An unsent draft appeared as a session.");
   await fallback.click();

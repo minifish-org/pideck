@@ -82,12 +82,12 @@
 .tool-card[open] summary .tool-caret { transform: rotate(90deg); }
 .tool-label { color: var(--fgColor-default); font-weight: 570; }
 .tool-target { font: 11px/1.5 var(--mono); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tool-card[open] .tool-target--command { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .tool-detail { padding: 0 9px 8px; min-width: 0; }
 .tool-detail .tool-output { max-height: 180px; margin: 0; padding: 8px 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-state { flex: none; margin-left: auto; color: var(--fgColor-muted); font-size: 11px; }
 .tool-state[data-status='done'] { color: var(--fgColor-success); }
 .tool-state[data-status='error'] { color: var(--fgColor-danger); }
-.tool-command { padding: 6px 0; color: var(--fgColor-muted); font: 11px/1.45 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
 .composer-run { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 6px var(--chat-inset); }
 .run-state { display: flex; min-width: 0; gap: 8px; align-items: center; color: var(--fgColor-muted); font-size: 12px; }
 .run-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); }
@@ -227,6 +227,8 @@
 .model-option-label strong { font-weight: 570; font-size: 13px; overflow-wrap: anywhere; }
 .model-option-label small, .model-empty { color: var(--fgColor-muted); font-size: 11px; }
 .model-empty { margin: 7px; }
+.model-load-status { display: flex; align-items: baseline; gap: 8px; padding: 4px; color: var(--fgColor-muted); font-size: 12px; }
+.model-load-status .inline-action { flex: none; }
 @container (max-width: 370px) {
   .composer-controls { flex-wrap: wrap; gap: 4px; }
   .composer-models { max-width: 100%; flex: 1 1 100%; }

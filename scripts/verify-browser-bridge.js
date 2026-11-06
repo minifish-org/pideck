@@ -17,13 +17,15 @@ async page => {
     const unavailableModel = { ...model, provider: "anthropic", id: "unavailable-fixture", name: "Unconnected fixture model" };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
     const largePatch = [
-      "diff --git a/second.ts b/second.ts", "--- a/second.ts", "+++ b/second.ts", "@@ -1,24 +1,24 @@",
-      ...Array.from({ length: 24 }, (_, index) => `-const old${index} = ${index};`),
-      ...Array.from({ length: 24 }, (_, index) => `+const next${index} = ${index};`), "",
+      "diff --git a/second.ts b/second.ts", "--- a/second.ts", "+++ b/second.ts", "@@ -1,180 +1,180 @@",
+      ...Array.from({ length: 180 }, (_, index) => `-const old${index} = ${index};`),
+      ...Array.from({ length: 180 }, (_, index) => `+const next${index} = ${index};`), "",
     ].join("\n");
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
+    let savedConnectionsPending = Boolean(state.savedConnectionsPending);
+    let unlockCancelled = false;
     let auth;
     let offline = false;
     const attemptedRemovals = new Set();
@@ -193,7 +195,19 @@ async page => {
             setTimeout(() => release?.(), 50);
             return loseReply ? loseRemovalReply() : result;
           }
-          case "model:list": return [{ ...model }, { ...fixedModel, configured: state.configured }, unavailableModel];
+          case "model:list": {
+            if (savedConnectionsPending && payload?.useSaved) {
+              if (!unlockCancelled) {
+                unlockCancelled = true;
+                throw new Error("The fixture unlock was cancelled.");
+              }
+              savedConnectionsPending = state.savedConnectionsPending = false;
+              persist();
+            }
+            document.body.dataset.savedModelCatalog = savedConnectionsPending ? "pending" : "available";
+            const configured = state.configured && !savedConnectionsPending;
+            return { models: [{ ...model, configured }, { ...fixedModel, configured }, unavailableModel], savedConnectionsPending };
+          }
           case "model:providers": return [{
             id: model.provider, name: "Fixture provider", configured: state.configured, credential: state.configured ? "oauth" : undefined,
             dynamic: true, methods: [{ type: "api_key", name: "API key" }, { type: "oauth", name: "Sign in with browser" }],
@@ -228,6 +242,7 @@ async page => {
               || payload.value !== "test-authorization" || !auth.open || !auth.copy) throw new Error("Unexpected authorization response.");
             emit({ type: "auth:prompt-closed", flowId: auth.flowId, promptId: auth.promptId });
             model.configured = state.configured = true;
+            state.savedConnectionsPending = true;
             persist();
             auth.resolve();
             auth = undefined;

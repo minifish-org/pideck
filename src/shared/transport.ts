@@ -43,7 +43,8 @@ export type HostRequest = {
   [C in HostCommand]: { type: "request"; id: number; owner: number; command: C; payload: HostInput[C] }
 }[HostCommand];
 export type ToHost =
-  | { type: "start"; dataDir: string; credentials: Record<string, Credential>; credentialStoreLocked?: true }
+  | { type: "start"; dataDir: string; hasSavedCredentials: boolean }
+  | ({ type: "credential:snapshot"; id: number } & ({ credentials: Record<string, Credential> } | { error: string }))
   | { type: "credential:result"; id: number; error?: string }
   | { type: "shutdown" }
   | HostRequest;
@@ -51,5 +52,6 @@ export type FromHost =
   | { type: "ready" }
   | { type: "fatal"; error: string }
   | { type: "result"; id: number; value?: unknown; error?: string }
+  | { type: "credential:read"; id: number }
   | { type: "credential:write"; id: number; provider: string; credential: Credential | null }
   | { type: "event"; owner: number; event: HostEvent };

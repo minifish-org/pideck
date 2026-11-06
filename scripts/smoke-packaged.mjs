@@ -267,9 +267,10 @@ try {
   await prompt.blur();
   await clickNativeMenu(app, "focus-composer");
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
-  const modelList = await command("model:list");
-  assert.ok(!JSON.stringify(modelList).includes("pideck-smoke-key"));
-  const azure = modelList.find(model => model.provider === "azure" && model.id === "gpt-4.1");
+  const modelCatalog = await command("model:list");
+  assert.ok(!JSON.stringify(modelCatalog).includes("pideck-smoke-key"));
+  assert.equal(modelCatalog.savedConnectionsPending, false);
+  const azure = modelCatalog.models.find(model => model.provider === "azure" && model.id === "gpt-4.1");
   assert.equal(azure?.configured, true);
   await clickNativeMenu(app, "settings");
   const providers = page.getByRole("dialog", { name: "Model providers" });
@@ -293,12 +294,14 @@ try {
     .filter({ has: page.getByText(azure.name, { exact: true }) }).click();
   await modelPicker.getByText(azure.name, { exact: true }).waitFor();
   await modelPicker.getByText("Off", { exact: true }).waitFor();
-  await modelMenu.waitFor();
-  await modelSearch.press("Escape");
   await modelMenu.waitFor({ state: "hidden" });
+  assert.equal(await modelPicker.evaluate(button => button === document.activeElement), true);
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  const shellCard = page.locator(".tool-card").filter({ has: page.locator("summary").filter({ hasText: "cat example.ts" }) });
+  assert.equal(await shellCard.locator("summary").getByText('test -z "$AZURE_OPENAI_API_KEY" && cat example.ts', { exact: true }).count(), 1);
+  assert.equal(await shellCard.locator(".tool-detail").getByText(/cat example\.ts/).count(), 0);
   const sessions = await command("session:list", { projectId });
   assert.equal(sessions.length, 1);
   const [conversation] = sessions;
@@ -322,6 +325,8 @@ try {
   const tools = page.locator("#workspace-tools");
   const changesToggle = page.getByRole("button", { name: "Changes", exact: true });
   const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
+  const toolButtonPositions = () => Promise.all([changesToggle, terminalToggle].map(async button => (await button.boundingBox()).x));
+  const closedToolButtonPositions = await toolButtonPositions();
   async function verifyDockedToolLayout(panelSelector) {
     assert.ok(await page.evaluate(selector => {
       const bounds = target => document.querySelector(target).getBoundingClientRect();
@@ -348,6 +353,7 @@ try {
   assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("toggle-review").checked), true);
   await verifyDockedToolLayout("#review-panel");
+  assert.deepEqual(await toolButtonPositions(), closedToolButtonPositions, "Opening Changes moved its toolbar buttons.");
   const externalPath = join(project, "outside-edit.ts");
   const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
   assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
@@ -377,6 +383,7 @@ try {
   assert.equal(await terminalToggle.getAttribute("aria-pressed"), "true");
   assert.equal(await page.getByRole("separator", { name: "Resize terminal" }).count(), 0);
   await verifyDockedToolLayout("#workspace-terminal");
+  assert.deepEqual(await toolButtonPositions(), closedToolButtonPositions, "Switching to Terminal moved its toolbar buttons.");
 
   // Release each stage only once the running process's terminal is hidden.
   await terminal.focus();
@@ -555,8 +562,13 @@ try {
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await ptySize(".pty-width-reset"), original);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 740));
-    await page.waitForFunction(() => window.innerWidth <= 1000);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1045, 680));
+    await page.waitForFunction(() => window.innerWidth === 1045);
+    await projectRow.waitFor();
+    await verifyDockedToolLayout("#workspace-terminal");
+    await clickNativeMenu(app, "focus-composer");
+    await page.waitForFunction(() => document.activeElement?.id === "prompt");
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
     await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

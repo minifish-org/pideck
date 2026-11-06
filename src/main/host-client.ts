@@ -43,15 +43,19 @@ export class HostClient {
     let fatal = false;
     child.on("message", (message: FromHost) => {
       if (this.process !== child) return;
-      if (message.type === "credential:write") {
-        const { id, provider, credential } = message;
-        void this.vault.write(provider, credential).then(
-          () => {
-            if (this.process === child) this.post(child, { type: "credential:result", id });
-          },
+      if (message.type === "credential:read" || message.type === "credential:write") {
+        const { id } = message;
+        const reply = (value: ToHost) => { if (this.process === child) this.post(child, value); };
+        const action = message.type === "credential:read"
+          ? this.stopping ? Promise.reject(new Error("Pideck is closing."))
+            : this.vault.snapshot().then(credentials => ({ type: "credential:snapshot", id, credentials } as const))
+          : this.vault.write(message.provider, message.credential).then(() => ({ type: "credential:result", id } as const));
+        void action.then(
+          reply,
           error => {
-            if (this.process === child) this.post(child, { type: "credential:result", id,
-              error: error instanceof Error ? error.message : "The credential could not be saved." });
+            const reason = error instanceof Error ? error.message : "The provider credential store is unavailable.";
+            reply(message.type === "credential:read" ? { type: "credential:snapshot", id, error: reason }
+              : { type: "credential:result", id, error: reason });
           },
         );
         return;
@@ -106,13 +110,11 @@ export class HostClient {
         void restart.catch(() => { /* requests report startup errors */ });
       }
     });
-    const bootHost = (startup: Extract<ToHost, { type: "start" }>) => {
-      if (this.process === child && !this.stopping) this.post(child, startup);
-    };
-    void this.vault.snapshot().then(
-      credentials => bootHost({ type: "start", dataDir: this.dataDir, credentials }),
-      () => bootHost({ type: "start", dataDir: this.dataDir, credentials: {}, credentialStoreLocked: true }),
-    );
+    void this.vault.hasSavedCredentials().then(hasSavedCredentials => {
+      if (this.process === child && !this.stopping) {
+        this.post(child, { type: "start", dataDir: this.dataDir, hasSavedCredentials });
+      }
+    });
   }
 
   async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C]): Promise<HostResult[C]> {

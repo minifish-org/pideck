@@ -8,6 +8,8 @@
   background: var(--bgColor-default);
 }
 
+.workspace-review[hidden] { display: none; }
+
 .workspace-terminal {
   container: terminal / inline-size;
   display: flex;

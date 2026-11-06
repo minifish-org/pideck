@@ -36,6 +36,7 @@ export type ModelOption = ModelRef & {
   contextWindow?: number;
   maxTokens?: number;
 };
+export type ModelCatalog = { models: ModelOption[]; savedConnectionsPending: boolean };
 export type AuthMethod = "api_key" | "oauth";
 export type ModelProvider = {
   id: string;
@@ -136,7 +137,7 @@ export type Commands = {
   "session:create": [{ projectId: string; title?: string }, Session];
   "session:rename": [Selection & { title: string }, Session];
   "session:remove": [Selection, RemovalResult | RemovalBlocked | null];
-  "model:list": [undefined, ModelOption[]];
+  "model:list": [{ useSaved: true } | undefined, ModelCatalog];
   "model:providers": [undefined, ModelProvider[]];
   "model:login": [{ provider: string; method: AuthMethod; flowId: string }, void];
   "model:logout": [{ provider: string }, void];
@@ -191,7 +192,7 @@ export type HostEvent =
   | { type: "host:restart" };
 export type Pideck = {
   platform: string;
-  invoke<C extends Command>(command: C, ...args: Commands[C][0] extends undefined ? [] : [Commands[C][0]]): Promise<Commands[C][1]>;
+  invoke<C extends Command>(command: C, ...args: undefined extends Commands[C][0] ? [Commands[C][0]?] : [Commands[C][0]]): Promise<Commands[C][1]>;
   onEvent(listener: (event: HostEvent) => void): () => void;
   onMenuAction?(listener: (action: MenuAction) => void): () => void;
   updateMenu?(state: MenuState): void;

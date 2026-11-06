@@ -1,4 +1,5 @@
 import { diffRevisions, type JsonValue } from "@earendil-works/chord/delta";
+import type { Credential } from "@earendil-works/pi-ai";
 import { AuthFlows } from "./auth-flows";
 import { PersistentCredentials } from "./credential-store";
 import { Runtime, type ChatWatch } from "./runtime";
@@ -19,9 +20,10 @@ const closedOwners = new Set<number>();
 const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>();
 const activityWatches = new Map<number, { id: string; dispose: () => void }>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
+let credentialRead: { id: number; result: PromiseWithResolvers<Record<string, Credential>> } | undefined;
 const reviews = new Map<string, Set<{ controller: AbortController; pending: Promise<unknown> }>>();
 const reviewWatches = new Map<number, { projectId: string; subscriptionId: string; controller: AbortController }>();
-let nextWrite = 0;
+let nextCredentialRequest = 0;
 
 function send(message: FromHost) {
   port!.postMessage(message);
@@ -167,7 +169,7 @@ async function handle(request: HostRequest): Promise<unknown> {
     case "session:rename":
       return runtime.renameSession(payload, payload.title);
     case "model:list":
-      return runtime.listModels();
+      return runtime.modelCatalog(payload?.useSaved);
     case "model:providers":
       return auth.providers();
     case "model:login":
@@ -291,13 +293,19 @@ async function handle(request: HostRequest): Promise<unknown> {
 port.on("message", ({ data }: { data: ToHost }) => {
   if (data.type === "start" && !starting) {
     starting = true;
-    const credentials = new PersistentCredentials(data.credentials, (provider, credential) => {
-      const id = ++nextWrite;
+    const credentials = new PersistentCredentials({}, (provider, credential) => {
+      const id = ++nextCredentialRequest;
       const write = Promise.withResolvers<void>();
       credentialWrites.set(id, write);
       send({ type: "credential:write", id, provider, credential });
       return write.promise;
-    }, data.credentialStoreLocked);
+    }, data.hasSavedCredentials ? () => {
+      const id = ++nextCredentialRequest;
+      const result = Promise.withResolvers<Record<string, Credential>>();
+      credentialRead = { id, result };
+      send({ type: "credential:read", id });
+      return result.promise;
+    } : undefined);
     void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1)).then(opened => {
       runtime = opened;
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
@@ -305,6 +313,12 @@ port.on("message", ({ data }: { data: ToHost }) => {
     }, error => {
       send({ type: "fatal", error: messageOf(error) });
     });
+  } else if (data.type === "credential:snapshot") {
+    if (credentialRead?.id !== data.id) return;
+    const { result } = credentialRead;
+    credentialRead = undefined;
+    if ("error" in data) result.reject(new Error(data.error));
+    else result.resolve(data.credentials);
   } else if (data.type === "credential:result") {
     const write = credentialWrites.get(data.id);
     credentialWrites.delete(data.id);

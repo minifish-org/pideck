@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { MenuAction, ModelOption, Project, Selection, Session, SessionBranch } from '../shared/api';
+import type { MenuAction, ModelCatalog, Project, Selection, Session, SessionBranch } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
@@ -13,13 +13,15 @@ import type { Draft, ReadingPosition } from './preferences';
 
 const ReviewPanel = lazy(() => import('./ReviewPanel').then(({ ReviewPanel }) => ({ default: ReviewPanel })));
 const TerminalPanel = lazy(() => import('./TerminalPanel').then(({ TerminalPanel }) => ({ default: TerminalPanel })));
-const compactNavigationQuery = '(max-width: 880px)';
-const splitWorkspaceWidth = 920;
+const splitWorkspaceWidth = 780;
+// Switch the project tree to a drawer before its 208px dock would displace chat.
+const compactNavigationQuery = `(max-width: ${splitWorkspaceWidth + 208}px)`;
 const activityIcons = { running: 'spinner', finished: 'check', attention: 'alert' } as const;
 
 type Removal = { projectId: string; sessionId?: string };
 type RemovalCheck = { target: Removal; trigger: HTMLButtonElement; error: string };
 type RenameTarget = Selection & { source: 'titlebar' | 'sidebar' };
+type Review = { projectId: string; visible: boolean; sessionId?: string; path?: string; patch?: string; selection?: number };
 
 function closePopovers() {
   document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((panel) => panel.hidePopover());
@@ -65,7 +67,7 @@ function Desktop() {
   const modifier = isMac ? '⌘' : 'Ctrl+';
   const shift = isMac ? '⇧' : 'Shift+';
   const [projects, setProjects] = useState<Project[]>();
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [{ models, savedConnectionsPending }, setModelCatalog] = useState<ModelCatalog>({ models: [], savedConnectionsPending: false });
   const [preferences, setPreferences] = useState(readPreferences);
   const savedAtStartup = useRef(preferences);
   const [drafts, setDrafts] = useState(readDrafts);
@@ -87,8 +89,9 @@ function Desktop() {
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [modelsError, setModelsError] = useState<string>();
   const [modelsReady, setModelsReady] = useState(false);
+  const modelRequest = useRef(0);
   const [reviewVersion, setReviewVersion] = useState(0);
-  const [review, setReview] = useState<{ projectId: string; sessionId?: string; path?: string; patch?: string; selection?: number }>();
+  const [review, setReview] = useState<Review>();
   const [terminals, setTerminals] = useState<Record<string, boolean>>({});
   const [focusTerminal, setFocusTerminal] = useState<string>();
   const [compactNavigation, setCompactNavigation] = useState(() => window.matchMedia(compactNavigationQuery).matches);
@@ -132,8 +135,8 @@ function Desktop() {
   const activeReview = review?.projectId === projectId ? review : undefined;
   const canUseWorkspace = Boolean(project?.trusted && !removingProject);
   const canCreateSession = canUseWorkspace && Boolean(sessions);
-  const showProviders = models.some(({ configured }) => configured) || !session;
-  const reviewOpen = Boolean(project?.trusted && activeReview);
+  const showProviders = savedConnectionsPending || models.some(({ configured }) => configured) || !session;
+  const reviewOpen = Boolean(project?.trusted && activeReview?.visible);
   const reviewOverlaysChat = !canSplitWorkspace && reviewOpen;
   const terminalVisible = Boolean(project?.trusted && projectId && terminals[projectId] && !reviewOpen);
   const terminalOverlaysChat = !canSplitWorkspace && terminalVisible;
@@ -217,12 +220,24 @@ function Desktop() {
 
   useEffect(() => {
     let active = true;
+    const request = ++modelRequest.current;
     setModelsError(undefined);
     void api.invoke('model:list').then((result) => {
-      if (active) { setModels(result); setModelsReady(true); }
-    }).catch((cause) => { if (active) setModelsError(readableError(cause)); });
+      if (active && request === modelRequest.current) { setModelCatalog(result); setModelsReady(true); }
+    }).catch((cause) => { if (active && request === modelRequest.current) setModelsError(readableError(cause)); });
     return () => { active = false; };
   }, [api, workspaceEpoch, modelsEpoch]);
+
+  const loadSavedModels = useCallback(async () => {
+    const request = ++modelRequest.current;
+    const result = await api.invoke('model:list', { useSaved: true });
+    if (request === modelRequest.current) {
+      setModelCatalog(result);
+      setModelsReady(true);
+      setModelsError(undefined);
+    }
+    return result.models;
+  }, [api]);
 
   useEffect(() => {
     if (!sessionScope) return;
@@ -367,7 +382,7 @@ function Desktop() {
     setPreferences((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(id) ? current
       : { ...current, sessions: { ...current.sessions, [projectId]: id } });
     setReview((current) => current?.projectId === projectId && current.sessionId && current.sessionId !== id
-      ? { projectId } : current);
+      ? { projectId, visible: current.visible } : current);
     setError(undefined);
   }, []);
 
@@ -376,14 +391,18 @@ function Desktop() {
     setFocusTerminal((current) => current === id ? undefined : current);
   }, []);
 
+  function hideReview() {
+    setReview((current) => current?.visible ? { ...current, visible: false } : current);
+  }
+
   const openReview = useCallback(({ path, patch }: { path?: string; patch?: string }) => {
     if (!projectId || !sessionId || removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return;
     reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     hideTerminal(projectId);
-    setReview((current) => ({ projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 }));
+    setReview((current) => ({ projectId, visible: true, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 }));
   }, [hideTerminal, projectId, sessionId]);
   const selectWorkingTreeFile = useCallback((path: string) => {
-    setReview(current => current?.patch ? { projectId: current.projectId, path } : current);
+    setReview(current => current?.patch ? { projectId: current.projectId, visible: current.visible, path } : current);
   }, []);
   const refreshReview = useCallback(() => setReviewVersion((current) => current + 1), []);
 
@@ -671,7 +690,7 @@ function Desktop() {
 
   function revealConversation(id: string) {
     if (canSplitWorkspace) return;
-    setReview(undefined);
+    hideReview();
     hideTerminal(id);
   }
 
@@ -682,7 +701,7 @@ function Desktop() {
       closeTerminal(project.id);
       return;
     }
-    setReview(undefined);
+    hideReview();
     setFocusTerminal(project.id);
     setTerminals((current) => ({ ...current, [project.id]: true }));
   }
@@ -699,11 +718,12 @@ function Desktop() {
     if (document.activeElement?.closest('#workspace-terminal')) trigger?.focus();
     reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : trigger;
     hideTerminal(project.id);
-    setReview({ projectId: project.id });
+    setReview((current) => current?.projectId === project.id
+      ? { ...current, visible: true } : { projectId: project.id, visible: true });
   }
 
   function closeReview() {
-    setReview(undefined);
+    hideReview();
     requestAnimationFrame(() => {
       const opener = reviewOpener.current;
       if (opener?.isConnected && opener !== document.body && !opener.closest('[hidden], [inert]')) opener.focus();
@@ -712,8 +732,9 @@ function Desktop() {
   }
 
   function focusComposer() {
-    if (drawerOpen && projectId) {
+    if (projectId && (drawerOpen || toolsOverlay)) {
       closeDrawer();
+      revealConversation(projectId);
       setFocusWorkspace(projectId);
     } else document.getElementById('prompt')?.focus();
   }
@@ -728,7 +749,7 @@ function Desktop() {
       case 'toggle-navigation': if (project) toggleNavigation(); break;
       case 'toggle-review': toggleReview(); break;
       case 'toggle-terminal': toggleTerminal(); break;
-      case 'focus-composer': if (!toolsOverlay) focusComposer(); break;
+      case 'focus-composer': focusComposer(); break;
     }
   }
 
@@ -769,14 +790,14 @@ function Desktop() {
       canOpenProject: !opening && !modalOpen,
       canOpenSettings: !modalOpen,
       canCreateSession: canCreateSession && !modalOpen,
-      canFocusComposer: canCreateSession && !modalOpen && !toolsOverlay,
+      canFocusComposer: canCreateSession && !modalOpen,
       canToggleNavigation: Boolean(projectId && !modalOpen),
       canUseWorkspace: canUseWorkspace && !modalOpen,
       navigationVisible: showNavigation,
       reviewVisible: reviewOpen,
       terminalVisible,
     });
-  }, [api, opening, modalOpen, canCreateSession, toolsOverlay, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
+  }, [api, opening, modalOpen, canCreateSession, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools' : ''}`} ref={app}>
@@ -791,6 +812,16 @@ function Desktop() {
             onClick={toggleNavigation}><Icon name="sidebar" /></button>}
         </div>
         <div className="titlebar-content">
+          {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
+            <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
+              title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
+              aria-controls={reviewOpen ? 'review-panel' : undefined}
+              disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>
+            <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
+              title={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`} aria-pressed={terminalVisible}
+              aria-controls={terminalVisible ? 'workspace-terminal' : undefined}
+              disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
+          </div>}
           <div className="title-context">
             {project && <div className="workspace-title">
               {!showNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
@@ -806,22 +837,10 @@ function Desktop() {
                   </span>}
             </div>}
           </div>
-          <div className="title-actions">
-            {!showNavigation && !toolsOverlay && project?.trusted && session && <button className="icon-button" type="button"
-              aria-label="New session" aria-description={hasNewDraft ? 'Unsent draft' : undefined}
-              title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
-              disabled={!canCreateSession} onClick={() => openSessionDraft()}><Icon name="plus" /></button>}
-            {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
-              <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
-                title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
-                aria-controls={reviewOpen ? 'review-panel' : undefined}
-                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>
-              <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
-                title={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`} aria-pressed={terminalVisible}
-                aria-controls={terminalVisible ? 'workspace-terminal' : undefined}
-                disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
-            </div>}
-          </div>
+          {!showNavigation && !toolsOverlay && project?.trusted && session && <button className="icon-button" type="button"
+            data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
+            title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
+            disabled={!canCreateSession} onClick={() => openSessionDraft()}>{hasNewDraft ? 'Draft' : <Icon name="plus" />}</button>}
         </div>
       </header>
       <div className="app-body">
@@ -877,10 +896,10 @@ function Desktop() {
                           }
                         }}><span>{item.name}</span></button>
                       {item.trusted && <button className="icon-button nav-new-session" type="button"
-                        aria-label={`New session in ${item.name}`} title={unsent ? 'Resume unsent draft' : 'New session'}
-                        aria-description={unsent ? 'Unsent draft' : undefined}
+                        data-draft={unsent || undefined} aria-label={`${unsent ? 'Resume unsent draft in' : 'New session in'} ${item.name}`}
+                        title={unsent ? 'Resume unsent draft' : 'New session'}
                         disabled={removing?.projectId === id && !removing.sessionId} onClick={() => openSessionDraft(id)}>
-                        <Icon name="plus" width={14} height={14} />
+                        {unsent ? 'Draft' : <Icon name="plus" width={14} height={14} />}
                       </button>}
                       <RemoveRowButton label={`Remove project ${item.name}`} current={active} disabled={Boolean(removing)}
                         onClick={(button) => void remove({ projectId: id }, button)} />
@@ -998,6 +1017,7 @@ function Desktop() {
                   : sessions
                     ? <Chat key={`${project.id}/${draftId}`} project={project} session={session} models={models}
                         modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
+                        savedConnectionsPending={savedConnectionsPending} onLoadSavedModels={loadSavedModels}
                         draft={projectDrafts?.[draftId] ?? emptyDraft} updateDraft={updateActiveDraft}
                         activityReceipt={!toolsOverlay && !drawerOpen && !settings && sessionId ? sessionActivity[sessionId] : undefined}
                         readingPosition={session ? preferences.reading[project.id]?.[session.id] : undefined} onReadingPosition={rememberReadingPosition}
@@ -1015,8 +1035,8 @@ function Desktop() {
                       : <div className="workspace-loading" role="status">Loading sessions…</div>}
             </div>
             <div className="workspace-tools" id="workspace-tools" hidden={!toolsOpen} data-docked={toolsDocked || undefined}>
-              {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
-                <ReviewPanel project={project} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+              {project?.trusted && activeReview && <Suspense key={`review:${project.id}`} fallback={reviewOpen && <div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
+                <ReviewPanel project={project} visible={reviewOpen} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
                   onSelectWorkingTreeFile={selectWorkingTreeFile}
                   rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                   refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />

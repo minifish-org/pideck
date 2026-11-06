@@ -83,6 +83,7 @@ function InlinePatch({ patch }: { patch: string }) {
 
 type ReviewPanelProps = {
   project: Project;
+  visible: boolean;
   overlay: boolean;
   onClose: () => void;
   selectedPath?: string;
@@ -104,7 +105,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   return <ProjectReview key={props.project.id} {...props} />;
 }
 
-function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, onSelectWorkingTreeFile,
+function ProjectReview({ project, visible, overlay, onClose, selectedPath, selectedPatch, onSelectWorkingTreeFile,
   rememberedPath, onRememberPath, refreshVersion, selectionVersion }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
   const showMessagePatch = Boolean(selectedPatch);
@@ -117,19 +118,20 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const [revision, setRevision] = useState(0);
   const [refreshRequested, setRefreshRequested] = useState(false);
   const [watchAttempt, setWatchAttempt] = useState(0);
-  const [watchStarted, setWatchStarted] = useState(false);
   const [watchError, setWatchError] = useState(false);
   const [list, setList] = useState<{ files: ReviewFile[]; revision: number; error?: string }>();
   const [result, setResult] = useState<{ revision: number; path: string; value?: ReviewPatch; error?: string }>();
   const panel = useRef<HTMLElement>(null);
   const nav = useRef<HTMLElement>(null);
+  const watchReady = useRef(false);
+  const diffScroll = useRef<{ key: string; top: number } | undefined>(undefined);
   const lastRefreshVersion = useRef(refreshVersion);
   const style = layout === "auto" ? (wide ? "split" : "unified") : layout;
   const files = list?.files ?? [];
   const messagePath = requestedPath ?? "Edit patch";
   const listReady = list?.revision === revision;
   const selectedFile = files.find(candidate => candidate.path === path);
-  const missingRequestedFile = listReady && !list?.error && !selectedFile && requestedGitPath !== undefined && requestedGitPath === path;
+  const missingRequestedFile = list && !list.error && !selectedFile && requestedGitPath !== undefined && requestedGitPath === path;
   const file = showMessagePatch || missingRequestedFile ? undefined : selectedFile ?? files[0];
   const currentPath = file?.path;
   const currentResult = result?.path === currentPath ? result : undefined;
@@ -138,17 +140,32 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const query = filter.trim().toLocaleLowerCase();
   const visibleFiles = files.filter(candidate => !query || candidate.path.toLocaleLowerCase().includes(query));
   const fileTabStop = visibleFiles.find(candidate => candidate.path === currentPath) ?? visibleFiles[0];
+  const displayedPath = showMessagePatch ? messagePath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
+  const diffKey = showMessagePatch ? `chat-${selectionVersion}-${displayedPath}` : `git-${displayedPath}`;
   const refresh = useCallback(() => setRefreshRequested(true), []);
 
   useLayoutEffect(() => {
     const element = panel.current;
     if (!element) return;
-    const resize = () => setWide(element.clientWidth >= splitMinimumWidth);
+    const resize = () => {
+      if (element.clientWidth > 0) setWide(element.clientWidth >= splitMinimumWidth);
+    };
     resize();
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+
+  useLayoutEffect(() => {
+    const saved = diffScroll.current;
+    if (saved?.key !== diffKey) {
+      diffScroll.current = undefined;
+      return;
+    }
+    if (!visible) return;
+    const scroller = panel.current?.querySelector<HTMLElement>(".workspace-review-scroll");
+    if (scroller) scroller.scrollTop = saved.top;
+  }, [diffKey, visible]);
 
   useEffect(() => {
     const last = lastSelection.current;
@@ -161,24 +178,27 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   useEffect(() => {
     if (lastRefreshVersion.current === refreshVersion) return;
     lastRefreshVersion.current = refreshVersion;
+    if (!visible) return;
     const timer = window.setTimeout(refresh, 140);
     return () => window.clearTimeout(timer);
-  }, [refresh, refreshVersion]);
+  }, [refresh, refreshVersion, visible]);
 
   useEffect(() => {
+    if (!visible) return;
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [refresh]);
+  }, [refresh, visible]);
 
   useEffect(() => {
-    if (!project.trusted) return;
+    if (!visible || !project.trusted) return;
     const api = window.pideck;
     const scope = { projectId: project.id, subscriptionId: crypto.randomUUID() };
     let active = true;
     const started = () => {
       if (!active) return;
-      setWatchStarted(true);
-      if (watchAttempt) refresh();
+      watchReady.current = true;
+      setRefreshRequested(false);
+      setRevision(value => value + 1);
     };
     const failed = () => {
       if (active) setWatchError(true);
@@ -199,24 +219,27 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
     });
     return () => {
       active = false;
+      watchReady.current = false;
       unsubscribe();
       void api.invoke("review:unwatch", scope).catch(() => {});
     };
-  }, [project.id, project.trusted, refresh, watchAttempt]);
+  }, [project.id, project.trusted, refresh, visible, watchAttempt]);
 
   useEffect(() => {
-    if ((overlay || selectionVersion !== undefined) && !panel.current?.contains(document.activeElement)) panel.current?.focus();
-  }, [overlay, selectionVersion]);
+    if (visible && (overlay || selectionVersion !== undefined) && !panel.current?.contains(document.activeElement)) {
+      panel.current?.focus({ preventScroll: true });
+    }
+  }, [overlay, selectionVersion, visible]);
 
   useEffect(() => {
-    if (!project.trusted || !watchStarted) return;
+    if (!visible || !project.trusted || !watchReady.current) return;
     let active = true;
     void window.pideck.invoke("review:list", { projectId: project.id }).then(
       next => { if (active) setList({ files: next, revision }); },
       cause => { if (active) setList(previous => ({ files: previous?.files ?? [], revision, error: message(cause) })); },
     );
     return () => { active = false; };
-  }, [project.id, project.trusted, revision, watchStarted]);
+  }, [project.id, project.trusted, revision, visible]);
 
   useEffect(() => {
     if (!listReady || !list || list.error) return;
@@ -229,7 +252,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   }, [currentPath, list?.error, listReady, missingRequestedFile, onRememberPath, showMessagePatch]);
 
   useEffect(() => {
-    if (!project.trusted || !listReady || !currentPath || list?.error) return;
+    if (!visible || !project.trusted || !watchReady.current || !listReady || !currentPath || list?.error) return;
     let active = true;
     const timer = window.setTimeout(() => {
       void window.pideck.invoke("review:patch", { projectId: project.id, path: currentPath }).then(
@@ -241,16 +264,17 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
       active = false;
       window.clearTimeout(timer);
     };
-  }, [project.id, project.trusted, currentPath, listReady, list?.error, revision]);
+  }, [project.id, project.trusted, currentPath, listReady, list?.error, revision, visible]);
 
   const loading = !listReady || Boolean(currentPath && !list?.error
     && (result?.path !== currentPath || result.revision !== revision));
+  const readingDiff = loading && currentPath !== undefined && !currentResult;
   useEffect(() => {
-    if (loading || !refreshRequested) return;
+    if (!visible || !watchReady.current || loading || !refreshRequested) return;
     // Finish the current snapshot before reading again after another filesystem event.
     setRefreshRequested(false);
     setRevision(value => value + 1);
-  }, [loading, refreshRequested]);
+  }, [loading, refreshRequested, visible]);
 
   function retryReview() {
     panel.current?.focus({ preventScroll: true });
@@ -258,11 +282,23 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
     else refresh();
   }
 
-  const hasDiff = parsed.some(item => item.hunks.length > 0);
-  const displayedPath = showMessagePatch ? messagePath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
   const showFileList = files.length > 1 || (files.length > 0 && (showMessagePatch || missingRequestedFile)) || Boolean(filter);
+  const showSelectionInList = showFileList && visibleFiles.some(candidate => candidate.path === currentPath);
+  const layoutControl = parsed.some(item => item.hunks.length > 0) && <div className="workspace-layout">
+    <select aria-label="Diff layout" title="Diff layout" value={layout}
+      onChange={event => setLayout(event.target.value as DiffLayout)}>
+      <option value="auto">Auto layout</option>
+      <option value="unified">Unified</option>
+      <option value="split">Side by side</option>
+    </select>
+    <Icon name="down" width={12} height={12} />
+  </div>;
   return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes"
-    data-overlay={overlay || undefined} onKeyDown={event => {
+    hidden={!visible} data-overlay={overlay || undefined} onScrollCapture={event => {
+      if (visible && event.target instanceof HTMLElement && event.target.classList.contains("workspace-review-scroll")) {
+        diffScroll.current = { key: diffKey, top: event.target.scrollTop };
+      }
+    }} onKeyDown={event => {
     if (event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
@@ -274,6 +310,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
         aria-label="Back to chat" title="Back to chat (Esc)"><ArrowLeft size={17} aria-hidden="true" /></button>}
       <h2>Changes</h2>
       {files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
+      {showSelectionInList && <><ChangeCount files={parsed} />{layoutControl}</>}
     </header>
     {!project.trusted ? <p className="workspace-empty">Trust this project to review its changes.</p>
       : !list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
@@ -319,7 +356,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
           {query && visibleFiles.length === 0 && <p className="workspace-filter-empty">No matching paths.</p>}
         </nav>}
         {displayedPath ? <>
-          <div className="workspace-diff-header">
+          {!showSelectionInList && <div className="workspace-diff-header">
             <h3 title={showMessagePatch ? `Patch from chat for ${messagePath}` : file ? fileDescription(file) : displayedPath}
               aria-description={file ? fileStatus(file.status) : undefined}>
               <Icon name="file" className="workspace-file-icon" />
@@ -328,24 +365,16 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
             </h3>
             {showMessagePatch && <span className="workspace-panel-meta">From chat</span>}
             <ChangeCount files={parsed} />
-            {hasDiff && <div className="workspace-layout">
-              <select aria-label="Diff layout" title="Diff layout" value={layout}
-                onChange={event => setLayout(event.target.value as DiffLayout)}>
-                <option value="auto">Auto layout</option>
-                <option value="unified">Unified</option>
-                <option value="split">Side by side</option>
-              </select>
-              <Icon name="down" width={12} height={12} />
-            </div>}
-          </div>
+            {layoutControl}
+          </div>}
           {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
-            <Virtualizer key={`${showMessagePatch ? "chat" : "git"}-${displayedPath}`} className="workspace-review-scroll">
+            <Virtualizer key={diffKey} className="workspace-review-scroll">
               <PatchView patch={patch} files={parsed} style={style} wrap />
             </Virtualizer>
           </WorkerPoolContextProvider> : !list?.error && <div className="workspace-review-scroll">
-            {!loading && currentResult?.error ? <ReviewIssue message={currentResult.error} onRetry={retryReview} />
-              : <p className="workspace-empty" role={loading ? "status" : undefined}>
-                {loading ? "Reading diff…" : currentResult?.value?.reason ?? "This file has no current Git changes."}
+            {currentResult?.error ? <ReviewIssue message={currentResult.error} onRetry={retryReview} />
+              : <p className="workspace-empty" role={readingDiff ? "status" : undefined}>
+                {readingDiff ? "Reading diff…" : currentResult?.value?.reason ?? "This file has no current Git changes."}
               </p>}
           </div>}
         </> : !list?.error && <p className="workspace-empty">No Git changes in this project.</p>}

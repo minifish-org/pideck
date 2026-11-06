@@ -15,12 +15,13 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
-  ChatGap, ChatView, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
+  ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat,
 } from "../shared/api.js";
 import type { ProjectFolder, RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
+import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
 import { readQueuedInput, updateQueuedInput } from "./queued-input.js";
@@ -112,6 +113,7 @@ export class Runtime {
     private readonly durablePath: string,
     private readonly outputRoot: string,
     private readonly openHarness: () => Promise<Harness>,
+    private readonly savedCredentials?: PersistentCredentials,
     private readonly onStorageFailure?: () => void,
   ) {}
 
@@ -134,12 +136,18 @@ export class Runtime {
         modelsStore: metadata.modelsStore,
         identity: { userAgent: { custom: "Pideck/0.1.0" } },
       });
+      const savedCredentials = credentials instanceof PersistentCredentials ? credentials : undefined;
+      const restoreCatalogs = () => models.refresh({ allowNetwork: false });
+      if (!suppliedModels) savedCredentials?.onUnlock(restoreCatalogs);
       for (const [provider, key] of Object.entries(keys)) {
         if (key && models.getProvider(provider)?.auth.apiKey) {
           await credentials.modify(provider, async () => ({ type: "api_key", key }));
         }
       }
-      if (!suppliedModels) await models.refresh({ allowNetwork: false });
+      if (!suppliedModels) {
+        if (savedCredentials) await savedCredentials.passive(restoreCatalogs);
+        else await restoreCatalogs();
+      }
 
       const registry = createRegistry();
       registry.install(createCodingTools({ images: await createNodePhotonImages() }));
@@ -170,7 +178,7 @@ export class Runtime {
         return harness;
       }
       const harness = await openHarness();
-      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, onStorageFailure);
+      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, savedCredentials, onStorageFailure);
       try {
         if (await runtime.recoverSessionStarts()) {
           await harness.close(context);
@@ -269,7 +277,20 @@ export class Runtime {
     } while (cursor !== undefined);
   }
 
-  async listModels(): Promise<ModelOption[]> {
+  async modelCatalog(useSaved = false): Promise<ModelCatalog> {
+    if (useSaved) await this.savedCredentials?.unlock();
+    const pending = this.savedCredentials?.savedConnectionsPending ?? false;
+    const models = await this.listModels();
+    const stillPending = this.savedCredentials?.savedConnectionsPending ?? false;
+    return { models: pending && !stillPending ? await this.listModels() : models, savedConnectionsPending: stillPending };
+  }
+
+  listModels(): Promise<ModelOption[]> {
+    const list = () => this.readModelCatalog();
+    return this.savedCredentials ? this.savedCredentials.passive(list) : list();
+  }
+
+  private async readModelCatalog(): Promise<ModelOption[]> {
     const catalogs = await Promise.all(this.models.getProviders().map(async provider => {
       const available = await this.models.getAvailableOfType("chat", provider.id, {
         signal: AbortSignal.timeout(2500),
@@ -360,6 +381,7 @@ export class Runtime {
   }
 
   private async validateChatModel(input: StartChat | SendChat) {
+    await this.savedCredentials?.unlock();
     const model = this.models.getModel(input.model.provider, input.model.id);
     if (!model) throw new Error("The selected model is unavailable.");
     const available = await this.models.getAvailableOfType("chat", model.provider, {

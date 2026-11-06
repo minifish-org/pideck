@@ -1,18 +1,27 @@
 import type { SafeStorage } from "electron";
 import type { Credential } from "@earendil-works/pi-ai";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 type Credentials = Record<string, Credential>;
 type Encryption = Pick<SafeStorage, "isAsyncEncryptionAvailable" | "getSelectedStorageBackend"
   | "encryptStringAsync" | "decryptStringAsync">;
-const unavailable = "Unlock your operating system’s credential store to save provider credentials.";
+const unavailable = "Allow access to your system’s credential store and try again.";
+const credentialFile = "provider-credentials";
+const legacyFile = "provider-keys.json";
 
 export class CredentialVault {
   private values?: Credentials;
+  private opening?: Promise<Credentials>;
   private writes: Promise<void> = Promise.resolve();
 
   constructor(private readonly dataDir: string, private readonly encryption: Encryption) {}
+
+  async hasSavedCredentials(): Promise<boolean> {
+    const files = await Promise.all([credentialFile, legacyFile].map(file =>
+      access(join(this.dataDir, file)).then(() => true, error => error.code !== "ENOENT")));
+    return files.some(Boolean);
+  }
 
   async snapshot(): Promise<Credentials> {
     await this.writes;
@@ -25,27 +34,39 @@ export class CredentialVault {
       const next = { ...current };
       if (credential) next[provider] = credential;
       else delete next[provider];
-      await this.save(next);
+      if (Object.keys(next).length) await this.save(next);
+      else {
+        try {
+          await rm(join(this.dataDir, legacyFile), { force: true });
+          await rm(join(this.dataDir, credentialFile), { force: true });
+        } catch {
+          throw new Error("The provider credential store could not be removed.");
+        }
+      }
       this.values = next;
     });
     this.writes = write.catch(() => {});
     return write;
   }
 
-  private async load(): Promise<Credentials> {
-    if (this.values) return this.values;
-    const file = join(this.dataDir, "provider-credentials");
+  private load(): Promise<Credentials> {
+    if (this.values) return Promise.resolve(this.values);
+    this.opening ??= this.read().then(values => this.values = values).finally(() => { this.opening = undefined; });
+    return this.opening;
+  }
+
+  private async read(): Promise<Credentials> {
+    const file = join(this.dataDir, credentialFile);
     const encrypted = await readOptional(file);
     if (encrypted) {
       await this.requireEncryption();
       const { result, shouldReEncrypt } = await this.decrypt(encrypted);
       const values = parseRecords(result, isCredential);
       if (shouldReEncrypt) await this.save(values);
-      this.values = values;
       return values;
     }
     // Migrate v0.1's encrypted API keys into pi-ai's native credential format.
-    const oldFile = join(this.dataDir, "provider-keys.json");
+    const oldFile = join(this.dataDir, legacyFile);
     const old = await readOptional(oldFile);
     const values: Credentials = Object.create(null);
     if (old) {
@@ -54,10 +75,9 @@ export class CredentialVault {
       for (const [provider, ciphertext] of Object.entries(keys)) {
         values[provider] = { type: "api_key", key: (await this.decrypt(Buffer.from(ciphertext, "base64"))).result };
       }
-      await this.save(values);
+      if (Object.keys(values).length) await this.save(values);
       await rm(oldFile, { force: true });
     }
-    this.values = values;
     return values;
   }
 
@@ -66,7 +86,7 @@ export class CredentialVault {
     const encrypted = await this.encryption.encryptStringAsync(JSON.stringify(values)).catch(() => {
       throw new Error(unavailable);
     });
-    const file = join(this.dataDir, "provider-credentials");
+    const file = join(this.dataDir, credentialFile);
     const temporary = file + ".tmp";
     try {
       await writeFile(temporary, encrypted, { mode: 0o600 });

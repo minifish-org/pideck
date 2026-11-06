@@ -95,7 +95,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .workspace-title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workspace-title-project { color: var(--fgColor-muted); font-size: 11px; }
 .workspace-title-current { color: var(--fgColor-default); font-size: 14px; font-weight: 620; }
-.title-actions, .title-panels { display: flex; align-items: center; gap: 4px; flex: none; }
+.title-panels { display: flex; align-items: center; gap: 4px; flex: none; }
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -112,6 +112,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .icon-button:hover:not(:disabled) {
   background: var(--control-transparent-bgColor-hover); color: var(--fgColor-default);
 }
+.icon-button[data-draft='true'] { width: auto; padding-inline: 5px; font-size: 11px; }
 .panel-toggle:is([aria-pressed='true'], [aria-expanded='true']) {
   background: var(--control-transparent-bgColor-selected); color: var(--fgColor-default);
 }
@@ -162,12 +163,14 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-item + .nav-item { margin-top: 2px; }
 .nav-item .nav-row { padding-right: 34px; }
 .nav-project-row:has(.nav-new-session) > .nav-row { padding-right: 62px; }
+.nav-project-row:has(.nav-new-session[data-draft]) > .nav-row { padding-right: 70px; }
 .nav-item :is(.nav-remove, .nav-new-session) {
   position: absolute; top: 4px; right: 3px; width: 28px; height: 28px; opacity: 0;
 }
 .nav-project-row .nav-new-session { right: 31px; pointer-events: none; }
 .nav-item:is(:hover, :focus-within) :is(.nav-remove, .nav-new-session) { opacity: 1; }
 .nav-project-row:is(:hover, :focus-within) .nav-new-session { pointer-events: auto; }
+.nav-project-row .nav-new-session[data-draft] { width: 36px; opacity: 1; pointer-events: auto; }
 @media (hover: none) {
   .nav-item .nav-row[aria-current='true'] ~ .nav-remove { opacity: .8; }
   .nav-project-row .nav-new-session { opacity: 1; pointer-events: auto; }

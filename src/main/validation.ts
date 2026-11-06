@@ -84,7 +84,7 @@ const validators = {
   "session:rename": (value) => object(value) && selection(value)
     && string(value.title, sessionTitleLimit) && Boolean(normalizeSessionTitle(value.title)),
   "session:remove": (value) => object(value) && selection(value),
-  "model:list": empty,
+  "model:list": (value) => value === undefined || (object(value) && value.useSaved === true),
   "model:providers": empty,
   "model:login": (value) => object(value) && flow(value) && match(value.provider, provider)
     && (value.method === "api_key" || value.method === "oauth"),

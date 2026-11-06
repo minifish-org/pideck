@@ -50,7 +50,6 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
   const active = block.status === 'pending' || block.status === 'running';
   const status = block.status === 'error' ? 'Failed' : shell && block.status === 'done' ? 'Succeeded' : undefined;
-  const longCommand = typeof command === 'string' && (command.includes('\n') || command.length > 48);
   const output = block.output?.trimEnd();
   const shortOutput = output && output.length <= 420 && output.split('\n', 7).length <= 6;
   const open = expanded ?? (Boolean(block.patch) || block.status === 'error' || (shell && Boolean(active || shortOutput)));
@@ -59,16 +58,17 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
     <details className="tool-card" open={open}>
       <summary title={target} aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : undefined} onClick={(event) => {
         event.preventDefault();
+        const selection = shell && event.detail > 0 ? window.getSelection() : null;
+        if (selection && !selection.isCollapsed && selection.containsNode(event.currentTarget, true)) return;
         onExpand(block.id, !open);
       }}>
         <Icon name={active ? 'spinner' : shell ? 'terminal' : 'file'} className={active ? 'tool-spinner' : undefined} />
         {(!shell || !target) && <span className="tool-label">{Object.hasOwn(toolLabels, block.name) ? toolLabels[block.name] : block.name}</span>}
-        {target && <span className="tool-target">{target}</span>}
+        {target && <span className={shell ? 'tool-target tool-target--command' : 'tool-target'}>{target}</span>}
         {status && <span className="tool-state" data-status={block.status}>{status}</span>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
       </summary>
       <div className="tool-detail">
-        {longCommand && <div className="tool-command">$ {command}</div>}
         {block.patch
           ? <Suspense fallback={<div className="panel-loading" role="status">Loading diff…</div>}>
               <InlineDiff patch={block.patch} onOpen={() => onReview({ path, patch: block.patch })} />
@@ -212,14 +212,15 @@ function sameGap(left: ChatGap, right: ChatGap) {
   return left.after === right.after && left.upTo === right.upTo;
 }
 
-export function Chat({ project, session, activityReceipt, models, modelsReady, modelsError, defaultModel, draft, updateDraft, readingPosition, onReadingPosition,
-  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onStarted, onFork }: {
+export function Chat({ project, session, activityReceipt, models, modelsReady, modelsError, savedConnectionsPending, defaultModel, draft, updateDraft,
+  readingPosition, onReadingPosition, onModelChosen, onSettings, onRetryModels, onLoadSavedModels, onReview, onWorkspaceChange, onSent, onStarted, onFork }: {
   project: Project;
   session?: Session;
   activityReceipt?: SessionActivity;
   models: ModelOption[];
   modelsReady: boolean;
   modelsError?: string;
+  savedConnectionsPending: boolean;
   defaultModel?: string;
   draft: Draft;
   updateDraft: (update: (draft: Draft) => Draft) => void;
@@ -228,6 +229,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   onModelChosen: (key: string) => void;
   onSettings: (provider?: string) => void;
   onRetryModels: () => void;
+  onLoadSavedModels: () => Promise<ModelOption[]>;
   onReview: (selection: ReviewSelection) => void;
   onWorkspaceChange: () => void;
   onSent: () => void;
@@ -266,21 +268,27 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const agentCompacting = view?.activity?.kind === 'compacting';
   const activeKey = view?.model && modelKey(view.model);
   const desiredModel = busy ? activeKey : draft.model || activeKey || defaultModel;
-  const model = desiredModel
-    ? models.find((option) => modelKey(option) === desiredModel)
-    : models.find((option) => option.configured);
+  const resolveModel = (catalog: ModelOption[]) => desiredModel
+    ? catalog.find((option) => modelKey(option) === desiredModel)
+    : catalog.find((option) => option.configured);
+  const model = resolveModel(models);
   const desiredProvider = model?.provider ?? desiredModel?.split('/')[0];
   const modelName = model?.name ?? (desiredModel ? desiredModel.slice(desiredModel.indexOf('/') + 1) : undefined);
-  const setupRequired = !busy && modelsReady && !models.some((option) => option.configured);
-  const desiredThinking = busy ? view?.thinking : draft.thinking ?? (model && modelKey(model) === activeKey ? view?.thinking : undefined);
-  const thinking = desiredThinking && model?.thinking.includes(desiredThinking) ? desiredThinking
-    : model?.thinking.includes('off') ? 'off' : model?.thinking[0] ?? 'off';
+  const setupRequired = !busy && modelsReady && !savedConnectionsPending && !models.some((option) => option.configured);
+  const awaitingSavedModel = savedConnectionsPending && !model?.configured;
+  const canAttach = Boolean(model?.configured || awaitingSavedModel) && (model?.supportsImages ?? awaitingSavedModel);
+  function resolveThinking(option: ModelOption | undefined): Thinking {
+    const preferred = busy ? view?.thinking : draft.thinking ?? (option && modelKey(option) === activeKey ? view?.thinking : undefined);
+    if (preferred && option?.thinking.includes(preferred)) return preferred;
+    return option?.thinking.includes('off') ? 'off' : option?.thinking[0] ?? 'off';
+  }
+  const thinking = resolveThinking(model);
   const hasDraft = Boolean(text.trim() || attachments.length);
   const startingSession = !session && draft.sending;
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
   const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
-    && view?.status !== 'cancelling' && Boolean(model?.configured)
-    && hasDraft && (!attachments.length || Boolean(model?.supportsImages));
+    && view?.status !== 'cancelling' && Boolean(model?.configured || awaitingSavedModel)
+    && hasDraft && (!attachments.length || canAttach);
   const gaps = view?.gaps ?? [];
 
   useEffect(() => {
@@ -372,18 +380,28 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   }, [connected, onWorkspaceChange, view]);
 
   async function send() {
-    if (!canSend || !model) return;
+    if (!canSend) return;
     const previous = draft.attempt;
     const requestId = previous?.text === text && previous.attachments === attachments
       ? previous.requestId : draft.pendingRequestId ?? crypto.randomUUID();
     const attempt: SendAttempt = { text, attachments, requestId };
-    const input: StartChat = {
-      projectId: project.id, requestId, text, model: { provider: model.provider, id: model.id }, thinking,
-      images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
-    };
     update({ attempt, sending: true, error: undefined });
     textarea.current?.focus({ preventScroll: true });
     try {
+      const destination = awaitingSavedModel ? resolveModel(await onLoadSavedModels()) : model;
+      if (awaitingSavedModel && !form.current) {
+        updateDraft((current) => current.attempt?.requestId === requestId ? { ...current, sending: false } : current);
+        return;
+      }
+      if (!destination?.configured) throw new Error(desiredModel
+        ? 'The selected model is unavailable. Choose another model or check its connection.'
+        : 'Connect a model provider to send your message.');
+      if (attachments.length && !destination.supportsImages) throw new Error('Choose a model that accepts images.');
+      const input: StartChat = {
+        projectId: project.id, requestId, text, model: { provider: destination.provider, id: destination.id },
+        thinking: resolveThinking(destination),
+        images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
+      };
       if (selection) {
         await window.pideck.invoke('chat:send', { ...input, ...selection, delivery: busy ? 'follow-up' : 'send' });
         updateDraft((current) => completeAttempt(current, attempt));
@@ -477,10 +495,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
     : progress?.label;
   const runDetail = progress?.label === runStatus ? progress?.detail : undefined;
-  const composerStatus = draft.sending ? 'Sending…'
+  const composerStatus = draft.sending ? awaitingSavedModel ? 'Loading saved models…' : 'Sending…'
     : draft.reading ? 'Attaching images…'
     : attachments.length > 0 && model && !model.supportsImages ? 'Choose a model that accepts images.'
-    : !busy && modelsReady && !setupRequired && modelName && !model?.configured
+    : !busy && modelsReady && !setupRequired && !savedConnectionsPending && modelName && !model?.configured
       ? <><span>Selected model unavailable</span><button className="inline-action" type="button"
         onClick={() => onSettings(desiredProvider)}>Connect {desiredProvider ? providerLabel(desiredProvider) : 'provider'}</button></>
       : undefined;
@@ -592,7 +610,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             onPaste={(event) => {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
               if (images.length) {
-                if (model?.configured && model.supportsImages && !startingSession) {
+                if (canAttach && !startingSession) {
                   event.preventDefault();
                   void addFiles(images);
                 } else if (!event.clipboardData.getData('text/plain')) {
@@ -602,7 +620,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             }} />
           <div className="composer-controls">
             <div className="composer-models">
-              {model?.configured && model.supportsImages && <>
+              {canAttach && <>
                 <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
                   onChange={(event) => {
                     const files = [...(event.target.files ?? [])];
@@ -617,8 +635,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                 ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
                     <Icon name="key" width={14} height={14} /> Connect a provider
                   </button>
-                : models.length > 0 ? <ModelPicker models={models} selected={model} label={modelLabel}
-                    description={modelDescription} thinking={thinkingOptions}
+                : models.length > 0 || savedConnectionsPending ? <ModelPicker models={models} selected={model} label={modelLabel}
+                    description={modelDescription} thinking={thinkingOptions} onLoadSavedModels={savedConnectionsPending ? onLoadSavedModels : undefined}
                     onThinkingChange={(level) => update({ thinking: level })}
                     onChoose={(option) => {
                       const key = modelKey(option);

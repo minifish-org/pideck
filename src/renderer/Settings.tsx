@@ -19,6 +19,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
   const flowId = useRef<string | undefined>(undefined);
   const mounted = useRef(false);
   const providerRead = useRef(0);
+  const loadedProviders = useRef(false);
   const cancelled = useRef<string | undefined>(undefined);
   const promptForm = useRef<HTMLFormElement>(null);
   const [providers, setProviders] = useState<ModelProvider[]>();
@@ -89,7 +90,13 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
     setLoading(true);
     try {
       const items = await api.invoke('model:providers');
-      if (mounted.current && read === providerRead.current) setProviders(items.toSorted((left, right) => left.name.localeCompare(right.name)));
+      if (mounted.current && read === providerRead.current) {
+        setProviders(items.toSorted((left, right) => left.name.localeCompare(right.name)));
+        if (!loadedProviders.current) {
+          loadedProviders.current = true;
+          onModelsChanged();
+        }
+      }
     } catch (cause) {
       if (mounted.current && read === providerRead.current) setError(readableError(cause));
     } finally {
