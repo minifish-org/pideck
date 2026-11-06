@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell } from "electron";
-import type { IpcMainInvokeEvent } from "electron";
+import type { IpcMainInvokeEvent, MessageBoxOptions } from "electron";
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { safeAuthUrl } from "../host/auth-flows";
 import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
 import { installDesktopMenu, isMenuState } from "./menu";
+import { checkForUpdate, releasesPage } from "./update-check";
 import { isCommand, validPayload } from "./validation";
 import { minimumWindow, openWindowState } from "./window-state";
 
@@ -42,6 +43,39 @@ function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, wi
   return event.sender === window.webContents
     && event.senderFrame === window.webContents.mainFrame
     && event.senderFrame?.url === appUrl;
+}
+
+async function showUpdateCheck(window?: BrowserWindow) {
+  const version = app.getVersion();
+  const update = await checkForUpdate(version, (input, init) => net.fetch(input, init));
+  if (exiting) return;
+  let options: MessageBoxOptions;
+  let releaseUrl: string | undefined;
+  switch (update.status) {
+    case "available":
+      releaseUrl = update.releaseUrl;
+      options = { message: "A Pideck update is available", detail: `Version ${update.version} is available. You are running ${version}.`,
+        buttons: ["View Release", "Close"] };
+      break;
+    case "current":
+      options = { message: "Pideck is up to date", detail: `You are running version ${version}.`, buttons: ["OK"] };
+      break;
+    case "empty":
+      options = { message: "No stable Pideck release is available", detail: `You are running version ${version}.`, buttons: ["OK"] };
+      break;
+    case "error":
+      if (update.reason === "unavailable") releaseUrl = releasesPage;
+      options = { type: "warning", message: "Could not check for updates",
+        detail: releaseUrl ? "GitHub did not make Pideck’s releases available. Check access in your signed-in browser."
+          : update.reason === "response" ? "GitHub returned an unexpected release response. Try again later."
+          : "The release check could not reach GitHub or complete the request. Try again later.",
+        buttons: releaseUrl ? ["Open Releases", "Close"] : ["OK"] };
+      break;
+  }
+  const box: MessageBoxOptions = { type: "info", title: "Check for Updates", defaultId: 0, cancelId: releaseUrl ? 1 : 0,
+    noLink: true, ...options };
+  const { response } = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, box) : dialog.showMessageBox(box));
+  if (response === 0 && releaseUrl && !exiting) await shell.openExternal(releaseUrl);
 }
 
 function openWindow() {
@@ -135,7 +169,7 @@ async function initialize() {
   });
   host = client;
   client.start();
-  const menu = installDesktopMenu(openWindow);
+  const menu = installDesktopMenu(openWindow, showUpdateCheck);
   desktopMenu = menu;
   ipcMain.on(menuStateChannel, (event, state: unknown) => {
     const window = mainWindow;

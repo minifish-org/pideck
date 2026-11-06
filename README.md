@@ -36,6 +36,8 @@ Provider credentials are encrypted through the operating system’s credential s
 | Navigate sidebar rows | ↑/↓, then Enter to select |
 | Request removal of a sidebar row | Delete while the row has focus |
 
+Choose **Check for Updates…** from the Pideck menu on macOS or the File menu on Windows and Linux. Pideck compares the installed version with the latest stable GitHub release and opens the release page on request. A private release page opens in your browser so you can use your GitHub sign-in.
+
 ## Verify and package
 
 ```sh

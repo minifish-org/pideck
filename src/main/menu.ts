@@ -20,7 +20,7 @@ export function isMenuState(value: unknown): value is MenuState {
     && Object.keys(idle).every(key => typeof (value as Record<string, unknown>)[key] === "boolean");
 }
 
-export function installDesktopMenu(reopen: () => void) {
+export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?: BrowserWindow) => Promise<void>) {
   const mac = process.platform === "darwin";
   let window: BrowserWindow | undefined;
   let state: MenuState | undefined;
@@ -50,11 +50,19 @@ export function installDesktopMenu(reopen: () => void) {
 
   const separator = { type: "separator" } as const;
   const settings = command("settings", "Model Providers…", "CommandOrControl+,");
+  const updates: MenuItemConstructorOptions = {
+    id: "check-for-updates", label: "Check for Updates…",
+    click(item) {
+      if (!item.enabled) return;
+      item.enabled = false;
+      void checkForUpdates(window).catch(() => {}).finally(() => { item.enabled = true; });
+    },
+  };
   const template: MenuItemConstructorOptions[] = [];
   if (mac) {
     app.setAboutPanelOptions({ applicationName: "Pideck", applicationVersion: app.getVersion() });
     template.push({ label: "Pideck", submenu: [
-      { role: "about", label: "About Pideck" }, separator, settings, separator,
+      { role: "about", label: "About Pideck" }, updates, separator, settings, separator,
       { role: "hide", label: "Hide Pideck" }, { role: "quit", label: "Quit Pideck" },
     ] });
   }
@@ -63,7 +71,7 @@ export function installDesktopMenu(reopen: () => void) {
       command("open-project", "Open Folder…", "CommandOrControl+O"),
       command("new-session", "New Session", "CommandOrControl+N"),
       separator,
-      ...(mac ? [{ role: "close" as const }] : [settings, separator, { role: "quit" as const }]),
+      ...(mac ? [{ role: "close" as const }] : [settings, updates, separator, { role: "quit" as const }]),
     ] },
     { label: mac ? "Edit" : "&Edit", submenu: [
       { role: "undo" }, { role: "redo" }, separator,

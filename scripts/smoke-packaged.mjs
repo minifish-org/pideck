@@ -29,6 +29,71 @@ async function clickNativeMenu(app, id) {
   }, id);
 }
 
+async function verifyNativeUpdateMenu(app) {
+  const results = await app.evaluate(async ({ app, BrowserWindow, dialog, Menu, net, shell }) => {
+    const menu = Menu.getApplicationMenu();
+    const item = menu.getMenuItemById("check-for-updates");
+    const section = menu.items.find(entry => entry.submenu?.items.includes(item));
+    if (!item || !section || !item.enabled) throw new Error("The update check is unavailable before opening a project.");
+    const endpoint = "https://api.github.com/repos/minifish-org/pideck/releases";
+    const latest = `${endpoint}/latest`;
+    const list = `${endpoint}?per_page=1`;
+    const installed = app.getVersion();
+    const label = item.label;
+    const original = { fetch: net.fetch, message: dialog.showMessageBox, open: shell.openExternal };
+    let fixture;
+    net.fetch = async (input, ...options) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url !== latest && url !== list) return original.fetch.call(net, input, ...options);
+      fixture.requests.push(url);
+      if (url === latest && fixture.tag) return Response.json({
+        tag_name: fixture.tag, draft: false, prerelease: false, html_url: "https://example.invalid/untrusted-release",
+      });
+      return url === list && fixture.public ? Response.json([]) : new Response(null, { status: 404 });
+    };
+    dialog.showMessageBox = async (...args) => {
+      fixture.dialog = args.at(-1);
+      return { response: fixture.response, checkboxChecked: false };
+    };
+    shell.openExternal = async url => { fixture.opened.push(url); };
+
+    async function run(options) {
+      fixture = { ...options, requests: [], opened: [] };
+      const window = BrowserWindow.getAllWindows()[0];
+      item.click({}, window, window?.webContents);
+      const deadline = Date.now() + 5000;
+      while ((!fixture.dialog || !item.enabled) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      if (!fixture.dialog || !item.enabled) throw new Error("The update check did not finish.");
+      return fixture;
+    }
+
+    try {
+      const unavailable = await run({ response: 1 });
+      const empty = await run({ public: true, response: 0 });
+      const current = await run({ tag: `v${installed}`, response: 0 });
+      const available = await run({ tag: "v999.0.0", response: 0 });
+      return { label, section: section.label.replace("&", ""), installed, latest, list, unavailable, empty, current, available };
+    } finally {
+      net.fetch = original.fetch;
+      dialog.showMessageBox = original.message;
+      shell.openExternal = original.open;
+    }
+  });
+  assert.equal(results.section, process.platform === "darwin" ? "Pideck" : "File");
+  assert.equal(results.label, "Check for Updates…");
+  assert.equal(results.unavailable.dialog.message, "Could not check for updates");
+  assert.deepEqual(results.unavailable.dialog.buttons, ["Open Releases", "Close"]);
+  assert.deepEqual(results.unavailable.requests, [results.latest, results.list]);
+  assert.deepEqual(results.unavailable.opened, []);
+  assert.equal(results.empty.dialog.message, "No stable Pideck release is available");
+  assert.equal(results.current.dialog.message, "Pideck is up to date");
+  assert.equal(results.available.dialog.message, "A Pideck update is available");
+  assert.ok(results.available.dialog.detail.includes(results.installed));
+  assert.ok(results.available.dialog.detail.includes("999.0.0"));
+  assert.deepEqual(results.available.dialog.buttons, ["View Release", "Close"]);
+  assert.deepEqual(results.available.opened, ["https://github.com/minifish-org/pideck/releases/tag/v999.0.0"]);
+}
+
 async function verifyNativeTitlebar(app, page) {
   if (process.platform !== "darwin") return;
   const { bounds, minimum, position } = await app.evaluate(({ BrowserWindow }) => {
@@ -142,6 +207,7 @@ try {
   assert.equal(nativeMenu.workspaceItemsEnabled, false);
   assert.ok(["undo", "redo", "cut", "copy", "paste", "selectall", "zoomin", "zoomout", "resetzoom"].every(role => nativeMenu.roles.includes(role)));
   assert.ok(["reload", "forcereload", "toggledevtools", "services", "showsubstitutions", "startspeaking"].every(role => !nativeMenu.roles.includes(role)));
+  await verifyNativeUpdateMenu(app);
   await page.evaluate(async () => {
     window.pideck.updateMenu({ canCreateSession: true });
     await window.pideck.invoke("project:list");
