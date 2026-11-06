@@ -19,10 +19,6 @@
 }
 
 .workspace-terminal[hidden] { display: none; }
-.workspace-tools[data-stacked] > .workspace-terminal {
-  flex: 0 0 var(--terminal-stack-height);
-  border-block-start: 1px solid var(--borderColor-muted);
-}
 
 .workspace-panel-header {
   display: flex;
@@ -36,7 +32,7 @@
 }
 
 .workspace-tools[data-docked] > .workspace-review > .workspace-panel-header,
-.workspace-tools[data-docked]:not([data-stacked]) > .workspace-terminal .workspace-panel-header {
+.workspace-tools[data-docked] > .workspace-terminal .workspace-panel-header {
   min-height: var(--titlebar-height);
   -webkit-app-region: drag;
 }

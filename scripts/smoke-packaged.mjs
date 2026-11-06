@@ -318,6 +318,26 @@ try {
   assert.ok(modelServer.requests.some(request => request.input.some(item =>
     item.type === "function_call_output" && String(item.output).includes("export const result = 'after'"))));
 
+  const review = page.getByRole("complementary", { name: "Review changes" });
+  const tools = page.locator("#workspace-tools");
+  const changesToggle = page.getByRole("button", { name: "Changes", exact: true });
+  const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
+  async function verifyDockedToolLayout(panelSelector) {
+    assert.ok(await page.evaluate(selector => {
+      const bounds = target => document.querySelector(target).getBoundingClientRect();
+      const sameEdge = (first, second) => Math.abs(first - second) <= 1;
+      const right = bounds("#workspace-tools[data-docked]");
+      const titlebar = bounds(".titlebar");
+      const panel = bounds(selector);
+      return sameEdge(bounds(".workspace-conversation").right, right.left)
+        && sameEdge(bounds(".titlebar-content").right, right.left)
+        && bounds("#toggle-review").right < right.left && bounds("#toggle-terminal").right < right.left
+        && sameEdge(panel.top, titlebar.top)
+        && sameEdge(bounds(selector + " .workspace-panel-header").bottom, titlebar.bottom)
+        && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
+        && sameEdge(panel.bottom, right.bottom);
+    }, panelSelector), "The active tool must fill the right sidebar beside the middle toolbar.");
+  }
   await clickNativeMenu(app, "toggle-review");
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
   await page.getByRole("combobox", { name: "Diff layout" }).selectOption("split");
@@ -327,10 +347,21 @@ try {
   await highlighted.locator("[data-line] span[style]").filter({ hasText: "export" }).first().waitFor();
   assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("toggle-review").checked), true);
+  await verifyDockedToolLayout("#review-panel");
+  const externalPath = join(project, "outside-edit.ts");
+  const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
+  assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
+  await writeFile(externalPath, "export const source = 'externalMarker';\n");
+  await changedFile.click();
+  await review.locator("diffs-container").filter({ hasText: "externalMarker" }).waitFor();
 
   await page.evaluate(() => {
+    let output = "";
     window.pideck.onEvent(event => {
-      if (event.type === "terminal:data") document.documentElement.dataset.ptyId = event.terminalId;
+      if (event.type !== "terminal:data") return;
+      document.documentElement.dataset.ptyId = event.terminalId;
+      output = (output + event.data).slice(-256);
+      if (output.includes("RAIL_COLLAPSED")) document.documentElement.dataset.collapsedPtyId = event.terminalId;
     });
   });
   await clickNativeMenu(app, "toggle-terminal");
@@ -341,36 +372,44 @@ try {
   assert.equal(await terminalRegion.getByRole("button", { name: /end shell|restart shell/i }).count(), 0);
   if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
   const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
-  const review = page.getByRole("complementary", { name: "Review changes" });
-  assert.ok(await page.evaluate(() => {
-    const bounds = selector => document.querySelector(selector).getBoundingClientRect();
-    const sameEdge = (first, second) => Math.abs(first - second) <= 1;
-    const right = bounds("#workspace-tools[data-docked]");
-    const titlebar = bounds(".titlebar");
-    const middleHeader = bounds(".titlebar-content");
-    const changes = bounds("#review-panel");
-    const shell = bounds("#workspace-terminal");
-    return sameEdge(bounds(".workspace-conversation").right, right.left)
-      && sameEdge(middleHeader.right, right.left) && bounds("#toggle-terminal").right < right.left
-      && sameEdge(changes.top, titlebar.top)
-      && sameEdge(bounds("#review-panel .workspace-panel-header").bottom, titlebar.bottom)
-      && sameEdge(changes.bottom, shell.top) && sameEdge(changes.left, shell.left)
-      && sameEdge(changes.right, shell.right) && sameEdge(shell.bottom, right.bottom);
-  }), "The packaged app must stack Changes and Terminal in a single right sidebar.");
-  const externalPath = join(project, "outside-edit.ts");
-  const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
-  assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
-  await writeFile(externalPath, "export const source = 'externalMarker';\n");
-  await changedFile.click();
-  await review.locator("diffs-container").filter({ hasText: "externalMarker" }).waitFor();
+  await review.waitFor({ state: "detached" });
+  assert.equal(await changesToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(await terminalToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(await page.getByRole("separator", { name: "Resize terminal" }).count(), 0);
+  await verifyDockedToolLayout("#workspace-terminal");
+
+  // Release each stage only once the running process's terminal is hidden.
   await terminal.focus();
   await page.keyboard.insertText(process.platform === "win32"
-    ? `Set-Content outside-edit.ts "export const source = 'terminalMarker';"`
-    : `printf '%s\\n' "export const source = 'terminalMarker';" > outside-edit.ts`);
+    ? 'Write-Host ("RAIL_" + "RUNNING"); while (!(Test-Path ../review-ready)) { Start-Sleep -Milliseconds 50 }; '
+      + `Set-Content outside-edit.ts "export const source = 'terminalMarker';"; `
+      + 'while (!(Test-Path ../collapse-ready)) { Start-Sleep -Milliseconds 50 }; Write-Host ("RAIL_" + "COLLAPSED")'
+    : "printf 'RAIL_%s\\n' RUNNING; while [ ! -f ../review-ready ]; do sleep 0.05; done; "
+      + `printf '%s\\n' "export const source = 'terminalMarker';" > outside-edit.ts; `
+      + "while [ ! -f ../collapse-ready ]; do sleep 0.05; done; printf 'RAIL_%s\\n' COLLAPSED");
   await page.keyboard.press("Enter");
+  await terminalRows.getByText("RAIL_RUNNING", { exact: true }).waitFor();
+  await changesToggle.click();
+  await terminalRegion.waitFor({ state: "hidden" });
+  await changedFile.click();
+  assert.equal(await terminalToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(await changesToggle.getAttribute("aria-pressed"), "true");
+  await writeFile(join(temporary, "review-ready"), "");
   await review.locator("diffs-container").filter({ hasText: "terminalMarker" }).waitFor();
   await rm(externalPath);
   await changedFile.waitFor({ state: "detached" });
+  await terminalToggle.click();
+  await review.waitFor({ state: "detached" });
+  await terminalRegion.getByText("Shell running").waitFor();
+  await terminalToggle.click();
+  await tools.waitFor({ state: "hidden" });
+  assert.equal(await terminalToggle.getAttribute("aria-pressed"), "false");
+  await writeFile(join(temporary, "collapse-ready"), "");
+  await page.waitForFunction(id => document.documentElement.dataset.collapsedPtyId === id, firstPty);
+  await terminalToggle.click();
+  await terminalRows.getByText("RAIL_COLLAPSED", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
+
   await terminal.focus();
   const print = process.platform === "win32"
     ? 'if ($null -eq $env:PIDECK_SMOKE_PRIVATE -and $null -eq $env:AZURE_OPENAI_API_KEY) { Write-Host ("PTY_" + "OK") -ForegroundColor Green }'
@@ -420,10 +459,11 @@ try {
     : 'sleep 1; printf \'REVIEW_%s\\n\' PTY_OK');
   await page.keyboard.press("Enter");
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
+  await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();
+  await changesToggle.click();
   await review.getByRole("button", { name: "Back to chat" }).waitFor();
-  await page.getByRole("button", { name: "Changes", exact: true }).waitFor();
   await terminalRegion.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await terminalToggle.click();
   await review.waitFor({ state: "detached" });
   await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();
   await terminalRows.getByText("REVIEW_PTY_OK", { exact: true }).waitFor();
@@ -456,8 +496,6 @@ try {
   await sideProject.waitFor({ state: "detached" });
 
   if (process.platform !== "win32") {
-    await clickNativeMenu(app, "toggle-review");
-    await review.waitFor();
     await terminalRegion.waitFor();
     await terminal.focus();
     async function ptySize(filename) {
@@ -473,16 +511,6 @@ try {
       return dimensions;
     }
     const original = await ptySize(".pty-original");
-    const terminalDivider = page.getByRole("separator", { name: "Resize terminal" });
-    await terminalDivider.press("Shift+ArrowUp");
-    await terminal.focus();
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const enlarged = await ptySize(".pty-enlarged");
-    assert.ok(Number.parseInt(enlarged, 10) > Number.parseInt(original, 10));
-    await terminalDivider.press("Enter");
-    await terminal.focus();
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await ptySize(".pty-reset"), original);
     const widthDivider = page.getByRole("separator", { name: "Resize right sidebar" });
     await widthDivider.press("Shift+ArrowLeft");
     await terminal.focus();
@@ -493,8 +521,6 @@ try {
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await ptySize(".pty-width-reset"), original);
-    await clickNativeMenu(app, "toggle-review");
-    await review.waitFor({ state: "detached" });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 740));
     await page.waitForFunction(() => window.innerWidth <= 1000);
     await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();

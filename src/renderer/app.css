@@ -185,7 +185,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 }
 .workspace--tools-docked { padding-inline-end: var(--tools-width); }
 .workspace-tools {
-  --terminal-stack-height: var(--terminal-height, clamp(160px, 40%, 400px));
   position: absolute;
   inset: 0;
   z-index: 3;
@@ -204,10 +203,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 }
 .panel-loading { padding: 8px 10px; color: var(--fgColor-muted); font-size: 12px; }
 .panel-loading--review, .panel-loading--terminal { flex: 1 1 auto; min-height: 0; }
-.workspace-tools[data-stacked] > .panel-loading--terminal {
-  flex: 0 0 var(--terminal-stack-height);
-  border-block-start: 1px solid var(--borderColor-muted);
-}
 .workspace-main { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .workspace--tools-overlay .workspace-main { position: relative; }
 .workspace-conversation { display: flex; flex: 1; min-width: 0; min-height: 0; }

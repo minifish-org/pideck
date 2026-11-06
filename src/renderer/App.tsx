@@ -96,7 +96,6 @@ function Desktop() {
   const [canSplitWorkspace, setCanSplitWorkspace] = useState(false);
   const app = useRef<HTMLDivElement>(null);
   const workspace = useRef<HTMLElement>(null);
-  const toolsColumn = useRef<HTMLDivElement>(null);
   const navigationPanel = useRef<HTMLElement>(null);
   const reviewOpener = useRef<HTMLElement | null>(null);
   const [settings, setSettings] = useState<{ provider?: string }>();
@@ -136,12 +135,11 @@ function Desktop() {
   const showProviders = models.some(({ configured }) => configured) || !session;
   const reviewOpen = Boolean(project?.trusted && activeReview);
   const reviewOverlaysChat = !canSplitWorkspace && reviewOpen;
-  const terminalVisible = Boolean(project?.trusted && projectId && terminals[projectId] && !reviewOverlaysChat);
+  const terminalVisible = Boolean(project?.trusted && projectId && terminals[projectId] && !reviewOpen);
   const terminalOverlaysChat = !canSplitWorkspace && terminalVisible;
   const toolsOpen = reviewOpen || terminalVisible;
   const toolsDocked = canSplitWorkspace && toolsOpen;
-  const toolsOverlay = reviewOverlaysChat || terminalOverlaysChat;
-  const toolsStacked = toolsDocked && reviewOpen && terminalVisible;
+  const toolsOverlay = !canSplitWorkspace && toolsOpen;
   const sessionActivity = useSessionActivity();
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
@@ -183,12 +181,11 @@ function Desktop() {
 
   useLayoutEffect(() => {
     if (toolsOverlay) closePopovers();
-    if (reviewOverlaysChat) setFocusTerminal(undefined);
     if (terminalOverlaysChat && (document.activeElement === document.body
       || document.activeElement?.closest('.workspace-conversation'))) {
       document.getElementById('toggle-terminal')?.focus();
     }
-  }, [reviewOverlaysChat, terminalOverlaysChat, toolsOverlay]);
+  }, [terminalOverlaysChat, toolsOverlay]);
 
   useEffect(() => {
     let active = true;
@@ -374,13 +371,17 @@ function Desktop() {
     setError(undefined);
   }, []);
 
+  const hideTerminal = useCallback((id: string) => {
+    setTerminals((current) => current[id] ? { ...current, [id]: false } : current);
+    setFocusTerminal((current) => current === id ? undefined : current);
+  }, []);
+
   const openReview = useCallback(({ path, patch }: { path?: string; patch?: string }) => {
-    if (projectId && sessionId) {
-      reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setReview((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)
-        ? current : { projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 });
-    }
-  }, [projectId, sessionId]);
+    if (!projectId || !sessionId || removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return;
+    reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    hideTerminal(projectId);
+    setReview((current) => ({ projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 }));
+  }, [hideTerminal, projectId, sessionId]);
   const selectWorkingTreeFile = useCallback((path: string) => {
     setReview(current => current?.patch ? { projectId: current.projectId, path } : current);
   }, []);
@@ -657,11 +658,6 @@ function Desktop() {
     }
   }
 
-  const hideTerminal = useCallback((id: string) => {
-    setTerminals((current) => current[id] ? { ...current, [id]: false } : current);
-    setFocusTerminal((current) => current === id ? undefined : current);
-  }, []);
-
   const closeTerminal = useCallback((id: string) => {
     const focused = document.activeElement;
     const restoreFocus = selectionRef.current.projectId === id && focused?.closest('#workspace-terminal');
@@ -686,7 +682,7 @@ function Desktop() {
       closeTerminal(project.id);
       return;
     }
-    if (reviewOverlaysChat) setReview(undefined);
+    setReview(undefined);
     setFocusTerminal(project.id);
     setTerminals((current) => ({ ...current, [project.id]: true }));
   }
@@ -694,17 +690,20 @@ function Desktop() {
   function toggleReview() {
     if (!project?.trusted || removingProject) return;
     closeDrawer();
-    if (activeReview && !activeReview.patch) closeReview();
-    else {
-      reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      if (!canSplitWorkspace) hideTerminal(project.id);
-      setReview({ projectId: project.id });
+    const trigger = document.getElementById('toggle-review');
+    if (reviewOpen) {
+      reviewOpener.current = trigger;
+      closeReview();
+      return;
     }
+    if (document.activeElement?.closest('#workspace-terminal')) trigger?.focus();
+    reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : trigger;
+    hideTerminal(project.id);
+    setReview({ projectId: project.id });
   }
 
   function closeReview() {
     setReview(undefined);
-    if (reviewOverlaysChat && projectId) hideTerminal(projectId);
     requestAnimationFrame(() => {
       const opener = reviewOpener.current;
       if (opener?.isConnected && opener !== document.body && !opener.closest('[hidden], [inert]')) opener.focus();
@@ -734,7 +733,6 @@ function Desktop() {
   }
 
   const modalOpen = Boolean(settings);
-  const reviewVisible = Boolean(activeReview && !activeReview.patch);
   useEffect(() => {
     const unsubscribe = api.onMenuAction?.(handleMenuAction);
     function handleShortcut(event: KeyboardEvent) {
@@ -775,10 +773,10 @@ function Desktop() {
       canToggleNavigation: Boolean(projectId && !modalOpen),
       canUseWorkspace: canUseWorkspace && !modalOpen,
       navigationVisible: showNavigation,
-      reviewVisible,
+      reviewVisible: reviewOpen,
       terminalVisible,
     });
-  }, [api, opening, modalOpen, canCreateSession, toolsOverlay, projectId, canUseWorkspace, showNavigation, reviewVisible, terminalVisible]);
+  }, [api, opening, modalOpen, canCreateSession, toolsOverlay, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools' : ''}`} ref={app}>
@@ -815,7 +813,7 @@ function Desktop() {
               disabled={!canCreateSession} onClick={() => openSessionDraft()}><Icon name="plus" /></button>}
             {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
               <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
-                title={`${reviewVisible ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewVisible}
+                title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
                 aria-controls={reviewOpen ? 'review-panel' : undefined}
                 disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>
               <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
@@ -1016,15 +1014,13 @@ function Desktop() {
                         </EmptyScene>
                       : <div className="workspace-loading" role="status">Loading sessions…</div>}
             </div>
-            <div className="workspace-tools" id="workspace-tools" ref={toolsColumn} hidden={!toolsOpen}
-              data-docked={toolsDocked || undefined} data-stacked={toolsStacked || undefined}>
+            <div className="workspace-tools" id="workspace-tools" hidden={!toolsOpen} data-docked={toolsDocked || undefined}>
               {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
                 <ReviewPanel project={project} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
                   onSelectWorkingTreeFile={selectWorkingTreeFile}
                   rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                   refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
               </Suspense>}
-              <WorkspaceDivider workspace={toolsColumn} pane="terminal" visible={toolsStacked} />
               {projects?.filter((item) => item.trusted && Object.hasOwn(terminals, item.id)).map((item) => {
                 const visible = item.id === projectId && terminalVisible;
                 return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
@@ -1034,7 +1030,7 @@ function Desktop() {
               })}
             </div>
           </div>
-          <WorkspaceDivider workspace={workspace} sizingTarget={app} pane="tools" visible={toolsDocked} />
+          <WorkspaceDivider workspace={workspace} sizingTarget={app} visible={toolsDocked} />
         </section>
       </div>
       {settings && <SettingsDialog initialProvider={settings.provider} onClose={() => setSettings(undefined)}
