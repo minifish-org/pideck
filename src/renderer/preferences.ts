@@ -51,3 +51,10 @@ export type Draft = {
 };
 
 export const emptyDraft: Draft = { text: '', attachments: [] };
+
+export function without<T>(items: Record<string, T>, key: string): Record<string, T> {
+  if (!Object.hasOwn(items, key)) return items;
+  const remaining = { ...items };
+  delete remaining[key];
+  return remaining;
+}

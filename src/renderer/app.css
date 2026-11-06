@@ -100,7 +100,14 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   border-radius: 6px;
   background: transparent;
 }
-.nav-row + .nav-row { margin-top: 2px; }
+.nav-item { position: relative; }
+.nav-item + .nav-item { margin-top: 2px; }
+.nav-item .nav-row { padding-right: 34px; }
+.nav-item .nav-remove { position: absolute; top: 3px; right: 3px; width: 27px; height: 27px; opacity: 0; }
+.nav-item .nav-row[aria-current='true'] + .nav-remove { opacity: .65; }
+.nav-item:hover .nav-remove, .nav-item:focus-within .nav-remove { opacity: 1; }
+.nav-item .nav-remove:hover:not([aria-disabled='true']), .nav-item .nav-remove:focus-visible { color: var(--danger); }
+.nav-item .nav-remove[aria-disabled='true'] { color: var(--dim); cursor: default; }
 .nav-row:hover:not(:disabled) { background: var(--surface); color: var(--text); }
 .nav-row[aria-current='true'] { background: #242a23; border-color: #323b30; color: var(--text); }
 .nav-row svg { flex: none; }

@@ -77,3 +77,16 @@ test("shows both sides when a staged removal is recreated as an untracked file",
   assert.match(patch, /\n-old\n/);
   assert.match(patch, /\n\+new\n/);
 });
+
+test("an aborted project review stops in-flight Git work and rejects further reads", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pideck-review-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  git(cwd, "init", "-q");
+  await writeFile(join(cwd, "changed.txt"), "changed\n");
+  const review = new AbortController();
+  const inFlight = listChanges(cwd, review.signal);
+  review.abort(new Error("Project removed."));
+  await assert.rejects(inFlight, /Project removed/);
+  await assert.rejects(readPatch(cwd, "changed.txt", review.signal), /Project removed/);
+  assert.match((await readPatch(cwd, "changed.txt")).patch ?? "", /\+changed/);
+});

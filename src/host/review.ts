@@ -11,19 +11,22 @@ const diffOptions = [
   "--no-ext-diff", "--no-textconv", "--no-color", "--word-diff=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
 ];
 
-async function git(cwd: string, args: string[], accept: number[] = [], maxBuffer = 2 * 1024 * 1024) {
+async function git(cwd: string, args: string[], signal?: AbortSignal, accept: number[] = [], maxBuffer = 2 * 1024 * 1024) {
+  signal?.throwIfAborted();
   try {
     const child = exec("git", [
       "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
       ...args,
     ], {
-      cwd, encoding: "utf8", maxBuffer, timeout: 15_000, windowsHide: true,
+      cwd, encoding: "utf8", maxBuffer, timeout: 15_000, windowsHide: true, signal,
       env: { ...shellEnvironment(), LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
     });
     child.child.stdin?.end();
     const result = await child;
+    signal?.throwIfAborted();
     return result.stdout;
   } catch (cause) {
+    signal?.throwIfAborted();
     const error = cause as NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean };
     if (accept.includes(Number(error.code)) && !error.killed) return error.stdout ?? "";
     if (error.code === "ENOENT") throw new Error("Git or the project directory is unavailable.");
@@ -34,13 +37,13 @@ async function git(cwd: string, args: string[], accept: number[] = [], maxBuffer
   }
 }
 
-export async function listChanges(cwd: string): Promise<ReviewFile[]> {
-  const prefixResult = await git(cwd, ["rev-parse", "--is-inside-work-tree", "--show-prefix"]);
+export async function listChanges(cwd: string, signal?: AbortSignal): Promise<ReviewFile[]> {
+  const prefixResult = await git(cwd, ["rev-parse", "--is-inside-work-tree", "--show-prefix"], signal);
   if (!prefixResult.startsWith("true\n")) return [];
   const prefix = prefixResult.slice(5, -1);
   let raw: string;
   try {
-    raw = await git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--renames", "--", "."]);
+    raw = await git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--renames", "--", "."], signal);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
       throw new Error("There are too many changed paths to list in the review panel.");
@@ -68,9 +71,10 @@ export async function listChanges(cwd: string): Promise<ReviewFile[]> {
   return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export async function readPatch(cwd: string, path: string): Promise<ReviewPatch> {
+export async function readPatch(cwd: string, path: string, signal?: AbortSignal): Promise<ReviewPatch> {
+  signal?.throwIfAborted();
   if (!isProjectPath(cwd, path)) throw new Error("The review path must be inside the project.");
-  const file = (await listChanges(cwd)).find(candidate => candidate.path === path);
+  const file = (await listChanges(cwd, signal)).find(candidate => candidate.path === path);
   if (!file) return { patch: null, reason: "This file is no longer listed as changed." };
 
   let patch: string;
@@ -79,32 +83,35 @@ export async function readPatch(cwd: string, path: string): Promise<ReviewPatch>
       const fullPath = resolve(cwd, path);
       const parent = await realpath(dirname(fullPath));
       const project = await realpath(cwd);
+      signal?.throwIfAborted();
       if (parent !== project && !isProjectPath(project, relative(project, parent))) {
         return { patch: null, reason: "This path resolves outside the project." };
       }
       const stat = await lstat(fullPath);
+      signal?.throwIfAborted();
       if (!stat.isFile() && !stat.isSymbolicLink()) {
         return { patch: null, reason: "This path cannot be displayed as a file diff." };
       }
       if (stat.size > patchLimit) return largePatch();
-      patch = await git(cwd, ["diff", "--no-index", ...diffOptions, "--", "/dev/null", `./${path}`], [1], patchLimit);
+      patch = await git(cwd, ["diff", "--no-index", ...diffOptions, "--", "/dev/null", `./${path}`], signal, [1], patchLimit);
       if (file.status !== "??") {
-        const staged = await git(cwd, ["diff", "--cached", "--relative", ...diffOptions, "--", path], [], patchLimit);
+        const staged = await git(cwd, ["diff", "--cached", "--relative", ...diffOptions, "--", path], signal, [], patchLimit);
         patch = staged + patch;
       }
     } else {
-      const head = (await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], [1])).trim();
-      const base = head || (await git(cwd, ["hash-object", "-t", "tree", "--stdin"])).trim();
+      const head = (await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], signal, [1])).trim();
+      const base = head || (await git(cwd, ["hash-object", "-t", "tree", "--stdin"], signal)).trim();
       const paths = file.oldPath ? [file.oldPath, path] : [path];
       const diff = ["diff", "--relative", "--find-renames", "--ignore-submodules=dirty", ...diffOptions];
-      patch = await git(cwd, [...diff, base, "--", ...paths], [], patchLimit);
+      patch = await git(cwd, [...diff, base, "--", ...paths], signal, [], patchLimit);
       if (!patch) {
-        const staged = await git(cwd, [...diff, "--cached", "--", ...paths], [], patchLimit);
-        const unstaged = await git(cwd, [...diff, "--", ...paths], [], patchLimit);
+        const staged = await git(cwd, [...diff, "--cached", "--", ...paths], signal, [], patchLimit);
+        const unstaged = await git(cwd, [...diff, "--", ...paths], signal, [], patchLimit);
         patch = staged + unstaged;
       }
     }
   } catch (cause) {
+    signal?.throwIfAborted();
     const code = (cause as NodeJS.ErrnoException).code;
     if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return largePatch();
     if (code === "ENOENT") return { patch: null, reason: "This file was removed while the review was loading." };

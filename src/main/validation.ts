@@ -66,9 +66,11 @@ const validators = {
   "project:list": empty,
   "project:open": empty,
   "project:trust": (value) => object(value) && project(value),
+  "project:remove": (value) => object(value) && project(value),
   "session:list": (value) => object(value) && project(value),
   "session:create": (value) => object(value) && project(value)
     && (value.title === undefined || string(value.title, 120)),
+  "session:remove": (value) => object(value) && selection(value),
   "model:list": empty,
   "model:providers": empty,
   "model:login": (value) => object(value) && flow(value) && match(value.provider, provider)

@@ -87,8 +87,8 @@ try {
 
   // Reload through the shipped app to show the project and session created above.
   await page.reload();
-  await page.getByRole("button", { name: /smoke-project/ }).first().click();
-  await page.getByRole("button", { name: "Smoke session" }).click();
+  await page.getByRole("button", { name: "smoke-project", exact: true }).click();
+  await page.getByRole("button", { name: "Smoke session", exact: true }).click();
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   await prompt.waitFor();
   const modelList = await command("model:list");
@@ -185,11 +185,70 @@ try {
 
   const reopened = await launch();
   app = reopened.running;
-  assert.equal((await reopened.window.evaluate(() => window.pideck.invoke("project:list")))[0].id, projectId);
-  assert.equal((await reopened.window.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), projectId))[0].id, conversation.id);
+  const reopenedPage = reopened.window;
+  assert.equal((await reopenedPage.evaluate(() => window.pideck.invoke("project:list")))[0].id, projectId);
+  assert.equal((await reopenedPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), projectId))[0].id, conversation.id);
+  await app.evaluate(({ dialog }) => {
+    globalThis.removalConfirmed = false;
+    globalThis.removalDialogs = 0;
+    dialog.showMessageBox = async (_window, options) => {
+      if (options.buttons[1] !== "Remove") throw new Error("Expected native removal confirmation.");
+      globalThis.removalDialogs++;
+      return { response: globalThis.removalConfirmed ? 1 : 0, checkboxChecked: false };
+    };
+  });
+  await reopenedPage.getByRole("button", { name: "Smoke session", exact: true }).click();
+  await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
+  await reopenedPage.locator("summary[aria-label='Session actions']").click();
+  await reopenedPage.getByRole("button", { name: "Fork from latest turn" }).click();
+  const branch = reopenedPage.getByRole("button", { name: "Smoke session (fork)", exact: true });
+  await branch.waitFor();
+  const parentRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session", exact: true });
+  await parentRemove.press("Enter");
+  await reopenedPage.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
+  assert.equal(await app.evaluate(() => globalThis.removalDialogs), 0);
+
+  const branchRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session (fork)", exact: true });
+  await branchRemove.press("Enter");
+  await reopenedPage.waitForFunction(() => document.querySelector("button[aria-label='Remove session Smoke session (fork)']")
+    ?.getAttribute("aria-disabled") !== "true");
+  assert.equal(await app.evaluate(() => globalThis.removalDialogs), 1);
+  assert.equal(await branch.count(), 1);
+  await app.evaluate(() => { globalThis.removalConfirmed = true; });
+  await reopenedPage.getByRole("button", { name: "Smoke session", exact: true }).click();
+  await reopenedPage.evaluate(sessionId => {
+    window.pideck.onEvent(event => {
+      if (event.type === "chat:reset" && event.sessionId === sessionId) document.documentElement.dataset.survivorReattached = "true";
+    });
+  }, conversation.id);
+  await branchRemove.press("Enter");
+  await branch.waitFor({ state: "detached" });
+  await reopenedPage.waitForFunction(() => document.documentElement.dataset.survivorReattached === "true");
+  await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
+  await reopenedPage.getByRole("button", { name: "Toggle terminal" }).click();
+  await reopenedPage.getByText("Shell running").waitFor();
+  const removeProject = reopenedPage.getByRole("button", { name: "Remove project smoke-project", exact: true });
+  await removeProject.press("Enter");
+  await reopenedPage.getByRole("heading", { name: "Open a project folder", exact: true }).waitFor();
+  await reopenedPage.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
+  assert.deepEqual(await reopenedPage.evaluate(() => window.pideck.invoke("project:list")), []);
+  assert.equal(await readFile(join(project, "example.ts"), "utf8"), "export const result = 'after';\n");
+  await app.close();
+  app = undefined;
+
+  const cleaned = await launch();
+  app = cleaned.running;
+  assert.deepEqual(await cleaned.window.evaluate(() => window.pideck.invoke("project:list")), []);
+  await app.evaluate(({ dialog }, directory) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
+  }, project);
+  const readded = await cleaned.window.evaluate(() => window.pideck.invoke("project:open"));
+  assert.notEqual(readded.id, projectId);
+  assert.equal(readded.trusted, false);
+  assert.deepEqual(await cleaned.window.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);
-  console.log("Packaged Electron verified: provider streaming, coding tools, Git review, PTY search and resize, and recovery of an active model request.");
+  console.log("Packaged Electron verified: coding and host recovery, native PTY, and permanent removal through the workspace and session controls.");
 } catch (error) {
   if (errors.length) console.error("Renderer errors:", errors);
   if (modelServer?.failures.length) console.error("Provider fixture errors:", modelServer.failures);

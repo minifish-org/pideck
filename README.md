@@ -15,6 +15,8 @@ Open a project folder, confirm that you trust it, and create a session. **Model 
 
 During a run, **Steer** sends an instruction at Durable’s next turn boundary. **Queue next** runs the input as a follow-up. The conversation menu can compact model context or fork from a committed turn. Use **Load earlier** to open more of the transcript. The full conversation is stored in SQLite.
 
+**Remove** is available beside each project and session. Session removal clears its conversation, tool output, and draft. Remove any branches before removing their parent session. Project removal stops its terminal and clears all its sessions and local workspace settings. Files in the project folder are kept. Reopening a removed folder starts a new workspace and asks for trust again. Finish or stop work in other sessions before removing stored conversation data.
+
 Small tool edits expand in chat. Open larger patches in **Changes** for file navigation, syntax highlighting, line selection, and unified or split layout. The terminal starts in the project folder. Its search covers the retained scrollback, which stays visible if the workspace process restarts and starts a new shell.
 
 Provider credentials are encrypted through the operating system’s credential store. Supported provider environment variables are available to pi-ai in the trusted workspace process. Pideck excludes them from tool, review, and terminal subprocess environments. On Linux, saving credentials requires a system secret store. Trusted projects let Pideck run commands with your user account’s permissions. Only trust folders whose contents you trust.

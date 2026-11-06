@@ -4,8 +4,8 @@ import { PersistentCredentials } from "./credential-store";
 import { Runtime, type ChatWatch } from "./runtime";
 import { listChanges, readPatch } from "./review";
 import { Terminals } from "./terminal";
-import type { FromHost, HostRequest, ToHost } from "../shared/transport";
-import type { ChatView, HostEvent, Selection } from "../shared/api";
+import type { FromHost, HostRequest, RemovalTarget, ToHost } from "../shared/transport";
+import type { ChatView, HostEvent, RemovalResult, Selection } from "../shared/api";
 
 const port = process.parentPort;
 if (!port) throw new Error("The Pideck host requires an Electron utility process.");
@@ -14,9 +14,11 @@ let runtime: Runtime | undefined;
 let auth: AuthFlows | undefined;
 let starting = false;
 let closing = false;
+let removing: RemovalTarget | undefined;
 const closedOwners = new Set<number>();
 const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
+const reviews = new Map<string, Set<{ controller: AbortController; pending: Promise<unknown> }>>();
 let nextWrite = 0;
 
 function send(message: FromHost) {
@@ -48,9 +50,65 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === "string" ? error : "The workspace operation failed.";
 }
 
+function requireOpenWorkspace(projectId: string) {
+  if (removing?.projectId === projectId && !removing.sessionId) throw new Error("This workspace is being removed.");
+}
+
+async function runReview<T>(runtime: Runtime, projectId: string, read: (cwd: string, signal: AbortSignal) => Promise<T>) {
+  requireOpenWorkspace(projectId);
+  const project = runtime.requireTrustedProject(projectId);
+  const controller = new AbortController();
+  const pending = read(project.directory, controller.signal);
+  const jobs = reviews.get(projectId) ?? new Set();
+  const job = { controller, pending };
+  jobs.add(job);
+  reviews.set(projectId, jobs);
+  try { return await pending; }
+  finally {
+    jobs.delete(job);
+    if (!jobs.size) reviews.delete(projectId);
+  }
+}
+
+async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: string): Promise<RemovalResult> {
+  if (removing) throw new Error("Another removal is already in progress.");
+  removing = target;
+  const detached: { owner: number; projectId: string; sessionId: string }[] = [];
+  let result: RemovalResult | undefined;
+  try {
+    result = await runtime.remove(target, scope, async reopenHarness => {
+      if (!target.sessionId) {
+        const jobs = [...reviews.get(target.projectId) ?? []];
+        for (const job of jobs) job.controller.abort(new Error("Review stopped for workspace removal."));
+        await Promise.all([
+          terminals.closeProject(target.projectId),
+          Promise.allSettled(jobs.map(job => job.pending)),
+        ]);
+      }
+      if (!reopenHarness) return;
+      for (const [owner, owned] of watches) {
+        for (const [subscriptionId, { projectId, sessionId }] of owned) {
+          detached.push({ owner, projectId, sessionId });
+          unwatch(owner, subscriptionId);
+        }
+      }
+    });
+    return result;
+  } finally {
+    removing = undefined;
+    const deleted = new Set(result?.sessionIds);
+    for (const { owner, ...selection } of detached) {
+      if (!deleted.has(selection.sessionId)) emit(owner, { type: "chat:reset", ...selection });
+    }
+  }
+}
+
 async function handle(request: HostRequest): Promise<unknown> {
   const { owner, command, payload } = request;
   if (!runtime || !auth || closing || closedOwners.has(owner)) throw new Error("The workspace host is closed.");
+  if (removing && (command === "chat:watch" || command === "chat:earlier")) {
+    throw new Error("The conversation store is finishing a removal.");
+  }
   switch (command) {
     case "owner:close":
       return closeOwner(owner);
@@ -60,6 +118,13 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.addProject(payload.directory);
     case "project:trust":
       return runtime.trustProject(payload.projectId);
+    case "removal:plan": {
+      if (removing) throw new Error("Another removal is already in progress.");
+      const { scope, name, directory, sessionCount } = runtime.removalPlan(payload);
+      return { scope, name, directory, sessionCount };
+    }
+    case "removal:execute":
+      return executeRemoval(runtime, payload, payload.scope);
     case "session:list":
       return runtime.listSessions(payload.projectId);
     case "session:create":
@@ -133,15 +198,16 @@ async function handle(request: HostRequest): Promise<unknown> {
       return;
     }
     case "review:list":
-      return listChanges((await runtime.requireTrustedProject(payload.projectId)).directory);
+      return runReview(runtime, payload.projectId, listChanges);
     case "review:patch":
-      return readPatch((await runtime.requireTrustedProject(payload.projectId)).directory, payload.path);
+      return runReview(runtime, payload.projectId, (cwd, signal) => readPatch(cwd, payload.path, signal));
     case "terminal:open": {
-      const project = await runtime.requireTrustedProject(payload.projectId);
-      if (closedOwners.has(owner) || closing) throw new Error("This window has closed.");
+      requireOpenWorkspace(payload.projectId);
+      const project = runtime.requireTrustedProject(payload.projectId);
       return terminals.open(owner, project.id, project.directory, payload.cols, payload.rows);
     }
     case "terminal:input":
+      requireOpenWorkspace(payload.projectId);
       return terminals.input(owner, payload.projectId, payload.terminalId, payload.data);
     case "terminal:resize":
       return terminals.resize(owner, payload.projectId, payload.terminalId, payload.cols, payload.rows);
@@ -181,6 +247,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
     );
   } else if (data.type === "shutdown" && !closing) {
     closing = true;
+    for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
     for (const owner of watches.keys()) closeOwner(owner);
     terminals.closeAll();
     auth?.close();

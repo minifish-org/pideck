@@ -17,6 +17,7 @@ export type Session = {
 };
 
 export type Selection = { projectId: string; sessionId: string };
+export type RemovalResult = { sessionIds: string[]; warning?: string };
 export type ModelRef = { provider: string; id: string };
 export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelOption = ModelRef & {
@@ -109,8 +110,10 @@ export type Commands = {
   "project:list": [undefined, Project[]];
   "project:open": [undefined, Project | null];
   "project:trust": [{ projectId: string }, Project | null];
+  "project:remove": [{ projectId: string }, RemovalResult | null];
   "session:list": [{ projectId: string }, Session[]];
   "session:create": [{ projectId: string; title?: string }, Session];
+  "session:remove": [Selection, RemovalResult | null];
   "model:list": [undefined, ModelOption[]];
   "model:providers": [undefined, ModelProvider[]];
   "model:login": [{ provider: string; method: AuthMethod; flowId: string }, void];
@@ -139,6 +142,7 @@ export type Command = keyof Commands;
 export type HostEvent =
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))
   | ({ type: "chat:error"; subscriptionId: string; message: string } & Selection)
+  | ({ type: "chat:reset" } & Selection)
   | { type: "auth:prompt"; flowId: string; promptId: string; prompt: AuthPrompt }
   | { type: "auth:prompt-closed"; flowId: string; promptId: string }
   | { type: "auth:notice"; flowId: string; notice: AuthNotice }

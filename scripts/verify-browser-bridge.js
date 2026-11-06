@@ -6,8 +6,14 @@ async page => {
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
-      ?? { opened: false, trusted: false, configured: false, sessions: [], views: {} };
+      ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
     let auth;
+    let offline = false;
+    const attemptedRemovals = new Set();
+    const resetting = new Set();
+    let captureSessionList = false;
+    let releaseSessionList;
+    if (state.projectId) project.id = state.projectId;
     project.trusted = state.trusted;
     model.configured = state.configured;
 
@@ -35,6 +41,35 @@ async page => {
       return session;
     }
 
+    function deleteSessions(sessionIds) {
+      state.sessions = state.sessions.filter(({ id }) => !sessionIds.includes(id));
+      for (const id of sessionIds) {
+        delete state.views[id];
+        delete state.parents[id];
+      }
+      const survivors = new Set();
+      for (const [key, { payload }] of watches) {
+        watches.delete(key);
+        if (!sessionIds.includes(payload.sessionId)) survivors.add(payload.sessionId);
+      }
+      for (const sessionId of survivors) {
+        resetting.add(sessionId);
+        emit({ type: "chat:reset", projectId: project.id, sessionId });
+      }
+      persist();
+      return { sessionIds };
+    }
+
+    function loseRemovalReply() {
+      offline = true;
+      emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
+      setTimeout(() => {
+        offline = false;
+        emit({ type: "host:restart" });
+      }, 100);
+      throw new Error("The fixture lost the removal acknowledgement.");
+    }
+
     window.pideck = {
       platform: "darwin",
       onEvent(listener) {
@@ -42,12 +77,55 @@ async page => {
         return () => listeners.delete(listener);
       },
       async invoke(command, payload) {
+        if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
           case "project:list": return state.opened ? [project] : [];
-          case "project:open": state.opened = true; persist(); return project;
+          case "project:open":
+            if (!state.opened) project.id = state.projectId = crypto.randomUUID();
+            state.opened = true;
+            persist();
+            return { ...project };
           case "project:trust": project.trusted = state.trusted = true; persist(); return { ...project };
-          case "session:list": return state.sessions.slice();
+          case "project:remove": {
+            if (payload.projectId !== project.id || !state.opened) throw new Error("Fixture project not found.");
+            if (!attemptedRemovals.has(project.id)) {
+              attemptedRemovals.add(project.id);
+              return null;
+            }
+            state.opened = state.trusted = project.trusted = false;
+            delete state.projectId;
+            deleteSessions(state.sessions.map(({ id }) => id));
+            return loseRemovalReply();
+          }
+          case "session:list": {
+            const snapshot = state.sessions.slice();
+            if (!captureSessionList) return snapshot;
+            captureSessionList = false;
+            document.body.dataset.staleSessionList = "started";
+            return new Promise((resolve) => {
+              releaseSessionList = () => {
+                resolve(snapshot);
+                document.body.dataset.staleSessionList = "released";
+              };
+            });
+          }
           case "session:create": return addSession(payload.title);
+          case "session:remove": {
+            if (!state.sessions.some(({ id }) => id === payload.sessionId)) throw new Error("Fixture session not found.");
+            if (Object.values(state.parents).includes(payload.sessionId)) throw new Error("Remove this session’s branches first.");
+            if (!attemptedRemovals.has(payload.sessionId)) {
+              attemptedRemovals.add(payload.sessionId);
+              captureSessionList = true;
+              emit({ type: "host:restart" });
+              return null;
+            }
+            const loseReply = state.sessions.some(({ id, title }) => id === payload.sessionId && title === "Session 1");
+            const result = deleteSessions([payload.sessionId]);
+            const release = releaseSessionList;
+            releaseSessionList = undefined;
+            setTimeout(() => release?.(), 50);
+            return loseReply ? loseRemovalReply() : result;
+          }
           case "model:list": return [{ ...model }];
           case "model:providers": return [{
             id: model.provider, name: "Fixture provider", configured: state.configured, credential: state.configured ? "oauth" : undefined,
@@ -94,6 +172,7 @@ async page => {
           case "chat:watch": {
             const watch = { payload, sequence: 0 };
             watches.set(payload.subscriptionId, watch);
+            if (resetting.delete(payload.sessionId)) document.body.dataset.survivingWatch = "attached";
             queueMicrotask(() => update(watch, { view: state.views[payload.sessionId] }));
             return;
           }
@@ -140,8 +219,15 @@ async page => {
             const view = state.views[payload.sessionId];
             const index = view.messages.findIndex((message) => message.entryId === payload.entryId);
             if (index === -1) throw new Error("Fork checkpoint not found.");
-            return addSession(payload.title, { ...view, messages: view.messages.slice(0, index + 1) });
+            const fork = addSession(payload.title, { ...view, messages: view.messages.slice(0, index + 1) });
+            state.parents[fork.id] = payload.sessionId;
+            persist();
+            return fork;
           }
+          case "terminal:open": return { terminalId: crypto.randomUUID(), data: "Fixture shell\r\n", sequence: 0, exited: false };
+          case "terminal:close":
+          case "terminal:resize": return;
+          case "terminal:sync": return [];
           case "review:list": return [{ path: "example.ts", status: " M", added: 1, removed: 1 }];
           case "review:patch": return { patch };
           default: throw new Error("Unexpected fixture command " + command);

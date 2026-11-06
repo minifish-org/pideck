@@ -64,7 +64,8 @@ export function useConversation({ projectId, sessionId }: Selection) {
         disconnect(event.message);
         return;
       }
-      if (event.type === 'host:restart') {
+      if (event.type === 'host:restart'
+        || (event.type === 'chat:reset' && event.projectId === projectId && event.sessionId === sessionId)) {
         repairingGap = false;
         attach();
         return;

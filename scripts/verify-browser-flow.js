@@ -26,7 +26,7 @@ async page => {
   await nav.getByRole("button", { name: "New session", exact: true }).click();
   await nav.getByRole("button", { name: "Session 2", exact: true }).waitFor();
   await prompt.fill("A separate draft.");
-  await nav.getByRole("button", { name: /Session 1/ }).click();
+  await nav.getByRole("button", { name: "Session 1", exact: true }).click();
   if (await prompt.inputValue() !== "Update and verify the status.") throw new Error("Draft did not survive a session switch.");
 
   await page.getByRole("button", { name: "Model", exact: true }).click();
@@ -71,6 +71,53 @@ async page => {
   await split.click();
   if (await split.getAttribute("aria-pressed") !== "true") throw new Error("Split layout did not activate.");
   await page.getByRole("complementary", { name: "Review changes" }).locator("diffs-container").filter({ hasText: "verified" }).last().waitFor();
+  const review = page.getByRole("complementary", { name: "Review changes" });
+  await page.getByRole("button", { name: "Open review", exact: true }).click();
+  await review.getByTitle("Assistant patch for example.ts").waitFor();
+  const removeOriginal = nav.getByRole("button", { name: "Remove session Session 1", exact: true });
+  await removeOriginal.click();
+  await workspace.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
+  const removeFork = nav.getByRole("button", { name: "Remove session Session 1 (fork)", exact: true });
+  await removeFork.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.body.dataset.staleSessionList === "started");
+  if (await forked.getAttribute("aria-current") !== "true" || !await removeFork.evaluate((button) => button === document.activeElement)) {
+    throw new Error("Cancelling removal changed the selected session or keyboard focus.");
+  }
+  await removeFork.click();
+  await forked.waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.body.dataset.staleSessionList === "released");
+  await review.waitFor({ state: "detached" });
+  const fallback = nav.getByRole("button", { name: "Session 2", exact: true });
+  if (await fallback.getAttribute("aria-current") !== "true" || await forked.count()) throw new Error("Session removal did not keep the next session selected.");
+  await prompt.fill("Draft to remove with the project.");
+  await removeOriginal.click();
+  await page.waitForFunction(() => document.body.dataset.staleSessionList === "started");
+  await removeOriginal.click();
+  await page.waitForFunction(() => document.body.dataset.survivingWatch === "attached");
+  await original.waitFor({ state: "detached" });
+  if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Reattaching a surviving session lost its draft.");
+
+  await page.getByRole("button", { name: "Toggle terminal" }).click();
+  await page.getByText("Shell running").waitFor();
+  const removeProject = nav.getByRole("button", { name: "Remove project Sample project", exact: true });
+  const previousPreferences = await page.evaluate(() => localStorage.getItem("pideck.workspace.v1"));
+  await removeProject.click();
+  if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Cancelling project removal discarded a draft.");
+  await removeProject.click();
+  await workspace.getByRole("heading", { name: "Open a project folder" }).waitFor();
+  await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
+  await page.waitForFunction(() => {
+    const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
+    return !preferences.projectId && Object.keys(preferences.sessions ?? {}).length === 0;
+  });
+  await page.evaluate((previous) => localStorage.setItem("pideck.workspace.v1", previous), previousPreferences);
+  await page.reload();
+  await nav.getByText("No folders open").waitFor();
+  await page.waitForFunction(() => {
+    const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
+    return !preferences.projectId && Object.keys(preferences.sessions ?? {}).length === 0;
+  });
   if (errors.length) throw new Error(errors.join("\n"));
   return "Renderer flow passed.";
 }

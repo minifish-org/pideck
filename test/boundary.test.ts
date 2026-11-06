@@ -14,6 +14,10 @@ test("IPC rejects unknown commands and malformed payloads", () => {
     assert.equal(isCommand(command), false);
   }
   assert.equal(validPayload("project:open", { directory: "/tmp" }), false);
+  assert.equal(isCommand("removal:execute"), false);
+  assert.equal(validPayload("project:remove", { projectId: "invalid" }), false);
+  assert.equal(validPayload("session:remove", { projectId }), false);
+  assert.equal(validPayload("session:remove", { projectId, sessionId }), true);
   assert.equal(validPayload("session:list", null), false);
   assert.equal(validPayload("chat:watch", { projectId, sessionId, subscriptionId: "fake" }), false);
   assert.equal(validPayload("review:patch", { projectId, path: "abc\0def" }), false);

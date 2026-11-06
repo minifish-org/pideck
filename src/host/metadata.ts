@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Project, Session } from "../shared/api.js";
+import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
 type ProjectRow = DirectoryIdentity & { id: string; name: string; trusted: number; createdAt: number };
@@ -52,6 +53,7 @@ export class Metadata {
       this.db.exec(`
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
+        PRAGMA secure_delete = ON;
 
         CREATE TABLE IF NOT EXISTS projects (
           id TEXT PRIMARY KEY,
@@ -82,6 +84,8 @@ export class Metadata {
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           deviceId TEXT NOT NULL
         ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS tool_output_cleanup (path TEXT PRIMARY KEY) STRICT;
       `);
     } catch (error) {
       this.db.close();
@@ -140,11 +144,14 @@ export class Metadata {
   }
 
   listSessions(projectId: string): Session[] {
+    return this.sessionRows(projectId).map(presentSession);
+  }
+
+  sessionRows(projectId: string): SessionRow[] {
     this.project(projectId);
-    const rows = this.db.prepare(
+    return this.db.prepare(
       "SELECT * FROM sessions WHERE projectId = ? ORDER BY updatedAt DESC, rowid DESC",
     ).all(projectId) as SessionRow[];
-    return rows.map(presentSession);
   }
 
   createSession(projectId: string, conversationId: ConversationId, title: string): Session {
@@ -174,6 +181,37 @@ export class Metadata {
     ).get(conversationId);
     if (!row) throw new Error("Conversation is not attached to a project.");
     return row.projectId as string;
+  }
+
+  hasConversation(conversationId: number): boolean {
+    return this.db.prepare("SELECT 1 FROM sessions WHERE conversationId = ?").get(conversationId) !== undefined;
+  }
+
+  removeEmptyProject(projectId: string): void {
+    const result = this.db.prepare(`
+      DELETE FROM projects WHERE id = ? AND NOT EXISTS (SELECT 1 FROM sessions WHERE projectId = ?)
+    `).run(projectId, projectId);
+    if (result.changes !== 1) throw new Error("The workspace changed. Review the removal again.");
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  }
+
+  purge(durablePath: string, projectId: string, roots: ConversationId[], removeProject: boolean, expected: ConversationId[], legacySpills: string[]) {
+    purgeConversations(this.db, durablePath, projectId, roots, removeProject, expected, legacySpills);
+  }
+
+  reapUnmapped(durablePath: string) {
+    reapUnmappedConversations(this.db, durablePath);
+  }
+
+  outputCleanupPaths(): string[] {
+    return this.db.prepare("SELECT path FROM tool_output_cleanup").all().map(row => row.path as string);
+  }
+
+  finishOutputCleanup(paths: string[]): void {
+    if (!paths.length) return;
+    this.db.prepare("DELETE FROM tool_output_cleanup WHERE path IN (SELECT value FROM json_each(?))")
+      .run(JSON.stringify(paths));
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
 
   readonly modelsStore: ModelsStore = {

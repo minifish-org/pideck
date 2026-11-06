@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withCancel, type Context } from "@earendil-works/chord/context";
 import { InMemoryCredentialStore, type CredentialStore } from "@earendil-works/pi-ai";
@@ -6,16 +7,18 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, Harness, section,
-  type Conversation, type EntryId, type TranscriptView,
+  type Conversation, type ConversationId, type EntryId, type TranscriptView,
 } from "@earendil-works/pi-durable";
-import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
+import { err, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import type { ChatGap, ChatView, ModelOption, SendChat, Selection } from "../shared/api.js";
+import type { ChatGap, ChatView, ModelOption, RemovalResult, SendChat, Selection } from "../shared/api.js";
+import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
 import { Metadata } from "./metadata.js";
+import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
 import { shellEnvironment } from "./shell-env.js";
 import { reviewWrites } from "./write-review.js";
 
@@ -48,10 +51,24 @@ const projectInstructions = section("project_instructions", async ({ env }, scop
 });
 
 class ToolEnvironment extends NodeExecutionEnv {
+  constructor(cwd: string, private readonly outputDir: string) { super({ cwd }); }
+
   override exec(command: string | readonly string[], options: ShellExecOptions | undefined, scope: Context) {
     return super.exec(command, { ...options, inheritEnv: false, env: shellEnvironment() }, scope);
   }
+
+  override async createTempDir(prefix: string | undefined, scope: Context): ReturnType<NodeExecutionEnv["createTempDir"]> {
+    if (scope.abortSignal?.aborted) return err(new FileError("aborted", "The tool was stopped."));
+    try {
+      await mkdir(this.outputDir, { recursive: true, mode: 0o700 });
+      return ok(await mkdtemp(join(this.outputDir, prefix ?? "tmp-")));
+    } catch {
+      return err(new FileError("unknown", "Could not create a temporary tool output directory."));
+    }
+  }
 }
+
+type RemovalPlan = RemovalPreview & RemovalResult & { roots: ConversationId[]; conversations: ConversationId[] };
 
 export type ChatWatch = {
   dispose(): void;
@@ -61,11 +78,17 @@ export type ChatWatch = {
 
 export class Runtime {
   private closing?: Promise<void>;
+  private removing?: Promise<RemovalResult>;
+  private readonly admissions = new Set<Promise<unknown>>();
 
   private constructor(
     private readonly metadata: Metadata,
-    private readonly harness: Harness,
+    private harness: Harness,
     readonly models: Models,
+    private readonly durablePath: string,
+    private readonly outputRoot: string,
+    private readonly openHarness: () => Promise<Harness>,
+    private readonly onStorageFailure?: () => void,
   ) {}
 
   static async open(
@@ -77,7 +100,11 @@ export class Runtime {
   ): Promise<Runtime> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const metadata = new Metadata(join(dataDir, "workspace.sqlite"));
+    const durablePath = join(dataDir, "conversations.sqlite");
+    const outputRoot = join(dataDir, "tool-output");
     try {
+      metadata.reapUnmapped(durablePath);
+      await cleanupExpiredOutput(metadata, outputRoot);
       const models = suppliedModels ?? builtinModels({
         credentials,
         modelsStore: metadata.modelsStore,
@@ -102,21 +129,24 @@ export class Runtime {
           projectInstructions,
         ],
       }));
-      const storage = await openNodeSqliteStorage(join(dataDir, "conversations.sqlite"));
-      const harness = await Harness.open(storage, {
-        models,
-        registry,
-        onReport: report => {
-          if (report.kind === "storage_failed") onStorageFailure?.();
-        },
-        env: ({ conversationId, cwd }) => {
-          const project = metadata.requireTrustedProject(metadata.projectOf(conversationId));
-          if (project.directory !== cwd) throw new Error("Conversation directory does not match its project.");
-          return new ToolEnvironment({ cwd });
-        },
-      }, context);
-      harness.resume();
-      return new Runtime(metadata, harness, models);
+      async function openHarness() {
+        const storage = await openNodeSqliteStorage(durablePath);
+        const harness = await Harness.open(storage, {
+          models,
+          registry,
+          onReport: report => {
+            if (report.kind === "storage_failed") onStorageFailure?.();
+          },
+          env: ({ conversationId, cwd }) => {
+            const project = metadata.requireTrustedProject(metadata.projectOf(conversationId));
+            if (project.directory !== cwd) throw new Error("Conversation directory does not match its project.");
+            return new ToolEnvironment(cwd, join(outputRoot, String(conversationId)));
+          },
+        }, context);
+        harness.resume();
+        return harness;
+      }
+      return new Runtime(metadata, await openHarness(), models, durablePath, outputRoot, openHarness, onStorageFailure);
     } catch (error) {
       metadata.close();
       throw error;
@@ -124,19 +154,21 @@ export class Runtime {
   }
 
   listProjects() { return this.metadata.listProjects(); }
-  addProject(directory: string) { return this.metadata.addProject(directory); }
-  trustProject(projectId: string) { return this.metadata.trustProject(projectId); }
+  addProject(directory: string) { this.assertWritable(); return this.metadata.addProject(directory); }
+  trustProject(projectId: string) { this.assertWritable(); return this.metadata.trustProject(projectId); }
   requireTrustedProject(projectId: string) { return this.metadata.requireTrustedProject(projectId); }
   listSessions(projectId: string) { return this.metadata.listSessions(projectId); }
   deviceId() { return this.metadata.deviceId(); }
 
-  async createSession(projectId: string, title = "New session") {
-    const project = this.metadata.getProject(projectId);
-    const conversation = await this.harness.createConversation({
-      ownership: { kind: "ownerless" },
-      agent: { cwd: project.directory },
-    }, context);
-    return this.metadata.createSession(projectId, conversation.id, title);
+  createSession(projectId: string, title = "New session") {
+    return this.admit(async () => {
+      const project = this.metadata.getProject(projectId);
+      const conversation = await this.harness.createConversation({
+        ownership: { kind: "ownerless" },
+        agent: { cwd: project.directory },
+      }, context);
+      return this.metadata.createSession(projectId, conversation.id, title);
+    });
   }
 
   async listModels(): Promise<ModelOption[]> {
@@ -166,7 +198,11 @@ export class Runtime {
     return conversation;
   }
 
-  async send(input: SendChat): Promise<void> {
+  send(input: SendChat): Promise<void> {
+    return this.admit(() => this.submitChat(input));
+  }
+
+  private async submitChat(input: SendChat): Promise<void> {
     this.requireTrustedProject(input.projectId);
     const conversation = await this.conversation(input);
     const { requestId } = input;
@@ -223,7 +259,11 @@ export class Runtime {
     if (admitted) this.metadata.touchSession(input.sessionId);
   }
 
-  async fork(selection: Selection, entryId: number, title?: string) {
+  fork(selection: Selection, entryId: number, title?: string) {
+    return this.admit(() => this.forkSession(selection, entryId, title));
+  }
+
+  private async forkSession(selection: Selection, entryId: number, title?: string) {
     this.requireTrustedProject(selection.projectId);
     const source = this.metadata.session(selection.projectId, selection.sessionId);
     const conversation = await this.conversation(selection);
@@ -237,20 +277,111 @@ export class Runtime {
   }
 
   async compact(selection: Selection, instructions?: string): Promise<"compacted" | "no-change" | "stopped" | "failed"> {
-    this.requireTrustedProject(selection.projectId);
-    const conversation = await this.conversation(selection);
-    const taskId = await conversation.compact(instructions, context);
-    const { outcome } = (await this.harness.waitForTask(taskId, context)).state;
+    const { harness, taskId } = await this.admit(async () => {
+      this.requireTrustedProject(selection.projectId);
+      const harness = this.harness;
+      const conversation = await this.conversation(selection);
+      return { harness, taskId: await conversation.compact(instructions, context) };
+    });
+    const { outcome } = (await harness.waitForTask(taskId, context)).state;
     if (outcome.status === "aborted") return "stopped";
     if (outcome.status !== "completed") return "failed";
     if (outcome.result.submissionId === undefined) return "no-change";
-    const summary = await this.harness.submission(outcome.result.submissionId, context);
+    const summary = await harness.submission(outcome.result.submissionId, context);
     return (await summary?.wait(context))?.status === "done" ? "compacted" : "no-change";
   }
 
-  async cancel(selection: Selection): Promise<void> {
-    const conversation = await this.conversation(selection);
-    await conversation.abort(context, { background: true });
+  cancel(selection: Selection): Promise<void> {
+    return this.admit(async () => {
+      const conversation = await this.conversation(selection);
+      await conversation.abort(context, { background: true });
+    });
+  }
+
+  removalPlan(target: RemovalTarget): RemovalPlan {
+    const project = this.metadata.getProject(target.projectId);
+    const selected = target.sessionId ? this.metadata.session(target.projectId, target.sessionId) : undefined;
+    const sessions = this.metadata.sessionRows(project.id);
+    const roots = selected ? [selected.conversationId] : sessions.map(row => row.conversationId);
+    const conversations = conversationClosure(this.durablePath, roots);
+    const affected = new Set(conversations);
+    if (conversations.some(id => this.metadata.hasConversation(id) && this.metadata.projectOf(id) !== project.id)) {
+      throw new Error("Removal would affect sessions in another workspace.");
+    }
+    const sessionIds = sessions.filter(row => affected.has(row.conversationId)).map(row => row.id);
+    if (selected && sessionIds.length > 1) throw new Error("Remove this session’s branches first.");
+    const scope = createHash("sha256")
+      .update(JSON.stringify([target.projectId, target.sessionId, conversations, [...sessionIds].sort()]))
+      .digest("hex");
+    return { scope, name: selected?.title ?? project.name, directory: project.directory,
+      sessionCount: sessionIds.length, roots, conversations, sessionIds };
+  }
+
+  remove(target: RemovalTarget, scope: string, prepare?: (reopenHarness: boolean) => Promise<void>): Promise<RemovalResult> {
+    if (this.removing || this.closing) return Promise.reject(new Error("Another workspace operation is finishing."));
+    const removal = this.performRemoval(target, scope, prepare);
+    this.removing = removal;
+    void removal.finally(() => { this.removing = undefined; }).catch(() => {});
+    return removal;
+  }
+
+  private async performRemoval(target: RemovalTarget, scope: string, prepare?: (reopenHarness: boolean) => Promise<void>): Promise<RemovalResult> {
+    await Promise.allSettled(this.admissions);
+    const plan = this.removalPlan(target);
+    if (plan.scope !== scope) throw new Error("The affected sessions changed. Review the removal again.");
+    if (plan.conversations.length === 0 && !target.sessionId) {
+      await prepare?.(false);
+      this.metadata.removeEmptyProject(target.projectId);
+      return { sessionIds: [] };
+    }
+    const affected = new Set(plan.conversations);
+    const inspection = await this.harness.inspect(context);
+    if (inspection.tasks.some(task => !affected.has(task.record.conversationId))) {
+      throw new Error("Finish or stop work in other sessions before removing this item.");
+    }
+    const stop = withCancel(context);
+    const timeout = setTimeout(() => stop.cancel(), 20_000);
+    try {
+      // Native forks are independent conversations. Each affected run must stop.
+      await Promise.all(plan.conversations.map(async id => {
+        const conversation = await this.harness.conversation(id, stop.context);
+        await conversation?.abort(stop.context, { background: true });
+      }));
+    } finally {
+      clearTimeout(timeout);
+      stop.cancel();
+    }
+    await prepare?.(true);
+    await this.harness.close(context);
+    let clean = true;
+    try {
+      const legacySpills = conversationSpillPaths(this.durablePath, plan.conversations);
+      this.metadata.purge(this.durablePath, target.projectId, plan.roots, !target.sessionId, plan.conversations, legacySpills);
+      clean = await cleanupExpiredOutput(this.metadata, this.outputRoot);
+    } finally {
+      try {
+        this.harness = await this.openHarness();
+      } catch (error) {
+        this.onStorageFailure?.();
+        throw error;
+      }
+    }
+    return {
+      sessionIds: plan.sessionIds,
+      ...(clean ? {} : { warning: "Removed. Some tool output files could not be cleared. Pideck will retry when reopened." }),
+    };
+  }
+
+  private assertWritable() {
+    if (this.removing || this.closing) throw new Error("The workspace is finishing a removal.");
+  }
+
+  private async admit<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertWritable();
+    const admitted = operation();
+    this.admissions.add(admitted);
+    try { return await admitted; }
+    finally { this.admissions.delete(admitted); }
   }
 
   async watch(
@@ -311,7 +442,50 @@ export class Runtime {
   }
 
   close(): Promise<void> {
-    this.closing ??= this.harness.close(context).finally(() => this.metadata.close());
+    this.closing ??= (async () => {
+      await this.removing?.catch(() => {});
+      await this.harness.close(context);
+    })().finally(() => this.metadata.close());
     return this.closing;
   }
+}
+
+async function cleanupExpiredOutput(metadata: Metadata, root: string): Promise<boolean> {
+  let clean = true;
+  const cleared: string[] = [];
+  try {
+    for (const path of metadata.outputCleanupPaths()) {
+      try {
+        removeLegacySpills([path]);
+        cleared.push(path);
+      } catch {
+        clean = false;
+      }
+    }
+    metadata.finishOutputCleanup(cleared);
+  } catch {
+    clean = false;
+  }
+  try {
+    if (await isOutputDirectory(root)) {
+      for (const name of await readdir(root)) {
+        if (/^[1-9]\d*$/.test(name) && !metadata.hasConversation(Number(name))) {
+          try { await rm(join(root, name), { recursive: true, force: true, maxRetries: 3 }); }
+          catch { clean = false; }
+        }
+      }
+    }
+  } catch {
+    clean = false;
+  }
+  return clean;
+}
+
+async function isOutputDirectory(root: string): Promise<boolean> {
+  const info = await lstat(root).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (info && !info.isDirectory()) throw new Error("The tool output directory is not a regular directory.");
+  return Boolean(info);
 }

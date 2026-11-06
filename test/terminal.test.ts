@@ -99,6 +99,50 @@ test("native PTY pauses unread output, replays in sequence, and resumes after ac
   assert.throws(() => terminals.input(1, projectId, terminalId, "x"), /no longer open/);
 });
 
+test("closing a project kills its shells across owners and keeps other projects alive", {
+  skip: process.platform === "win32", timeout: 10_000,
+}, async t => {
+  const output = new Map<string, string>();
+  const terminals = new Terminals((_owner, event) => {
+    if (event.type === "terminal:data") output.set(event.terminalId, (output.get(event.terminalId) ?? "") + event.data);
+  });
+  t.after(() => terminals.closeAll());
+  const removed = [1, 2].map(owner => ({ owner, ...terminals.open(owner, projectId, process.cwd(), 80, 24) }));
+  const retained = terminals.open(1, "other-project", process.cwd(), 80, 24);
+  for (const { owner, terminalId } of removed) terminals.input(owner, projectId, terminalId, "printf 'SHELL_PID:%s\\n' $$\r");
+  const readPid = (id: string) => Number(output.get(id)?.match(/\nSHELL_PID:(\d+)\r?\n/)?.[1]);
+  await waitFor(() => removed.every(({ terminalId }) => readPid(terminalId) > 0));
+  const first = removed[0];
+  terminals.input(first.owner, projectId, first.terminalId, "sleep 15 & printf 'JOB_PID:%s\\n' $!\r");
+  const readJob = () => Number(output.get(first.terminalId)?.match(/\nJOB_PID:(\d+)\r?\n/)?.[1]);
+  let jobStopped = false;
+  t.after(() => {
+    const job = readJob();
+    if (job && !jobStopped) try { process.kill(job, "SIGKILL"); } catch { /* The shell already cleaned up the job. */ }
+  });
+  const second = removed[1];
+  terminals.input(second.owner, projectId, second.terminalId, "trap '' HUP; printf 'HUP_%s\\n' READY\r");
+  await waitFor(() => readJob() > 0 && Boolean(output.get(second.terminalId)?.includes("HUP_READY")));
+
+  // Removal also waits for a terminal whose ordinary close already began.
+  terminals.close(second.owner, projectId, second.terminalId);
+  const closing = terminals.closeProject(projectId);
+  for (const { owner, terminalId } of removed) {
+    assert.throws(() => terminals.input(owner, projectId, terminalId, "x"), /no longer open/);
+    assert.throws(() => terminals.sync(owner, projectId, terminalId, 0, true), /no longer open/);
+  }
+  await closing;
+  for (const pid of [...removed.map(({ terminalId }) => readPid(terminalId)), readJob()]) {
+    await waitFor(() => {
+      try { process.kill(pid, 0); return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+    });
+  }
+  jobStopped = true;
+  terminals.input(1, "other-project", retained.terminalId, "printf 'STILL_%s\\n' RUNNING\r");
+  await waitFor(() => Boolean(output.get(retained.terminalId)?.includes("STILL_RUNNING")));
+});
+
 async function waitFor(check: () => boolean) {
   for (let attempt = 0; attempt < 180; attempt++) {
     if (check()) return;

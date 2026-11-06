@@ -19,6 +19,7 @@ type Terminal = {
   flush?: NodeJS.Timeout;
   subscriptions: { dispose(): void }[];
 };
+type ClosingShell = { pty: IPty; exited: Promise<void> };
 
 const outputChunkSize = 32 * 1024;
 const highWatermark = 256 * 1024;
@@ -28,8 +29,13 @@ function eventSize(event: TerminalEvent) {
   return 128 + (event.type === "terminal:data" ? event.data.length * 2 : 0);
 }
 
+function killShell(pty: IPty, signal: "SIGHUP" | "SIGKILL") {
+  try { pty.kill(process.platform === "win32" ? undefined : signal); } catch { /* Shell already exited. */ }
+}
+
 export class Terminals {
   private terminals = new Map<string, Terminal>();
+  private closing = new Map<string, Set<ClosingShell>>();
 
   constructor(private emit: (owner: number, event: HostEvent) => void) {}
 
@@ -133,8 +139,26 @@ export class Terminals {
     }
   }
 
+  async closeProject(projectId: string): Promise<void> {
+    for (const [id, terminal] of this.terminals) {
+      if (terminal.projectId === projectId) this.remove(id, terminal);
+    }
+    const pending = this.closing.get(projectId);
+    if (!pending?.size) return;
+    const timeout = Promise.withResolvers<never>();
+    const deadline = setTimeout(() => timeout.reject(new Error("The project terminal did not stop. Try removing it again.")), 5_000);
+    try {
+      await Promise.race([Promise.all([...pending].map(shell => shell.exited)), timeout.promise]);
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
   closeAll() {
-    for (const [id, terminal] of this.terminals) this.remove(id, terminal);
+    for (const shells of this.closing.values()) {
+      for (const shell of shells) killShell(shell.pty, "SIGKILL");
+    }
+    for (const [id, terminal] of this.terminals) this.remove(id, terminal, true);
   }
 
   private find(owner: number, projectId: string, id: string): Terminal {
@@ -145,14 +169,33 @@ export class Terminals {
     return terminal;
   }
 
-  private remove(id: string, terminal: Terminal) {
+  private remove(id: string, terminal: Terminal, force = false) {
     this.terminals.delete(id);
     clearTimeout(terminal.flush);
-    for (const subscription of terminal.subscriptions) subscription.dispose();
-    if (!terminal.exited) {
-      // SIGKILL also closes shells that trap SIGHUP and would otherwise keep the
-      // host's PTY master alive after the renderer has released its terminal.
-      try { terminal.pty.kill(process.platform === "win32" ? undefined : "SIGKILL"); } catch { /* Shell already exited. */ }
-    }
+    terminal.flush = undefined;
+    terminal.pending = "";
+    terminal.backlog.length = 0;
+    terminal.backlogSize = 0;
+    for (const subscription of terminal.subscriptions.splice(0)) subscription.dispose();
+    if (!terminal.exited) this.stopShell(terminal.projectId, terminal.pty, force);
+  }
+
+  private stopShell(projectId: string, pty: IPty, force: boolean) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const pending = this.closing.get(projectId) ?? new Set<ClosingShell>();
+    const shell = { pty, exited: promise };
+    pending.add(shell);
+    this.closing.set(projectId, pending);
+    const graceful = process.platform !== "win32" && !force;
+    // Let interactive shells send SIGHUP to their jobs before forcing teardown.
+    const fallback = graceful ? setTimeout(() => killShell(pty, "SIGKILL"), 250) : undefined;
+    const exit = pty.onExit(() => {
+      clearTimeout(fallback);
+      exit.dispose();
+      pending.delete(shell);
+      if (!pending.size) this.closing.delete(projectId);
+      resolve();
+    });
+    killShell(pty, graceful ? "SIGHUP" : "SIGKILL");
   }
 }

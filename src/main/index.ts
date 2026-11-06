@@ -3,7 +3,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { eventChannel, invokeChannel } from "../shared/transport";
+import { eventChannel, invokeChannel, type RemovalTarget } from "../shared/transport";
 import { safeAuthUrl } from "../host/auth-flows";
 import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
@@ -116,6 +116,24 @@ async function initialize() {
   host = client;
   client.start();
 
+  async function confirmRemoval(window: BrowserWindow, requestOwner: number, target: RemovalTarget) {
+    const plan = await client.request(requestOwner, "removal:plan", target);
+    if (window.isDestroyed() || requestOwner !== owner) return null;
+    const count = plan.sessionCount;
+    const scope = target.sessionId ? "this session" : count
+      ? `this workspace and its ${count} ${count === 1 ? "session" : "sessions"}` : "this workspace";
+    const result = await dialog.showMessageBox(window, {
+      type: "warning",
+      buttons: ["Cancel", "Remove"],
+      defaultId: 0,
+      cancelId: 0,
+      message: `Remove “${plan.name}”?`,
+      detail: `Pideck will stop active work in ${scope} and permanently remove its saved data.\n\nFiles in ${plan.directory} will be kept.`,
+    });
+    if (result.response !== 1 || window.isDestroyed() || requestOwner !== owner) return null;
+    return client.request(requestOwner, "removal:execute", { ...target, scope: plan.scope });
+  }
+
   ipcMain.handle(invokeChannel, async (event, command: unknown, payload: unknown) => {
     const window = mainWindow;
     const requestOwner = owner;
@@ -126,6 +144,14 @@ async function initialize() {
       const result = await dialog.showOpenDialog(window, { title: "Open a project", properties: ["openDirectory"] });
       if (result.canceled || !result.filePaths[0] || window.isDestroyed() || requestOwner !== owner) return null;
       return client.request(requestOwner, "project:add", { directory: result.filePaths[0] });
+    }
+    if (command === "project:remove") {
+      if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
+      return confirmRemoval(window, requestOwner, { projectId: payload.projectId });
+    }
+    if (command === "session:remove") {
+      if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
+      return confirmRemoval(window, requestOwner, { projectId: payload.projectId, sessionId: payload.sessionId });
     }
     if (command === "project:trust" && validPayload(command, payload)) {
       const projects = await client.request(requestOwner, "project:list", undefined);
