@@ -103,61 +103,78 @@ async page => {
   if (await page.getByRole("button", { name: "Steer run", exact: true }).count()) throw new Error("The composer exposes a second send action.");
   const queue = page.getByRole("list", { name: "Queued messages" });
   const row = text => queue.getByRole("listitem").filter({ hasText: text });
-  const queueMenu = page.getByRole("group", { name: "Queued message actions" }).or(
-    page.getByRole("menu", { name: "Queued message actions" }),
-  );
-  async function waitForAnchoredQueueMenu() {
-    await queueMenu.waitFor();
-    await page.waitForFunction(() => {
-      const panel = document.querySelector(".queue-popover:popover-open");
-      if (!panel || !panel.previousElementSibling) return false;
-      const bounds = panel.getBoundingClientRect();
-      const anchor = panel.previousElementSibling.getBoundingClientRect();
-      const aligned = Math.min(Math.abs(bounds.left - anchor.left), Math.abs(bounds.right - anchor.right)) <= 14;
-      const gap = Math.min(Math.abs(bounds.bottom - anchor.top), Math.abs(bounds.top - anchor.bottom));
-      return aligned && gap <= 12 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-    });
-  }
-  async function chooseQueueAction(text, action) {
-    await row(text).getByRole("button", { name: "Queued message actions" }).click();
-    const control = page.getByRole("button", { name: action, exact: true }).or(page.getByRole("menuitem", { name: action, exact: true }));
-    await control.click();
-  }
+  const queueActions = text => row(text).getByRole("group", { name: "Queued message actions", exact: true });
+  const queueButton = (text, name) => queueActions(text).getByRole("button", { name, exact: true });
   for (const text of ["Prefer a focused check.", "Report the verification.", "Drop this duplicate.", "List follow-up work."]) {
     await prompt.fill(text);
     await prompt.press("Enter");
     await row(text).waitFor();
   }
+  if (await queue.getByRole("button", { name: "Queued message actions", exact: true }).count()) {
+    throw new Error("The queue still requires opening an actions menu.");
+  }
+  if (await queueButton("Prefer a focused check.", "Move up").isEnabled()
+    || await queueButton("List follow-up work.", "Move down").isEnabled()) {
+    throw new Error("A queued message can move past the end of its group.");
+  }
   await page.screenshot({ path: "output/playwright/pideck-ui-running.png" });
   const queueViewport = page.viewportSize();
   await page.setViewportSize({ width: 760, height: 560 });
-  const queueTrigger = row("List follow-up work.").getByRole("button", { name: "Queued message actions" });
-  await queueTrigger.focus();
-  await queueTrigger.press("Enter");
-  await waitForAnchoredQueueMenu();
-  await page.keyboard.press("Escape");
-  await queueMenu.waitFor({ state: "hidden" });
-  if (!await queueTrigger.evaluate(button => button === document.activeElement)) throw new Error("Closing the queue menu lost keyboard focus.");
-  await page.setViewportSize(queueViewport);
-  await chooseQueueAction("Report the verification.", "Edit message");
+  const editableText = "Report the verification.";
+  const narrowActions = queueActions(editableText);
+  await narrowActions.scrollIntoViewIfNeeded();
+  for (const name of ["Steer current run", "Edit message", "Move up", "Move down", "Delete message"]) {
+    await queueButton(editableText, name).waitFor();
+  }
+  const inlineButtonsFit = await narrowActions.evaluate(group => {
+    const preview = group.closest("li")?.querySelector(".queued-preview")?.getBoundingClientRect();
+    const list = group.closest("ol")?.getBoundingClientRect();
+    const buttons = [...group.querySelectorAll("button")].map(button => button.getBoundingClientRect());
+    return preview && list && preview.width >= 40 && buttons.length === 5 && buttons.every((bounds, index) =>
+      bounds.width >= 24 && bounds.height >= 24 && bounds.left >= preview.right - 1 && bounds.right <= innerWidth
+        && bounds.top >= Math.max(0, list.top - 1) && bounds.bottom <= Math.min(innerHeight, list.bottom + 1)
+        && bounds.top < preview.bottom && bounds.bottom > preview.top
+        && (index === 0 || bounds.left >= buttons[index - 1].right - 1));
+  });
+  if (!inlineButtonsFit) throw new Error("Queue controls crowd the message or overflow the narrow window.");
+  await page.screenshot({ path: "output/playwright/pideck-ui-queue-narrow.png" });
+  const queueEditButton = queueButton(editableText, "Edit message");
+  await queueEditButton.press("Enter");
   const queueEdit = page.getByRole("textbox", { name: "Edit queued message" });
-  if (await queueEdit.inputValue() !== "Report the verification.") throw new Error("The queue editor did not load the full message.");
+  await queueEdit.waitFor();
+  if (await queueEdit.inputValue() !== editableText || !await queueEdit.evaluate(editor => editor === document.activeElement)) {
+    throw new Error("The inline queue editor did not load and focus the full message.");
+  }
+  await queueEdit.press("Escape");
+  await queueEditButton.waitFor();
+  if (!await queueEditButton.evaluate(button => button === document.activeElement)) {
+    throw new Error("Closing the inline queue editor lost keyboard focus.");
+  }
+  await page.setViewportSize(queueViewport);
+  await queueEditButton.click();
   await queueEdit.fill("Report the final verification.");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await row("Report the final verification.").waitFor();
-  await chooseQueueAction("Drop this duplicate.", "Delete message");
+  const moveDown = queueButton("Report the final verification.", "Move down");
+  await moveDown.press("Enter");
+  await queue.getByRole("listitem").nth(2).getByText("Report the final verification.", { exact: true }).waitFor();
+  if (!await moveDown.evaluate(button => button === document.activeElement)) throw new Error("Reordering lost the active button.");
+  await queueButton("Drop this duplicate.", "Delete message").press("Enter");
   await row("Drop this duplicate.").waitFor({ state: "detached" });
-  await chooseQueueAction("List follow-up work.", "Move up");
+  if (!await queueButton("Report the final verification.", "Edit message").evaluate(button => button === document.activeElement)) {
+    throw new Error("Deleting a queued message lost keyboard focus.");
+  }
+  await queueButton("List follow-up work.", "Move up").click();
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
-  await row("Prefer a focused check.").getByRole("button", { name: "Queued message actions" }).click();
-  const steer = page.getByRole("button", { name: "Steer current run", exact: true }).or(
-    page.getByRole("menuitem", { name: "Steer current run", exact: true }),
-  );
-  await steer.waitFor();
-  await waitForAnchoredQueueMenu();
+  await page.mouse.move(0, 0);
   await page.screenshot({ path: "output/playwright/pideck-ui-queue.png" });
-  await steer.click();
+  const steer = queueButton("Prefer a focused check.", "Steer current run");
+  await steer.press("Enter");
   await row("Prefer a focused check.").getByText("Steering", { exact: true }).waitFor();
+  if (!await queueButton("Prefer a focused check.", "Edit message").evaluate(button => button === document.activeElement)) {
+    throw new Error("Steering a queued message lost keyboard focus.");
+  }
+  if (await steer.count() && await steer.isEnabled()) throw new Error("A steering message still offers Steer.");
   await nav.locator(`.nav-scroll .nav-row:not([id="${runningSessionId}"])`).first().click();
   const finishedBadge = runningSession.locator("[data-activity=finished]");
   await finishedBadge.waitFor();

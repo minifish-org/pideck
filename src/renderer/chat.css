@@ -128,24 +128,18 @@
   list-style: none; padding: 2px calc(var(--chat-inset) - 4px) 2px calc(var(--chat-inset) - 2px);
   border-left: 2px solid var(--border);
 }
-.queued-row { display: flex; align-items: center; gap: 8px; min-height: 29px; font-size: 12px; }
+.queued-row { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12px; }
 .queued-mode { flex: none; color: var(--accent); font-size: 11px; }
 .queued-preview { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.queue-actions-trigger { width: 26px; height: 26px; }
-.queue-actions-trigger[aria-disabled='true'] { opacity: .5; cursor: default; }
-.queue-actions-trigger:has(+ :popover-open) { background: var(--surface-hover); color: var(--text); }
-.queue-popover {
-  width: max-content; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 4px;
+.queue-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+.queue-actions .icon-button { width: 28px; height: 28px; border-radius: 5px; }
+.queue-actions .icon-button:focus-visible { outline-offset: -2px; }
+.queue-actions .queue-action-steer {
+  width: auto; padding-inline: 7px; color: var(--accent); font-size: 11px; font-weight: 600;
 }
-.queue-popover:not([data-positioned]) { visibility: hidden; }
-.queue-popover:popover-open { display: grid; gap: 1px; }
-.queue-popover button {
-  display: block; width: 100%; padding: 5px 8px; text-align: left; font-size: 12px;
-  background: transparent; color: var(--text); border: 1px solid transparent; border-radius: 5px;
-}
-.queue-popover button:hover, .queue-popover button:focus-visible { background: var(--surface-hover); }
-.queue-popover button:focus-visible { outline-offset: -2px; }
-.queue-popover .queue-action-danger { color: var(--danger); }
+.queue-actions .queue-action-steer:hover:not([aria-disabled='true']) { background: var(--accent-soft); color: var(--accent); }
+.queue-actions .queue-action-delete:is(:hover, :focus-visible):not([aria-disabled='true']) { color: var(--danger); }
+.queue-actions .icon-button[aria-disabled='true'] { opacity: .42; cursor: default; background: transparent; }
 .queue-editor { display: grid; gap: 5px; padding: 3px 0 4px; }
 .queue-editor textarea {
   min-width: 0; width: 100%; resize: vertical; padding: 6px 8px; font-size: 12px;

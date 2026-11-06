@@ -328,10 +328,8 @@ try {
   await runningBadge.waitFor();
   const queue = page.getByRole("list", { name: "Queued messages" });
   const queuedRow = text => queue.getByRole("listitem").filter({ hasText: text });
-  async function queueAction(text, action) {
-    await queuedRow(text).getByRole("button", { name: "Queued message actions" }).click();
-    await page.getByRole("button", { name: action, exact: true }).or(page.getByRole("menuitem", { name: action, exact: true })).click();
-  }
+  const queueAction = (text, action) => queuedRow(text).getByRole("group", { name: "Queued message actions", exact: true })
+    .getByRole("button", { name: action, exact: true }).click();
   const firstQueued = "Guide the recovery when possible.";
   const draftQueued = "Original queued text.";
   const editedQueued = "Edited queued text.";
