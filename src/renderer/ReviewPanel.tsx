@@ -63,25 +63,20 @@ function ChangeCount({ files }: { files: FileDiffMetadata[] }) {
   </span>;
 }
 
-export function InlineDiff({ patch, onOpen }: { patch: string; onOpen?: () => void }) {
+export function InlineDiff({ patch, onOpen }: { patch: string; onOpen: () => void }) {
   const isSmall = patch.length <= 16_384 && patch.split("\n", 46).length <= 45;
-  if (!isSmall && onOpen) {
+  if (!isSmall) {
     return <button type="button" className="workspace-inline-open" onClick={onOpen}>
-      Open review <ArrowUpRight size={13} aria-hidden="true" />
+      Open in Changes <ArrowUpRight size={13} aria-hidden="true" />
     </button>;
   }
-  return <InlinePatch patch={patch} onOpen={onOpen} />;
+  return <InlinePatch patch={patch} />;
 }
 
-function InlinePatch({ patch, onOpen }: { patch: string; onOpen?: () => void }) {
+function InlinePatch({ patch }: { patch: string }) {
   const files = usePatch(patch);
   return <div className="workspace-inline">
-    <div className="workspace-inline-header">
-      <ChangeCount files={files} />
-      {onOpen && <button type="button" className="workspace-inline-open" onClick={onOpen}>
-        Open review <ArrowUpRight size={13} aria-hidden="true" />
-      </button>}
-    </div>
+    <div className="workspace-inline-header"><ChangeCount files={files} /></div>
     <div className="workspace-inline-scroll"><PatchView patch={patch} files={files} style="unified" wrap={false} /></div>
   </div>;
 }
@@ -92,13 +87,12 @@ type ReviewPanelProps = {
   onClose: () => void;
   selectedPath?: string;
   selectedPatch?: string;
+  onSelectWorkingTreeFile: (path: string) => void;
   rememberedPath?: string;
   onRememberPath?: (path: string | undefined) => void;
   refreshVersion?: number;
   selectionVersion?: number;
 };
-const editSelection = Symbol("chat edit");
-
 function ReviewIssue({ message, onRetry }: { message: string; onRetry: () => void }) {
   return <div className="workspace-empty workspace-review-issue">
     <span role="alert">{message}</span>
@@ -110,13 +104,13 @@ export function ReviewPanel(props: ReviewPanelProps) {
   return <ProjectReview key={props.project.id} {...props} />;
 }
 
-function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, rememberedPath, onRememberPath,
-  refreshVersion, selectionVersion }: ReviewPanelProps) {
+function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch, onSelectWorkingTreeFile,
+  rememberedPath, onRememberPath, refreshVersion, selectionVersion }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
-  const requestedGitPath = selectedPatch ? undefined : requestedPath;
-  const initialPath = selectedPatch ? editSelection : requestedPath;
-  const [path, setPath] = useState<string | symbol | undefined>(initialPath ?? rememberedPath);
-  const lastSelection = useRef({ initialPath, selectedPatch, selectionVersion });
+  const showMessagePatch = Boolean(selectedPatch);
+  const requestedGitPath = showMessagePatch ? undefined : requestedPath;
+  const [path, setPath] = useState(requestedGitPath ?? rememberedPath);
+  const lastSelection = useRef({ requestedPath, selectedPatch, selectionVersion });
   const [layout, setLayout] = useState<DiffLayout>("auto");
   const [wide, setWide] = useState(false);
   const [filter, setFilter] = useState("");
@@ -132,15 +126,14 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   const lastRefreshVersion = useRef(refreshVersion);
   const style = layout === "auto" ? (wide ? "split" : "unified") : layout;
   const files = list?.files ?? [];
-  const editPath = requestedPath ?? "Edit patch";
-  const showEdit = Boolean(selectedPatch && path === editSelection);
+  const messagePath = requestedPath ?? "Edit patch";
   const listReady = list?.revision === revision;
-  const selectedFile = typeof path === "string" ? files.find(candidate => candidate.path === path) : undefined;
+  const selectedFile = files.find(candidate => candidate.path === path);
   const missingRequestedFile = listReady && !list?.error && !selectedFile && requestedGitPath !== undefined && requestedGitPath === path;
-  const file = showEdit || missingRequestedFile ? undefined : selectedFile ?? files[0];
+  const file = showMessagePatch || missingRequestedFile ? undefined : selectedFile ?? files[0];
   const currentPath = file?.path;
   const currentResult = result?.path === currentPath ? result : undefined;
-  const patch = showEdit ? selectedPatch : currentResult?.value?.patch;
+  const patch = showMessagePatch ? selectedPatch : currentResult?.value?.patch;
   const parsed = usePatch(patch);
   const query = filter.trim().toLocaleLowerCase();
   const visibleFiles = files.filter(candidate => !query || candidate.path.toLocaleLowerCase().includes(query));
@@ -159,11 +152,11 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
 
   useEffect(() => {
     const last = lastSelection.current;
-    if (last.initialPath === initialPath && last.selectedPatch === selectedPatch && last.selectionVersion === selectionVersion) return;
-    lastSelection.current = { initialPath, selectedPatch, selectionVersion };
-    setPath(initialPath ?? rememberedPath);
+    if (last.requestedPath === requestedPath && last.selectedPatch === selectedPatch && last.selectionVersion === selectionVersion) return;
+    lastSelection.current = { requestedPath, selectedPatch, selectionVersion };
+    setPath(requestedGitPath ?? rememberedPath);
     setFilter("");
-  }, [initialPath, rememberedPath, selectedPatch, selectionVersion]);
+  }, [rememberedPath, requestedGitPath, requestedPath, selectedPatch, selectionVersion]);
 
   useEffect(() => {
     if (lastRefreshVersion.current === refreshVersion) return;
@@ -216,24 +209,24 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   }, [overlay, selectionVersion]);
 
   useEffect(() => {
-    if (!project.trusted || !watchStarted || showEdit) return;
+    if (!project.trusted || !watchStarted) return;
     let active = true;
     void window.pideck.invoke("review:list", { projectId: project.id }).then(
       next => { if (active) setList({ files: next, revision }); },
       cause => { if (active) setList(previous => ({ files: previous?.files ?? [], revision, error: message(cause) })); },
     );
     return () => { active = false; };
-  }, [project.id, project.trusted, revision, showEdit, watchStarted]);
+  }, [project.id, project.trusted, revision, watchStarted]);
 
   useEffect(() => {
     if (!listReady || !list || list.error) return;
-    setPath(current => typeof current === "string" && current !== requestedGitPath
+    setPath(current => current !== undefined && current !== requestedGitPath
       && !list.files.some(candidate => candidate.path === current) ? undefined : current);
   }, [list, listReady, requestedGitPath]);
 
   useEffect(() => {
-    if (listReady && !list?.error && !showEdit && !missingRequestedFile) onRememberPath?.(currentPath);
-  }, [currentPath, list?.error, listReady, missingRequestedFile, onRememberPath, showEdit]);
+    if (listReady && !list?.error && !showMessagePatch && !missingRequestedFile) onRememberPath?.(currentPath);
+  }, [currentPath, list?.error, listReady, missingRequestedFile, onRememberPath, showMessagePatch]);
 
   useEffect(() => {
     if (!project.trusted || !listReady || !currentPath || list?.error) return;
@@ -250,14 +243,14 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
     };
   }, [project.id, project.trusted, currentPath, listReady, list?.error, revision]);
 
-  const loading = !showEdit && (!listReady || Boolean(currentPath && !list?.error
-    && (result?.path !== currentPath || result.revision !== revision)));
+  const loading = !listReady || Boolean(currentPath && !list?.error
+    && (result?.path !== currentPath || result.revision !== revision));
   useEffect(() => {
-    if (loading || showEdit || !refreshRequested) return;
+    if (loading || !refreshRequested) return;
     // Finish the current snapshot before reading again after another filesystem event.
     setRefreshRequested(false);
     setRevision(value => value + 1);
-  }, [loading, refreshRequested, showEdit]);
+  }, [loading, refreshRequested]);
 
   function retryReview() {
     panel.current?.focus({ preventScroll: true });
@@ -266,8 +259,8 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
   }
 
   const hasDiff = parsed.some(item => item.hunks.length > 0);
-  const displayedPath = showEdit ? editPath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
-  const showFileList = !showEdit && (files.length > 1 || Boolean(missingRequestedFile && files.length) || Boolean(filter));
+  const displayedPath = showMessagePatch ? messagePath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
+  const showFileList = files.length > 1 || (files.length > 0 && (showMessagePatch || missingRequestedFile)) || Boolean(filter);
   return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes"
     data-overlay={overlay || undefined} onKeyDown={event => {
     if (event.key !== "Escape") return;
@@ -279,20 +272,13 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
     <header className="workspace-panel-header">
       {overlay && <button type="button" className="workspace-icon-button workspace-back" onClick={onClose}
         aria-label="Back to chat" title="Back to chat (Esc)"><ArrowLeft size={17} aria-hidden="true" /></button>}
-      <h2>{showEdit ? "Assistant edit" : "Changes"}</h2>
-      {!showEdit && files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
-      {showEdit && <div className="workspace-panel-actions">
-        <button type="button" className="workspace-action" onClick={() => {
-          setPath(rememberedPath ?? requestedPath);
-          refresh();
-          panel.current?.focus();
-        }}>Project changes</button>
-      </div>}
+      <h2>Changes</h2>
+      {files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
     </header>
     {!project.trusted ? <p className="workspace-empty">Trust this project to review its changes.</p>
-      : !list && !showEdit ? <p className="workspace-empty" role="status">Reading changes…</p>
+      : !list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
       : <>
-        {!showEdit && (list?.error || (watchError && !currentResult?.error)) && <ReviewIssue
+        {(list?.error || (watchError && !currentResult?.error)) && <ReviewIssue
           message={list?.error ?? "Automatic updates are unavailable."} onRetry={retryReview} />}
         {showFileList && (files.length > 7 || filter) && <div className="workspace-file-filter">
           <input type="search" value={filter} placeholder="Filter changed files…" aria-label="Filter changed files"
@@ -318,7 +304,13 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
             const label = fileDescription(candidate);
             return <button key={candidate.path} type="button" title={label} aria-label={label}
               tabIndex={candidate === fileTabStop ? 0 : -1}
-              aria-current={selected ? "true" : undefined} onClick={() => setPath(candidate.path)}>
+              aria-current={selected ? "true" : undefined} onClick={() => {
+                if (showMessagePatch) {
+                  if (files.length === 1) panel.current?.focus({ preventScroll: true });
+                  onSelectWorkingTreeFile(candidate.path);
+                }
+                setPath(candidate.path);
+              }}>
               <Icon name="file" className="workspace-file-icon" />
               <FileLabel path={candidate.path} />
               <FileStatus status={candidate.status} />
@@ -328,12 +320,13 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
         </nav>}
         {displayedPath ? <>
           <div className="workspace-diff-header">
-            <h3 title={showEdit ? `Assistant patch for ${editPath}` : file ? fileDescription(file) : displayedPath}
+            <h3 title={showMessagePatch ? `Patch from chat for ${messagePath}` : file ? fileDescription(file) : displayedPath}
               aria-description={file ? fileStatus(file.status) : undefined}>
               <Icon name="file" className="workspace-file-icon" />
               <FileLabel path={displayedPath} />
               {file && !showFileList && <FileStatus status={file.status} />}
             </h3>
+            {showMessagePatch && <span className="workspace-panel-meta">From chat</span>}
             <ChangeCount files={parsed} />
             {hasDiff && <div className="workspace-layout">
               <select aria-label="Diff layout" title="Diff layout" value={layout}
@@ -346,7 +339,7 @@ function ProjectReview({ project, overlay, onClose, selectedPath, selectedPatch,
             </div>}
           </div>
           {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
-            <Virtualizer key={`${showEdit ? "assistant" : "git"}-${displayedPath}`} className="workspace-review-scroll">
+            <Virtualizer key={`${showMessagePatch ? "chat" : "git"}-${displayedPath}`} className="workspace-review-scroll">
               <PatchView patch={patch} files={parsed} style={style} wrap />
             </Virtualizer>
           </WorkerPoolContextProvider> : !list?.error && <div className="workspace-review-scroll">

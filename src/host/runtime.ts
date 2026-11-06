@@ -18,7 +18,7 @@ import type {
   ChatGap, ChatView, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat,
 } from "../shared/api.js";
-import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
+import type { ProjectFolder, RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
 import { Metadata } from "./metadata.js";
@@ -193,7 +193,11 @@ export class Runtime {
   }
 
   listProjects() { return this.metadata.listProjects(); }
-  addProject(directory: string) { this.assertWritable(); return this.metadata.addProject(directory); }
+  inspectProject(directory: string) { return this.metadata.inspectProject(directory); }
+  addProject(directory: string, approval?: ProjectFolder) {
+    this.assertWritable();
+    return this.metadata.addProject(directory, approval);
+  }
   trustProject(projectId: string) { this.assertWritable(); return this.metadata.trustProject(projectId); }
   requireTrustedProject(projectId: string) { return this.metadata.requireTrustedProject(projectId); }
   listSessions(projectId: string) { return this.metadata.listSessions(projectId); }

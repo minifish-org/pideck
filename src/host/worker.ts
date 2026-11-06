@@ -130,8 +130,10 @@ async function handle(request: HostRequest): Promise<unknown> {
       return closeOwner(owner);
     case "project:list":
       return runtime.listProjects();
+    case "project:inspect":
+      return runtime.inspectProject(payload.directory);
     case "project:add":
-      return runtime.addProject(payload.directory);
+      return runtime.addProject(payload.directory, payload.approval);
     case "project:trust":
       return runtime.trustProject(payload.projectId);
     case "removal:plan": {

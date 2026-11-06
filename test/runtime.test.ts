@@ -27,6 +27,39 @@ async function openFixture() {
   return { root, data, projectDir, faux, runtime, project, session, selection, input: input(selection, "Check this project."), open };
 }
 
+test("approving a project binds trust to the inspected folder without registering a preview", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-project-approval-"));
+  const folder = join(root, "project");
+  const { open } = fauxRuntime(join(root, "app"));
+  const runtime = await open();
+  try {
+    await mkdir(folder);
+    const first = runtime.inspectProject(folder);
+    assert.equal(first.project, undefined);
+    assert.deepEqual(runtime.listProjects(), []);
+
+    await rename(folder, join(root, "original"));
+    await mkdir(folder);
+    assert.throws(() => runtime.addProject(folder, first.folder), /folder changed/);
+    assert.deepEqual(runtime.listProjects(), []);
+
+    const second = runtime.inspectProject(folder);
+    const project = runtime.addProject(folder, second.folder);
+    assert.equal(project.trusted, true);
+    assert.deepEqual(runtime.inspectProject(folder).project, project);
+
+    await rename(folder, join(root, "approved"));
+    await mkdir(folder);
+    assert.equal(runtime.inspectProject(folder).project, undefined);
+    assert.throws(() => runtime.requireTrustedProject(project.id), /folder changed/);
+    const replacement = runtime.inspectProject(folder);
+    assert.deepEqual(runtime.addProject(folder, replacement.folder), project);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("trust, ownership, built-in coding tools, watch reattachment, and durable reopen", async () => {
   const fixture = await openFixture();
   const { root, projectDir, project, session, selection, input, faux } = fixture;

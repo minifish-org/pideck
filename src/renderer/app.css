@@ -209,7 +209,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .empty-card h1 { margin: 0; font-size: clamp(22px, 2.6vw, 30px); line-height: 1.2; font-weight: 670; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .empty-card p { margin: 8px auto 0; max-width: 42ch; color: var(--fgColor-muted); }
 .empty-card .button { margin-top: 18px; min-height: 36px; padding-inline: 13px; }
-.empty-card .empty-path { color: var(--fgColor-muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   background: var(--button-default-bgColor-rest); border: 1px solid var(--button-default-borderColor-rest);

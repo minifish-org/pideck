@@ -45,11 +45,6 @@ export function ModelPicker({ models, selected, label, description, thinking, on
     if (open) search.current?.focus({ preventScroll: true });
   }, [open]);
 
-  function choose(model: ModelOption) {
-    panel.current?.hidePopover();
-    onChoose(model);
-  }
-
   return <>
     <button className="model-trigger" type="button" ref={trigger} aria-label="Model" aria-description={description}
       title={description} popoverTarget={id}
@@ -61,6 +56,13 @@ export function ModelPicker({ models, selected, label, description, thinking, on
       {label}<Icon name="down" width={12} height={12} />
     </button>
     <div className="chat-popover model-popover" id={id} popover="auto" role="region" aria-label="Choose a model" ref={panel}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || event.currentTarget.querySelector('select:open')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.hidePopover();
+        trigger.current?.focus();
+      }}
       onBlur={(event) => {
         if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger.current
           && !event.currentTarget.contains(event.relatedTarget) && event.currentTarget.matches(':popover-open')) {
@@ -80,7 +82,10 @@ export function ModelPicker({ models, selected, label, description, thinking, on
               if (event.nativeEvent.isComposing) return;
               if (event.key === 'Enter') {
                 event.preventDefault();
-                if (terms && terms === deferredQuery && results[0]) choose(results[0]);
+                if (terms && terms === deferredQuery && results[0]) {
+                  panel.current?.querySelector<HTMLButtonElement>('.model-option')?.focus();
+                  onChoose(results[0]);
+                }
               } else if (event.key === 'ArrowDown') {
                 event.preventDefault();
                 panel.current?.querySelector<HTMLButtonElement>('.model-option')?.focus();
@@ -103,7 +108,7 @@ export function ModelPicker({ models, selected, label, description, thinking, on
               const context = option.contextWindow ? ` · ${Math.round(option.contextWindow / 1000).toLocaleString()}k context` : '';
               return <li key={modelKey(option)}>
                 <button className="model-option" type="button" tabIndex={index === 0 ? 0 : -1}
-                  aria-current={current ? 'true' : undefined} onClick={() => choose(option)}>
+                  aria-current={current ? 'true' : undefined} onClick={() => onChoose(option)}>
                   <span className="model-option-label"><strong>{option.name}</strong>
                     <small>{providerLabel(option.provider)}{context}{option.supportsImages ? ' · Images' : ''}</small>
                   </span>

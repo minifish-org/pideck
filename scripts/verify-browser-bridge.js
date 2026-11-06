@@ -16,6 +16,11 @@ async page => {
     const fixedModel = { ...model, id: "fixture-fixed", name: "Fixture fixed model with a long display name to exercise truncation", thinking: ["off"] };
     const unavailableModel = { ...model, provider: "anthropic", id: "unavailable-fixture", name: "Unconnected fixture model" };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
+    const largePatch = [
+      "diff --git a/second.ts b/second.ts", "--- a/second.ts", "+++ b/second.ts", "@@ -1,24 +1,24 @@",
+      ...Array.from({ length: 24 }, (_, index) => `-const old${index} = ${index};`),
+      ...Array.from({ length: 24 }, (_, index) => `+const next${index} = ${index};`), "",
+    ].join("\n");
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
@@ -115,6 +120,7 @@ async page => {
             }
             if (!state.opened) project.id = state.projectId = crypto.randomUUID();
             state.opened = true;
+            project.trusted = state.trusted = true;
             persist();
             return { ...project };
           case "project:trust": project.trusted = state.trusted = true; persist(); return { ...project };
@@ -263,6 +269,14 @@ async page => {
             ] }] : [prompt];
             change(session.id, { messages, status: first ? "running" : "idle", canSteerQueued: first, model, thinking: payload.thinking });
             if (first) {
+              window.addEventListener("pideck-fixture-write-result", () => {
+                const [user, reply] = state.views[session.id].messages;
+                const output = Array.from({ length: 8 }, (_, index) => `Verified step ${index + 1}.`).join("\n");
+                change(session.id, { messages: [user, { ...reply, blocks: [
+                  { ...reply.blocks[0], status: "done", output },
+                  { type: "text", text: "Writing the result." },
+                ] }] });
+              }, { once: true });
               watches.clear();
               emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
               setTimeout(() => emit({ type: "host:restart" }), 100);
@@ -341,6 +355,7 @@ async page => {
                 const reply = { id: "reply", entryId: 8, role: "assistant", blocks: [
                   { type: "text", text: "I updated the status and checked the result." },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
+                  { type: "tool", name: "edit", id: "large-edit", path: "second.ts", status: "done", patch: largePatch },
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
                   { type: "tool", name: "bash", id: "failed-bash", status: "error", output: "Lint reported an error.", arguments: { command: "npm run lint" } },
                 ] };

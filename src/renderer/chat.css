@@ -74,6 +74,9 @@
 .tool-card summary { display: flex; align-items: center; gap: 7px; padding: 6px 9px; color: var(--fgColor-muted); list-style: none; font-size: 12px; }
 .tool-card summary::-webkit-details-marker { display: none; }
 .tool-card summary svg { flex: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .tool-spinner { animation: nav-spinner .9s linear infinite; }
+}
 .tool-card summary .tool-caret { margin-left: auto; }
 .tool-card .tool-state + .tool-caret { margin-left: 0; }
 .tool-card[open] summary .tool-caret { transform: rotate(90deg); }
@@ -86,7 +89,8 @@
 .tool-state[data-status='error'] { color: var(--fgColor-danger); }
 .tool-command { padding: 6px 0; color: var(--fgColor-muted); font: 11px/1.45 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
 .composer-run { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 6px var(--chat-inset); }
-.run-state { display: flex; gap: 8px; align-items: center; color: var(--fgColor-muted); font-size: 12px; }
+.run-state { display: flex; min-width: 0; gap: 8px; align-items: center; color: var(--fgColor-muted); font-size: 12px; }
+.run-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); }
 .run-state-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--fgColor-accent); animation: pulse 1.3s ease-in-out infinite alternate; }
 .composer-stop {
   display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 9px; flex: none;

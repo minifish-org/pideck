@@ -1,4 +1,4 @@
-import type { Command, Commands, HostEvent, RemovalBlocked, RemovalResult } from "./api";
+import type { Command, Commands, HostEvent, Project, RemovalBlocked, RemovalResult } from "./api";
 import type { Credential } from "@earendil-works/pi-ai";
 
 export const invokeChannel = "pideck:invoke";
@@ -9,9 +9,12 @@ export const menuStateChannel = "pideck:menu-state";
 type Forwarded = Exclude<Command, "project:open" | "project:remove" | "session:remove">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
+export type ProjectFolder = { directory: string; device: string; inode: string };
+export type ProjectInspection = { folder: ProjectFolder; name: string; project?: Project };
 
 export type HostCommand =
   | Forwarded
+  | "project:inspect"
   | "project:add"
   | "removal:plan"
   | "removal:execute"
@@ -19,7 +22,8 @@ export type HostCommand =
 export type HostInput = {
   [C in Forwarded]: Commands[C][0];
 } & {
-  "project:add": { directory: string };
+  "project:inspect": { directory: string };
+  "project:add": { directory: string; approval: ProjectFolder };
   "removal:plan": RemovalTarget;
   "removal:execute": RemovalTarget & { scope: string };
   "owner:close": undefined;
@@ -29,7 +33,8 @@ export type HostResult = {
 } & {
   "model:auth-open": string;
   "model:auth-copy": string;
-  "project:add": Commands["project:open"][1];
+  "project:inspect": ProjectInspection;
+  "project:add": Project;
   "removal:plan": RemovalPreview;
   "removal:execute": RemovalResult;
   "owner:close": void;

@@ -29,7 +29,12 @@ export function firstSessionTitle(text: string): string {
   const lines = text.split(/[\r\n\u2028\u2029]/u);
   for (const line of lines) {
     const title = normalizeSessionTitle(line).replace(/^#{1,6}\s+/u, "");
-    if (title && !/^(\x60{3}|~~~)/u.test(title)) return shortenTitle(title, 80);
+    if (!title || /^(\x60{3}|~~~)/u.test(title)) continue;
+    const nextInstruction = title.search(/[.!?]\s|[。！？]|[,;]\s+(?=then\b)|，(?=然后|再)/iu);
+    const heading = nextInstruction > 0 ? title.slice(0, nextInstruction).trimEnd() : title;
+    const short = shortenTitle(heading, 56);
+    const wordEnd = short.lastIndexOf(" ");
+    return short !== heading && wordEnd >= 38 ? short.slice(0, wordEnd) + "…" : short;
   }
   return text.trim() ? "Code request" : "Image request";
 }

@@ -15,6 +15,7 @@ import './chat.css';
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
 
 type ReviewSelection = { path?: string; patch?: string };
+type ToolBlock = Extract<ChatBlock, { type: 'tool' }>;
 
 function imageSource(image: { mimeType: string; data: string }) {
   const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
@@ -28,13 +29,18 @@ function ImageBlock({ image, alt }: { image: { mimeType: string; data: string };
 }
 
 const toolLabels: Record<string, string> = { read: 'Read', write: 'Write', edit: 'Edit', bash: 'Shell' };
+const toolPhases: Record<string, string> = {
+  read: 'Reading file…', write: 'Writing file…', edit: 'Editing file…', bash: 'Running command…',
+};
 const thinkingLabels: Record<Thinking, string> = {
   off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum',
 };
 
-function ToolCard({ block, onReview }: {
-  block: Extract<ChatBlock, { type: 'tool' }>;
+function ToolCard({ block, onReview, expanded, onExpand }: {
+  block: ToolBlock;
   onReview: (selection: ReviewSelection) => void;
+  expanded?: boolean;
+  onExpand: (id: string, expanded: boolean) => void;
 }) {
   const command = block.arguments?.command;
   const argPath = block.arguments?.path;
@@ -42,21 +48,21 @@ function ToolCard({ block, onReview }: {
   const target = typeof command === 'string' ? command : path;
   const shell = block.name === 'bash';
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
-  const status = { pending: 'Queued', running: 'Running', done: shell ? 'Succeeded' : undefined, error: 'Failed' }[block.status];
+  const active = block.status === 'pending' || block.status === 'running';
+  const status = block.status === 'error' ? 'Failed' : shell && block.status === 'done' ? 'Succeeded' : undefined;
   const longCommand = typeof command === 'string' && (command.includes('\n') || command.length > 48);
-  const disclosureMode = shell ? block.status : 'default';
-  const [disclosure, setDisclosure] = useState<{ mode: typeof disclosureMode; open: boolean }>();
-  const defaultOpen = Boolean(block.patch) || block.status === 'error' || (shell && block.status !== 'done');
-  const open = disclosure?.mode === disclosureMode ? disclosure.open : defaultOpen;
+  const output = block.output?.trimEnd();
+  const shortOutput = output && output.length <= 420 && output.split('\n', 7).length <= 6;
+  const open = expanded ?? (Boolean(block.patch) || block.status === 'error' || (shell && Boolean(active || shortOutput)));
 
   return (
     <details className="tool-card" open={open}>
-      <summary title={target} onClick={(event) => {
+      <summary title={target} aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : undefined} onClick={(event) => {
         event.preventDefault();
-        setDisclosure({ mode: disclosureMode, open: !open });
+        onExpand(block.id, !open);
       }}>
-        <Icon name={shell ? 'terminal' : 'file'} />
-        {(!shell || !target) && <span className="tool-label">{toolLabels[block.name] ?? block.name}</span>}
+        <Icon name={active ? 'spinner' : shell ? 'terminal' : 'file'} className={active ? 'tool-spinner' : undefined} />
+        {(!shell || !target) && <span className="tool-label">{Object.hasOwn(toolLabels, block.name) ? toolLabels[block.name] : block.name}</span>}
         {target && <span className="tool-target">{target}</span>}
         {status && <span className="tool-state" data-status={block.status}>{status}</span>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
@@ -70,7 +76,7 @@ function ToolCard({ block, onReview }: {
           : <>
               {block.output && <pre className="tool-output">{block.output}</pre>}
               {showReview && <button className="inline-action tool-review" type="button"
-                onClick={() => onReview({ path })}>Open review <span aria-hidden="true">↗</span></button>}
+                onClick={() => onReview({ path })}>Open in Changes <span aria-hidden="true">↗</span></button>}
             </>}
         {block.images?.map((image, index) => <ImageBlock key={index} image={image} alt={`Output from ${block.name}`} />)}
       </div>
@@ -87,10 +93,12 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
   </div>;
 });
 
-const Message = memo(function Message({ message, onReview, onFork }: {
+const Message = memo(function Message({ message, onReview, onFork, toolDisclosure, onToolExpand }: {
   message: ChatMessage;
   onReview: (selection: ReviewSelection) => void;
   onFork?: (entryId: number) => void;
+  toolDisclosure: ReadonlyMap<string, boolean>;
+  onToolExpand: (id: string, expanded: boolean) => void;
 }) {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   const author = message.role === 'user' ? 'You' : 'Pideck';
@@ -111,7 +119,8 @@ const Message = memo(function Message({ message, onReview, onFork }: {
             case 'image':
               return <ImageBlock image={block} alt="Attached image" key={index} />;
             case 'tool':
-              return <ToolCard block={block} onReview={onReview} key={block.id} />;
+              return <ToolCard block={block} onReview={onReview} key={block.id}
+                expanded={toolDisclosure.get(block.id)} onExpand={onToolExpand} />;
           }
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
@@ -123,6 +132,28 @@ const Message = memo(function Message({ message, onReview, onFork }: {
     </article>
   );
 });
+
+function runPhase(messages: ChatMessage[]): { label: string; detail?: string } {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === 'user') break;
+    const active = message.blocks.findLast((block): block is ToolBlock =>
+      block.type === 'tool' && (block.status === 'pending' || block.status === 'running'));
+    if (active) {
+      if (active.status === 'pending') return { label: 'Preparing tool…' };
+      const detail = active.arguments?.command ?? active.path;
+      return {
+        label: Object.hasOwn(toolPhases, active.name) ? toolPhases[active.name] : 'Running tool…',
+        detail: typeof detail === 'string' ? detail : undefined,
+      };
+    }
+  }
+  const latest = messages.at(-1);
+  const output = latest?.role === 'assistant' ? latest.blocks.at(-1) : undefined;
+  if (output?.type === 'text' && output.text.trim()) return { label: 'Writing response…' };
+  if (output?.type === 'thinking') return { label: 'Thinking…' };
+  return { label: 'Waiting for the model…' };
+}
 
 export function EmptyScene({ icon, title, children }: {
   icon: 'mark' | 'folderPlus' | 'lock' | 'chat';
@@ -214,6 +245,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [readingHistory, setReadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
   const [forking, setForking] = useState(false);
+  const [toolDisclosure, setToolDisclosure] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const setToolExpanded = useCallback((id: string, expanded: boolean) => {
+    setToolDisclosure(current => new Map(current).set(id, expanded));
+  }, []);
   const form = useRef<HTMLFormElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
@@ -435,11 +470,13 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
 
   const retryTime = view?.activity?.kind === 'retrying' && view.activity.retryAt
     ? new Date(view.activity.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined;
+  const progress = busy && view ? runPhase(view.messages) : undefined;
   const runStatus = stopping || view?.status === 'cancelling' ? 'Stopping…'
     : agentCompacting ? 'Summarizing context…'
     : view?.activity?.kind === 'retrying' ? retryTime ? `Model retry scheduled for ${retryTime}` : 'Retrying the model…'
     : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
-    : busy ? 'Pideck is working' : undefined;
+    : progress?.label;
+  const runDetail = progress?.label === runStatus ? progress?.detail : undefined;
   const composerStatus = draft.sending ? 'Sending…'
     : draft.reading ? 'Attaching images…'
     : attachments.length > 0 && model && !model.supportsImages ? 'Choose a model that accepts images.'
@@ -501,7 +538,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             {view?.messages.map((message) => (
               <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
                 {renderGaps(message.id)}
-                <Message message={message} onReview={onReview} onFork={connected && !forking ? fork : undefined} />
+                <Message message={message} onReview={onReview} onFork={connected && !forking ? fork : undefined}
+                  toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded} />
               </div>
             ))}
             {renderGaps()}
@@ -512,7 +550,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
       {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" onClick={jumpToLatest}><Icon name="arrowDown" /> Latest</button></div>}
       <div className="composer-wrap">
         {runStatus && <div className="composer-run">
-          <div className="run-state" role="status"><span className="run-state-dot" />{runStatus}</div>
+          <div className="run-state" role="status">
+            <span className="run-state-dot" /><span>{runStatus}</span>
+            {runDetail && <code className="run-detail" title={runDetail}>{runDetail}</code>}
+          </div>
           <button className="composer-stop" type="button" onClick={cancel}
             title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
             disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
@@ -581,9 +622,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                     onThinkingChange={(level) => update({ thinking: level })}
                     onChoose={(option) => {
                       const key = modelKey(option);
-                      update({ model: key, thinking: undefined, error: undefined });
+                      update({ model: key, thinking: model && modelKey(model) === key ? draft.thinking : undefined, error: undefined });
                       onModelChosen(key);
-                      textarea.current?.focus();
                     }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
             </div>
             <div className="composer-actions">

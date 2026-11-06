@@ -64,6 +64,13 @@ test("title generation bounds Unicode without splitting a grapheme", () => {
   const family = "👩‍👩‍👦";
   const title = firstSessionTitle(family.repeat(100));
   assert.ok(title.length <= sessionTitleLimit);
-  assert.equal(title, family.repeat(9) + "…");
+  assert.equal(title, family.repeat(6) + "…");
   assert.equal(firstSessionTitle(""), "Image request");
+});
+
+test("automatic titles keep the first task without copying follow-up instructions", () => {
+  assert.equal(firstSessionTitle("Change result from 'before' to 'after' in example.ts, then verify the file and summarize."),
+    "Change result from 'before' to 'after' in example.ts");
+  assert.equal(firstSessionTitle("修复登录按钮。请补上回归测试"), "修复登录按钮");
+  assert.equal(firstSessionTitle("Improve response handling. Cover the slow case."), "Improve response handling");
 });

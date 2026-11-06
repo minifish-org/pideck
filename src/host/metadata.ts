@@ -5,13 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Project, Session } from "../shared/api.js";
+import type { ProjectFolder, ProjectInspection } from "../shared/transport.js";
 import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
-type DirectoryIdentity = { directory: string; device: string; inode: string };
-type ProjectRow = DirectoryIdentity & { id: string; name: string; trusted: number; createdAt: number };
+type ProjectRow = ProjectFolder & { id: string; name: string; trusted: number; createdAt: number };
 type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; startPending: 0 | 1 };
 
-function inspectDirectory(path: string): DirectoryIdentity {
+function inspectDirectory(path: string): ProjectFolder {
   let directory: string;
   try {
     directory = realpathSync(path);
@@ -25,7 +25,7 @@ function inspectDirectory(path: string): DirectoryIdentity {
   throw new Error("The project directory is unavailable.");
 }
 
-function sameDirectory(row: DirectoryIdentity, current: DirectoryIdentity): boolean {
+function sameDirectory(row: ProjectFolder, current: ProjectFolder): boolean {
   return row.directory === current.directory && row.device === current.device && row.inode === current.inode;
 }
 
@@ -106,20 +106,34 @@ export class Metadata {
     return rows.map(presentProject);
   }
 
-  addProject(path: string): Project {
+  inspectProject(path: string): ProjectInspection {
+    const folder = inspectDirectory(path);
+    const row = this.db.prepare("SELECT * FROM projects WHERE directory = ?").get(folder.directory) as ProjectRow | undefined;
+    return {
+      folder,
+      name: basename(folder.directory) || folder.directory,
+      project: row?.trusted && sameDirectory(row, folder) ? presentProject(row) : undefined,
+    };
+  }
+
+  addProject(path: string, approval?: ProjectFolder): Project {
     const current = inspectDirectory(path);
+    if (approval && !sameDirectory(approval, current)) {
+      throw new Error("The project folder changed. Open it again to review trust.");
+    }
     const row = this.db.prepare(`
-      INSERT INTO projects (id, directory, name, device, inode, createdAt) VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, directory, name, device, inode, createdAt, trusted) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(directory) DO UPDATE SET
         device = excluded.device,
         inode = excluded.inode,
         trusted = CASE
+          WHEN excluded.trusted = 1 THEN 1
           WHEN projects.device = excluded.device AND projects.inode = excluded.inode THEN projects.trusted
           ELSE 0
         END
       RETURNING *
     `).get(randomUUID(), current.directory, basename(current.directory) || current.directory,
-      current.device, current.inode, Date.now());
+      current.device, current.inode, Date.now(), approval ? 1 : 0);
     return presentProject(row as ProjectRow);
   }
 

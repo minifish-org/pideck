@@ -36,13 +36,10 @@ async page => {
   await expectColors(open, { "background-color": green, "color": "rgb(255, 255, 255)" });
   await page.screenshot({ path: "output/playwright/pideck-ui-welcome.png" });
   await open.click();
-  await page.waitForFunction(() => document.activeElement?.id === "workspace-trust");
-  const permissions = workspace.getByRole("button", { name: "Review permissions" });
-  await page.mouse.move(2, 2);
-  await expectColors(permissions, { "background-color": green });
-  await page.screenshot({ path: "output/playwright/pideck-ui-permissions.png" });
-  await permissions.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  if (await workspace.getByRole("heading", { name: "Project permissions" }).count()) {
+    throw new Error("Opening an approved folder still requires a renderer permission step.");
+  }
   const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const newSession = nav.getByRole("button", { name: "New session in Sample project", exact: true });
   await projectRow.hover();
@@ -132,7 +129,6 @@ async page => {
   await modelSearch.fill("fixture fixed");
   await picker.getByRole("button", { name: /Fixture fixed model/ }).click();
   await model.getByText("Off", { exact: true }).waitFor();
-  await model.click();
   await modelSearch.waitFor();
   if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
   const fixedLevelFits = await model.evaluate(button => {
@@ -148,8 +144,7 @@ async page => {
   await modelSearch.press("ArrowDown");
   await page.waitForFunction(() => document.activeElement?.classList.contains("model-option"));
   await page.keyboard.press("Enter");
-  await picker.waitFor({ state: "hidden" });
-  await model.click();
+  await modelSearch.waitFor();
   await thinkingLevel.selectOption("high");
   await model.getByText("High", { exact: true }).waitFor();
   await expectColors(picker.locator('.model-option[aria-current="true"]'), {
@@ -167,7 +162,7 @@ async page => {
   const send = page.getByRole("button", { name: "Send", exact: true });
   await expectColors(send, { "background-color": green });
   await send.click();
-  await page.getByText("Pideck is working").waitFor();
+  await page.getByRole("status").getByText("Running command…", { exact: true }).waitFor();
   await page.locator(".composer-current-model").getByText("High", { exact: true }).waitFor();
   const runningSessionId = await nav.locator(".nav-session-row[aria-current=true]").getAttribute("id");
   const runningSession = nav.locator(`#${runningSessionId}`);
@@ -353,6 +348,14 @@ async page => {
   await queue.getByRole("listitem").nth(0).getByText("Prefer a focused check.", { exact: true }).waitFor();
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
   if (await page.locator(".queued-messages [role=alert]").count()) throw new Error("An invalid drop reached the host.");
+  const successfulCommand = page.locator(".tool-card summary").filter({ hasText: "npm test" });
+  await successfulCommand.press("Enter");
+  await page.getByText("Running the status check…", { exact: true }).waitFor({ state: "hidden" });
+  await successfulCommand.press("Enter");
+  await page.getByText("Running the status check…", { exact: true }).waitFor();
+  await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-write-result")));
+  await page.getByRole("status").getByText("Writing response…", { exact: true }).waitFor();
+  await page.locator(".tool-output").filter({ hasText: "Verified step 8." }).waitFor();
   await page.setViewportSize({ width: queueViewport.width, height: 420 });
   const transcript = page.locator(".chat-scroll");
   await page.waitForFunction(() => {
@@ -379,19 +382,24 @@ async page => {
   await latest.click();
   await finishedBadge.waitFor({ state: "detached" });
   await page.setViewportSize(queueViewport);
-  const successfulCommand = page.locator(".tool-card summary").filter({ hasText: "npm test" });
   const successOutput = page.getByText("Checks passed.", { exact: true });
   await successfulCommand.getByText("Succeeded", { exact: true }).waitFor();
-  await successOutput.waitFor({ state: "hidden" });
+  await successOutput.waitFor();
   await page.getByText("Lint reported an error.", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Open review", exact: true }).waitFor();
+  const smallDiff = page.locator(".tool-card").filter({ has: page.locator("summary").filter({ hasText: "example.ts" }) });
+  await smallDiff.locator(".workspace-inline [data-diff-type=single]").waitFor();
+  if (await smallDiff.getByRole("button", { name: "Open in Changes", exact: true }).count()) {
+    throw new Error("A complete small inline diff still opens a duplicate review.");
+  }
   await page.screenshot({ path: "output/playwright/pideck-ui-tool-logs.png" });
   await successfulCommand.press("Enter");
-  await successOutput.waitFor();
-  await successfulCommand.press("Enter");
   await successOutput.waitFor({ state: "hidden" });
-  await nav.getByRole("button", { name: "Update and verify the status.", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Rename session Update and verify the status.", exact: true }).click();
+  await successfulCommand.press("Enter");
+  await successOutput.waitFor();
+  if (await page.locator(".workspace-title-current").textContent() !== "Sample project") {
+    throw new Error("The titlebar duplicates the visible session title.");
+  }
+  await runningSession.dblclick();
   await sessionName.fill("Verify status");
   await sessionName.press("Enter");
 
@@ -440,13 +448,24 @@ async page => {
   await original.click();
   await page.getByText("An earlier coding request.").waitFor();
   const resumeViewport = page.viewportSize();
-  await page.setViewportSize({ width: resumeViewport.width, height: 340 });
-  await page.locator(".chat-scroll").evaluate(scroll => { scroll.scrollTop = 18; });
+  await page.setViewportSize({ width: resumeViewport.width, height: 300 });
+  await smallDiff.locator(".workspace-inline [data-diff-type=single]").waitFor();
+  await page.waitForFunction(() => {
+    const scroll = document.querySelector(".chat-scroll");
+    return scroll.scrollHeight - scroll.clientHeight > 80;
+  });
+  await transcript.hover({ position: { x: 8, y: 40 } });
+  await page.mouse.wheel(0, -1000);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.mouse.wheel(0, -1000);
   const position = await page.waitForFunction(() => {
     const preferences = JSON.parse(localStorage.getItem("pideck.workspace.v1") ?? "{}");
     const id = preferences.sessions?.[preferences.projectId];
     return preferences.reading?.[preferences.projectId]?.[id];
-  }).then(handle => handle.jsonValue());
+  }).then(handle => handle.jsonValue()).catch(async cause => {
+    const geometry = await transcript.evaluate(scroll => [scroll.scrollTop, scroll.scrollHeight, scroll.clientHeight]);
+    throw new Error(`The transcript did not save its reading position at ${geometry.join("/")}: ${cause.message}`);
+  });
   await prompt.fill("Continue this after restarting.");
   await page.reload();
   await page.getByText("I updated the status and checked the result.").waitFor();
@@ -472,7 +491,7 @@ async page => {
   await changeButton.click();
   await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   await forked.click();
-  await page.getByRole("button", { name: "Open review", exact: true }).waitFor();
+  await smallDiff.locator(".workspace-inline [data-diff-type=single]").waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
   const changes = page.getByRole("button", { name: "Changes", exact: true });
@@ -620,16 +639,21 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-terminal.png" });
   await terminalToggle.click();
   await page.setViewportSize(viewport);
-  await page.getByRole("button", { name: "Open review", exact: true }).click();
-  await review.getByTitle("Assistant patch for example.ts").waitFor();
-  await review.getByRole("button", { name: "Project changes", exact: true }).click();
-  await review.getByTitle("Assistant patch for example.ts").waitFor({ state: "detached" });
-  await page.getByRole("button", { name: "Open review", exact: true }).click();
-  await review.getByTitle("Assistant patch for example.ts").waitFor();
+  const largeDiff = page.getByRole("button", { name: "Open in Changes", exact: true });
+  const chatPatch = review.getByTitle("Patch from chat for second.ts");
+  await largeDiff.click();
+  await chatPatch.waitFor();
+  await review.getByRole("heading", { name: "Changes", exact: true }).waitFor();
+  await review.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example\.ts/ }).waitFor();
+  await changes.click();
+  await chatPatch.waitFor({ state: "detached" });
+  await review.getByRole("heading", { name: "example.ts", exact: true }).waitFor();
+  await largeDiff.click();
+  await chatPatch.waitFor();
   await original.click();
-  await review.getByTitle("Assistant patch for example.ts").waitFor({ state: "detached" });
+  await chatPatch.waitFor({ state: "detached" });
   await forked.click();
-  await page.getByRole("button", { name: "Open review", exact: true }).click();
+  await largeDiff.click();
   const removeOriginal = nav.getByRole("button", { name: "Remove session Verify status", exact: true });
   await page.setViewportSize({ width: 760, height: 560 });
   await sidebar.click();

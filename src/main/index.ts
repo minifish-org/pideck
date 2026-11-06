@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eventChannel, invokeChannel, menuStateChannel, type RemovalTarget } from "../shared/transport";
+import type { Project } from "../shared/api";
 import { safeAuthUrl } from "../host/auth-flows";
 import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
@@ -196,16 +197,51 @@ async function initialize() {
     return client.request(requestOwner, "removal:execute", { ...target, scope: plan.scope });
   }
 
+  async function confirmProjectTrust(window: BrowserWindow, project: Pick<Project, "name" | "directory">) {
+    const result = await dialog.showMessageBox(window, {
+      type: "warning",
+      buttons: ["Cancel", "Trust Project"],
+      defaultId: 0,
+      cancelId: 0,
+      message: `Trust “${project.name}”?`,
+      detail: `${project.directory}\n\nPideck can run commands and modify files as your user. Open projects only when you trust their contents. Commands can access files outside this folder.`,
+    });
+    return result.response === 1;
+  }
+
+  let choosingProject = false;
   ipcMain.handle(invokeChannel, async (event, command: unknown, payload: unknown) => {
     const window = mainWindow;
     const requestOwner = owner;
     if (!window || window.isDestroyed() || !ownsFrame(event, window)) throw new Error("Unauthorized window.");
     if (!isCommand(command) || !validPayload(command, payload)) throw new Error("Invalid workspace request.");
 
-    if (command === "project:open") {
-      const result = await dialog.showOpenDialog(window, { title: "Open a project", properties: ["openDirectory"] });
-      if (result.canceled || !result.filePaths[0] || window.isDestroyed() || requestOwner !== owner) return null;
-      return client.request(requestOwner, "project:add", { directory: result.filePaths[0] });
+    if (command === "project:open" || command === "project:trust") {
+      if (choosingProject) return null;
+      choosingProject = true;
+      const active = () => !exiting && !window.isDestroyed() && requestOwner === owner && ownsFrame(event, window);
+      try {
+        if (command === "project:open") {
+          const result = await dialog.showOpenDialog(window, { title: "Open a project", properties: ["openDirectory"] });
+          const [directory] = result.filePaths;
+          if (result.canceled || !directory || !active()) return null;
+          const { folder, name, project } = await client.request(requestOwner, "project:inspect", { directory });
+          if (!active()) return null;
+          if (project) return project;
+          if (!await confirmProjectTrust(window, { name, directory: folder.directory }) || !active()) return null;
+          return await client.request(requestOwner, "project:add", { directory, approval: folder });
+        }
+        if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
+        const projects = await client.request(requestOwner, "project:list", undefined);
+        if (!active()) return null;
+        const project = projects.find(item => item.id === payload.projectId);
+        if (!project) throw new Error("Project not found.");
+        if (project.trusted) return project;
+        if (!await confirmProjectTrust(window, project) || !active()) return null;
+        return await client.request(requestOwner, command, payload);
+      } finally {
+        choosingProject = false;
+      }
     }
     if (command === "project:remove") {
       if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
@@ -214,23 +250,6 @@ async function initialize() {
     if (command === "session:remove") {
       if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
       return confirmRemoval(window, requestOwner, { projectId: payload.projectId, sessionId: payload.sessionId });
-    }
-    if (command === "project:trust" && validPayload(command, payload)) {
-      const projects = await client.request(requestOwner, "project:list", undefined);
-      const project = projects.find(item => item.id === payload.projectId);
-      if (!project) throw new Error("Project not found.");
-      if (project.trusted) return project;
-      if (window.isDestroyed() || requestOwner !== owner) return null;
-      const result = await dialog.showMessageBox(window, {
-        type: "warning",
-        buttons: ["Cancel", "Trust Project"],
-        defaultId: 0,
-        cancelId: 0,
-        message: `Trust “${project.name}”?`,
-        detail: `${project.directory}\n\nPideck can run commands and modify files as your user. Open projects only when you trust their contents. Commands can access files outside this folder.`,
-      });
-      if (result.response !== 1 || window.isDestroyed() || requestOwner !== owner) return null;
-      return client.request(requestOwner, command, payload);
     }
     if (command === "model:auth-copy" && validPayload(command, payload)) {
       const code = await client.request(requestOwner, command, payload);

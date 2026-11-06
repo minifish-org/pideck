@@ -139,7 +139,7 @@ function Desktop() {
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
 
   useEffect(() => {
-    if (!showNavigation) setRenaming(current => current?.source === 'sidebar' ? undefined : current);
+    setRenaming(current => current?.source === (showNavigation ? 'titlebar' : 'sidebar') ? undefined : current);
   }, [showNavigation]);
 
   useEffect(() => {
@@ -371,6 +371,9 @@ function Desktop() {
         ? current : { projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 });
     }
   }, [projectId, sessionId]);
+  const selectWorkingTreeFile = useCallback((path: string) => {
+    setReview(current => current?.patch ? { projectId: current.projectId, path } : current);
+  }, []);
   const refreshReview = useCallback(() => setReviewVersion((current) => current + 1), []);
 
   const rememberReadingPosition = useCallback((position: ReadingPosition | undefined) => {
@@ -674,7 +677,7 @@ function Desktop() {
   function toggleReview() {
     if (!project?.trusted || removingProject) return;
     closeDrawer();
-    if (activeReview) closeReview();
+    if (activeReview && !activeReview.patch) closeReview();
     else {
       reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setReview({ projectId: project.id });
@@ -712,7 +715,7 @@ function Desktop() {
   }
 
   const modalOpen = Boolean(settings);
-  const reviewVisible = Boolean(activeReview);
+  const reviewVisible = Boolean(activeReview && !activeReview.patch);
   useEffect(() => {
     const unsubscribe = api.onMenuAction?.(handleMenuAction);
     function handleShortcut(event: KeyboardEvent) {
@@ -773,8 +776,8 @@ function Desktop() {
         <div className="titlebar-content">
           <div className="title-context">
             {project && <div className="workspace-title">
-              {!dockedNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
-              {session ? renaming?.sessionId === session.id && renaming.source === 'titlebar'
+              {!showNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
+              {!showNavigation && session ? renaming?.sessionId === session.id && renaming.source === 'titlebar'
                 ? <SessionName key={session.id} title={session.title} onFinish={finishRename} />
                 : <button type="button" className="workspace-title-current session-title-button" id="rename-current-session"
                     title={`Rename session “${session.title}”`} aria-label={`Rename session ${session.title}`}
@@ -782,7 +785,7 @@ function Desktop() {
                     {session.title}
                   </button>
                 : <span className="workspace-title-current" title={project.directory}>
-                    {!dockedNavigation ? project.name : project.trusted ? 'New session' : 'Project setup'}
+                    {project.trusted ? project.name : 'Project setup'}
                   </span>}
             </div>}
           </div>
@@ -792,8 +795,8 @@ function Desktop() {
               title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
               disabled={!canCreateSession} onClick={() => openSessionDraft()}><Icon name="plus" /></button>}
             {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
-              {!reviewOverlaysChat && <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
-                title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
+              {(!reviewOverlaysChat || activeReview?.patch) && <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
+                title={`${reviewVisible ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewVisible}
                 disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>}
               <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
                 title={`Terminal (${modifier}\`)`} aria-pressed={terminalVisible}
@@ -873,7 +876,8 @@ function Desktop() {
                         return <li className="nav-item" key={chat.id}>
                           {renaming?.sessionId === chat.id && renaming.source === 'sidebar'
                             ? <SessionName title={chat.title} onFinish={finishRename} />
-                            : <button className="nav-row nav-session-row" id={`nav-session-${chat.id}`} type="button" title={chat.title}
+                            : <button className="nav-row nav-session-row" id={`nav-session-${chat.id}`} type="button"
+                              title={dockedNavigation ? `${chat.title} · Double-click or press F2 to rename` : chat.title}
                               aria-current={current ? 'true' : undefined} aria-keyshortcuts="F2 ArrowLeft Delete Backspace"
                               aria-description={status}
                               onKeyDown={(event) => {
@@ -886,6 +890,8 @@ function Desktop() {
                                   setRenaming({ projectId: id, sessionId: chat.id, source: 'sidebar' });
                                 }
                               }}
+                              onDoubleClick={dockedNavigation && !removing
+                                ? () => setRenaming({ projectId: id, sessionId: chat.id, source: 'sidebar' }) : undefined}
                               onClick={() => {
                                 selectProject(id);
                                 selectSession(id, chat.id);
@@ -965,11 +971,10 @@ function Desktop() {
                         </button>
                       </EmptyScene>
                 : !project.trusted
-                  ? <EmptyScene icon="lock" title="Project permissions">
-                      <p>Review what Pideck can do before running commands or editing files here.</p>
-                      <p className="empty-path">{project.directory}</p>
+                  ? <EmptyScene icon="lock" title="Project not trusted">
+                      <p>Trust this project to start a conversation.</p>
                       <button className="button button--primary" id="workspace-trust" type="button" onClick={trustProject}
-                        disabled={trusting || removingProject}><Icon name="shield" /> Review permissions</button>
+                        disabled={trusting || removingProject}><Icon name="shield" /> Trust project…</button>
                     </EmptyScene>
                   : sessions
                     ? <Chat key={`${project.id}/${draftId}`} project={project} session={session} models={models}
@@ -993,6 +998,7 @@ function Desktop() {
             <WorkspaceDivider workspace={workspace} pane="review" visible={Boolean(activeReview && !reviewOverlaysChat)} />
             {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
               <ReviewPanel project={project} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+                onSelectWorkingTreeFile={selectWorkingTreeFile}
                 rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                 refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
             </Suspense>}

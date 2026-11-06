@@ -281,10 +281,9 @@
 
 .workspace-inline-header { display: flex; align-items: center; gap: 8px; padding: 3px 5px 3px 9px; }
 .workspace-inline-header:empty { display: none; }
-.workspace-inline-scroll { overflow: auto; max-height: 250px; }
+.workspace-inline-scroll { overflow-x: auto; }
 .workspace-inline-header:not(:empty) + .workspace-inline-scroll { border-top: 1px solid var(--borderColor-muted); }
 .workspace-inline-open { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px; font-size: 11px; }
-.workspace-inline-header .workspace-inline-open { margin-left: auto; }
 
 .workspace-terminal-content { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 .workspace-terminal-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fgColor-muted); }

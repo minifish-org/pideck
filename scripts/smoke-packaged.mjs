@@ -29,6 +29,22 @@ async function clickNativeMenu(app, id) {
   }, id);
 }
 
+async function mockProjectPicker(app, directory, approve = false) {
+  await app.evaluate(({ dialog }, { directory, approve }) => {
+    globalThis.projectTrustApproved = approve;
+    globalThis.projectTrustPrompts = [];
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
+    dialog.showMessageBox = async (_window, options) => {
+      if (options.buttons?.[1] === "Trust Project") {
+        globalThis.projectTrustPrompts.push(options.message);
+        return { response: globalThis.projectTrustApproved ? 1 : 0, checkboxChecked: false };
+      }
+      if (options.buttons?.[1] !== "Remove") throw new Error("Unexpected native confirmation.");
+      return { response: 1, checkboxChecked: false };
+    };
+  }, { directory, approve });
+}
+
 async function verifyNativeUpdateMenu(app) {
   const results = await app.evaluate(async ({ app, BrowserWindow, dialog, Menu, net, shell }) => {
     const menu = Menu.getApplicationMenu();
@@ -191,10 +207,7 @@ try {
   app = first.running;
   const page = first.window;
 
-  await app.evaluate(({ dialog }, directory) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
-    dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  }, project);
+  await mockProjectPicker(app, project);
 
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
@@ -217,27 +230,26 @@ try {
     await window.pideck.invoke("project:list");
   });
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("new-session").enabled), false);
-  await assert.rejects(page.evaluate(() => window.pideck.invoke("project:add", { directory: "/" })), /Invalid workspace request/);
-  await assert.rejects(page.evaluate(() => window.pideck.invoke("model:auth-open", {
-    flowId: crypto.randomUUID(), linkId: crypto.randomUUID(),
-  })), /no longer active/);
-
-  await clickNativeMenu(app, "open-project");
-  await page.getByRole("button", { name: "Review permissions", exact: true }).waitFor();
-  const [added] = await page.evaluate(() => window.pideck.invoke("project:list"));
-  assert.equal(added.name, "smoke-project");
-  assert.equal(added.trusted, false);
-  const projectId = added.id;
   const command = (name, payload) => page.evaluate(([name, payload]) => window.pideck.invoke(name, payload), [name, payload]);
-  await assert.rejects(command("terminal:open", { projectId, cols: 80, rows: 20 }), /Trust this project/);
-  await assert.rejects(command("review:list", { projectId }), /Trust this project/);
-  assert.equal(await command("project:trust", { projectId }), null);
-  await app.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-  });
-  await page.getByRole("button", { name: "Review permissions", exact: true }).click();
+  for (const name of ["project:add", "project:inspect"]) {
+    await assert.rejects(command(name, { directory: "/" }), /Invalid workspace request/);
+  }
+  await assert.rejects(command("model:auth-open", {
+    flowId: crypto.randomUUID(), linkId: crypto.randomUUID(),
+  }), /no longer active/);
+
+  assert.equal(await command("project:open"), null);
+  assert.deepEqual(await command("project:list"), []);
+  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?"]);
+  await app.evaluate(() => { globalThis.projectTrustApproved = true; });
+  await clickNativeMenu(app, "open-project");
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
-  assert.equal((await command("project:list"))[0].trusted, true);
+  const [added] = await command("project:list");
+  assert.equal(added.name, "smoke-project");
+  assert.equal(added.trusted, true);
+  const projectId = added.id;
+  assert.deepEqual(await command("project:open"), added);
+  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?", "Trust “smoke-project”?"]);
   assert.deepEqual(await command("session:list", { projectId }), []);
   await assert.rejects(command("chat:watch", { projectId, sessionId: crypto.randomUUID(), subscriptionId: crypto.randomUUID() }), /Session not found/);
 
@@ -281,6 +293,9 @@ try {
     .filter({ has: page.getByText(azure.name, { exact: true }) }).click();
   await modelPicker.getByText(azure.name, { exact: true }).waitFor();
   await modelPicker.getByText("Off", { exact: true }).waitFor();
+  await modelMenu.waitFor();
+  await modelSearch.press("Escape");
+  await modelMenu.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
@@ -411,6 +426,8 @@ try {
   const sideProject = navigation.getByRole("button", { name: "side-project", exact: true });
   await sideProject.waitFor();
   assert.equal(await sideProject.getAttribute("aria-current"), "true");
+  assert.equal((await command("project:list")).find(item => item.name === "side-project")?.trusted, true);
+  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts.slice(-1)), ["Trust “side-project”?"]);
   assert.equal(await navigation.getByRole("list", { name: "side-project sessions", exact: true }).count(), 0);
   await smokeSession.waitFor();
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "hidden" });
@@ -589,9 +606,7 @@ try {
   const cleaned = await launch();
   app = cleaned.running;
   assert.deepEqual(await cleaned.window.evaluate(() => window.pideck.invoke("project:list")), []);
-  await app.evaluate(({ dialog }, directory) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
-  }, project);
+  await mockProjectPicker(app, project, true);
   let restoredPage = cleaned.window;
   if (process.platform === "darwin") {
     await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
@@ -603,12 +618,13 @@ try {
     await clickNativeMenu(app, "open-project");
     restoredPage = await reopenedWindow;
   } else await clickNativeMenu(app, "open-project");
-  await restoredPage.getByRole("button", { name: "Review permissions", exact: true }).waitFor();
+  await restoredPage.getByRole("textbox", { name: "Message Pideck" }).waitFor();
   await restoredPage.getByRole("complementary", { name: "Workspace navigation" })
     .getByRole("button", { name: "smoke-project", exact: true }).waitFor();
   const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
-  assert.equal(readded.trusted, false);
+  assert.equal(readded.trusted, true);
+  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?"]);
   assert.deepEqual(await restoredPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);
