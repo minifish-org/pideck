@@ -10,13 +10,17 @@ async page => {
   const foreground = "rgb(240, 246, 252)";
   const green = "rgb(35, 134, 54)";
   async function expectColors(target, expected, pseudo) {
-    const differences = await target.evaluate((element, { expected, pseudo }) => {
+    const readColors = () => target.evaluate((element, { expected, pseudo }) => {
+      if (!element.isConnected) return null;
       const style = getComputedStyle(element, pseudo);
       return Object.entries(expected).flatMap(([property, color]) => {
         const actual = style.getPropertyValue(property).trim();
         return actual === color ? [] : [`${property} expected ${color}, received ${actual}`];
       });
     }, { expected, pseudo });
+    // Pierre can replace its diff spans when the highlighted view arrives.
+    const differences = await readColors() ?? await readColors();
+    if (!differences) throw new Error(`${target} detached while reading its colors.`);
     if (differences.length) throw new Error(`${target}: ${differences.join(", ")}`);
   }
 
@@ -396,8 +400,40 @@ async page => {
   if (await page.getByRole("button", { name: "Summarize context" }).count()) {
     throw new Error("The title bar still exposes manual context compaction.");
   }
-  await page.getByRole("article", { name: "Pideck" }).filter({ hasText: "I updated the status and checked the result." })
-    .getByRole("button", { name: "Branch from here" }).click();
+  const userMessage = page.getByRole("article", { name: "You", exact: true }).filter({ hasText: "Update and verify the status." });
+  const assistantMessage = page.getByRole("article", { name: "Pideck", exact: true }).filter({ hasText: "I updated the status and checked the result." });
+  async function expectTranscriptLayout() {
+    if (await userMessage.getByText("You", { exact: true }).count() || await assistantMessage.getByText("Pideck", { exact: true }).count()) {
+      throw new Error("The transcript still displays speaker labels.");
+    }
+    const aligned = await page.locator(".chat-thread").evaluate(thread => {
+      const column = thread.getBoundingClientRect();
+      const user = thread.querySelector(".chat-entry--user").getBoundingClientRect();
+      const assistant = thread.querySelector(".chat-entry--assistant").getBoundingClientRect();
+      const leftAligned = content => ["start", "left"].includes(getComputedStyle(content).textAlign);
+      return Math.abs(user.right - column.right) <= 1 && user.width <= column.width * 0.8
+        && Math.abs(assistant.left - column.left) <= 1
+        && [...thread.querySelectorAll(".message-content")].every(leftAligned);
+    });
+    if (!aligned) throw new Error("User messages should sit on the right and assistant output should start on the left.");
+  }
+  await expectTranscriptLayout();
+  await userMessage.hover();
+  const userBranch = userMessage.getByRole("button", { name: "Branch from here" });
+  await userBranch.hover();
+  if (await userBranch.evaluate(button => getComputedStyle(button).opacity) !== "1") {
+    throw new Error("The user message branch action did not stay visible on hover.");
+  }
+  const branchMessage = assistantMessage.getByRole("button", { name: "Branch from here" });
+  await page.mouse.move(0, 0);
+  if (!await branchMessage.evaluate(button => getComputedStyle(button).opacity === "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
+    throw new Error("The message branch action should be a hidden icon until hover or focus.");
+  }
+  await branchMessage.focus();
+  if (await branchMessage.evaluate(button => getComputedStyle(button).opacity) !== "1") {
+    throw new Error("Keyboard focus did not reveal the message branch action.");
+  }
+  await branchMessage.press("Enter");
   const forked = nav.getByRole("button", { name: "Verify status (fork)", exact: true });
   const original = nav.getByRole("button", { name: "Verify status", exact: true });
   await forked.waitFor();
@@ -436,6 +472,7 @@ async page => {
   await changeButton.click();
   await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   await forked.click();
+  await page.getByRole("button", { name: "Open review", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
   const changes = page.getByRole("button", { name: "Changes", exact: true });
@@ -535,6 +572,7 @@ async page => {
   await review.waitFor({ state: "detached" });
   await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
     && document.activeElement?.id === "toggle-review");
+  await expectTranscriptLayout();
   await model.click();
   await modelSearch.waitFor();
   const compactMenuFits = await picker.evaluate(panel => {

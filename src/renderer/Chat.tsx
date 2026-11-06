@@ -99,13 +99,6 @@ const Message = memo(function Message({ message, onReview, onFork }: {
   return (
     <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id}
       data-reading-entry={readingEntry}>
-      <header className="message-heading">
-        <span className="message-author">{author}</span>
-        {onFork && entryId !== undefined && <button type="button" className="message-fork"
-          onClick={() => onFork(entryId)} title="Start a new session from this message" aria-label="Branch from here">
-          <Icon name="fork" width={14} height={14} /> <span>Branch from here</span>
-        </button>}
-      </header>
       <div className="message-content">
         {message.blocks.map((block, index) => {
           switch (block.type) {
@@ -123,6 +116,10 @@ const Message = memo(function Message({ message, onReview, onFork }: {
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
+      {onFork && entryId !== undefined && <button type="button" className="icon-button message-fork"
+        onClick={() => onFork(entryId)} title="Start a new session from this message" aria-label="Branch from here">
+        <Icon name="fork" width={14} height={14} />
+      </button>}
     </article>
   );
 });

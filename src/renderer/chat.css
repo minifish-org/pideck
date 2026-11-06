@@ -26,20 +26,24 @@
 .chat-welcome h1 { margin: 0; font-size: clamp(22px, 4cqw, 30px); line-height: 1.2; font-weight: 650; letter-spacing: -.035em; }
 .chat-welcome p { margin: 6px 0 0; color: var(--fgColor-muted); }
 
-.chat-entry { min-width: 0; padding: 8px var(--chat-inset); border: 1px solid transparent; }
+.chat-entry { position: relative; min-width: 0; }
+.chat-entry--assistant { padding-block: 4px; padding-inline-end: 32px; }
 .chat-entry--user {
-  border-color: var(--borderColor-muted); border-radius: 9px; background: var(--bgColor-muted);
+  align-self: flex-end; inline-size: fit-content; max-inline-size: 78%; padding: 8px var(--chat-inset);
+  border: 1px solid var(--borderColor-muted); border-radius: 9px; background: var(--bgColor-muted);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.message-heading { display: flex; align-items: center; gap: 8px; min-height: 26px; margin-block: 0 3px; }
-.message-author { flex: 1; font-size: 12px; font-weight: 650; color: var(--fgColor-muted); }
-.message-fork {
-  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 6px; margin-right: -6px;
-  border: 0; border-radius: 5px; background: transparent; color: var(--fgColor-muted); font-size: 11px; opacity: 0;
+.icon-button.message-fork {
+  position: absolute; inset-block-start: 0; inset-inline-end: 0;
+  width: 28px; height: 28px; opacity: 0; pointer-events: none;
 }
-.chat-entry:hover .message-fork, .chat-entry:focus-within .message-fork { opacity: 1; }
-.message-fork:hover { background: var(--button-invisible-bgColor-hover); color: var(--button-invisible-fgColor-hover); }
-@media (hover: none) { .message-fork { opacity: 1; } }
+.chat-entry--user .message-fork { inset-inline-end: 100%; inset-block-start: 4px; }
+.chat-entry:is(:hover, :focus-within) .message-fork {
+  opacity: 1; pointer-events: auto;
+}
+@media (hover: none) {
+  .icon-button.message-fork { opacity: 1; pointer-events: auto; }
+}
 .message-content { min-width: 0; }
 .markdown { color: var(--fgColor-default); overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }

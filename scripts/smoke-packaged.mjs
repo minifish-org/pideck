@@ -545,8 +545,9 @@ try {
   });
   await reopenedPage.getByRole("button", { name: "Smoke session", exact: true }).click();
   await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
-  await reopenedPage.getByRole("article", { name: "Pideck" }).filter({ hasText: "Recovered after host restart." })
-    .getByRole("button", { name: "Branch from here" }).click();
+  const recoveredMessage = reopenedPage.getByRole("article", { name: "Pideck" }).filter({ hasText: "Recovered after host restart." });
+  await recoveredMessage.hover();
+  await recoveredMessage.getByRole("button", { name: "Branch from here" }).click();
   const branch = reopenedPage.getByRole("button", { name: "Smoke session (fork)", exact: true });
   await branch.waitFor();
   const parentRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session", exact: true });
