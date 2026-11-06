@@ -458,13 +458,15 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   const screen = terminal.locator(".xterm-helper-textarea");
   await screen.waitFor();
+  const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
   await changes.click();
   await terminal.waitFor({ state: "hidden" });
   await terminalToggle.click();
   await terminal.waitFor();
   await review.waitFor({ state: "detached" });
-  if (await screen.getAttribute("data-workspace-fixture") !== "same") throw new Error("Returning from review replaced the live terminal.");
+  if (await screen.getAttribute("data-workspace-fixture") !== "same"
+    || await page.evaluate(() => document.body.dataset.terminalId) !== liveShell) throw new Error("Returning from review replaced the live terminal.");
   await page.screenshot({ path: "output/playwright/pideck-ui-terminal.png" });
   await terminalToggle.click();
   await page.setViewportSize(viewport);
@@ -510,10 +512,25 @@ async page => {
   await original.waitFor({ state: "detached" });
   if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Reattaching a surviving session lost its draft.");
 
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await terminalToggle.click();
   await page.getByText("Shell running").waitFor();
-  await page.getByRole("button", { name: "End shell", exact: true }).click();
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  if (await terminal.getByRole("button", { name: /end shell|restart shell|stop/i }).count()) throw new Error("The terminal toolbar still has shell controls.");
+  await screen.focus();
+  await page.keyboard.insertText("exit");
+  await page.keyboard.press("Enter");
+  await terminal.waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "toggle-terminal");
+  await terminalToggle.click();
+  await page.getByText("Shell running").waitFor();
+  if (await page.evaluate(() => document.body.dataset.terminalId) === liveShell
+    || await screen.getAttribute("data-workspace-fixture") !== "same") throw new Error("Reopening did not start a new shell in the same terminal view.");
+  await screen.focus();
+  await page.keyboard.insertText("exit 7");
+  await page.keyboard.press("Enter");
+  await terminal.getByText(/^Shell exited \(7\)/).waitFor();
+  if (await terminal.getByRole("button", { name: /restart shell/i }).count()) throw new Error("A stopped terminal still has a restart button.");
+  await terminalToggle.click();
+  await terminalToggle.click();
   await page.getByText("Shell running").waitFor();
   const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const primaryBranch = nav.getByRole("list", { name: "Sample project sessions", exact: true });

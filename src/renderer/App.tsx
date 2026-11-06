@@ -659,6 +659,18 @@ function Desktop() {
     setTerminals((current) => ({ ...current, [project.id]: !current[project.id] }));
   }
 
+  const collapseExitedTerminal = useCallback((id: string) => {
+    const focused = document.activeElement;
+    const restoreFocus = selectionRef.current.projectId === id && focused?.closest('#workspace-terminal');
+    setTerminals((current) => current[id] ? { ...current, [id]: false } : current);
+    setFocusTerminal((current) => current === id ? undefined : current);
+    if (restoreFocus) requestAnimationFrame(() => {
+      if (selectionRef.current.projectId === id && (document.activeElement === focused || document.activeElement === document.body)) {
+        document.getElementById('toggle-terminal')?.focus();
+      }
+    });
+  }, []);
+
   function toggleReview() {
     if (!project?.trusted || removingProject) return;
     closeDrawer();
@@ -991,7 +1003,7 @@ function Desktop() {
           {projects?.filter((item) => item.trusted && Object.hasOwn(terminals, item.id)).map((item) => {
             const visible = item.id === projectId && terminalVisible;
             return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
-              <TerminalPanel project={item} visible={visible} focusOnShow={focusTerminal === item.id} />
+              <TerminalPanel project={item} visible={visible} focusOnShow={focusTerminal === item.id} onExit={collapseExitedTerminal} />
             </Suspense>;
           })}
         </section>

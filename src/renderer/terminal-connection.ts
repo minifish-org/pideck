@@ -1,7 +1,9 @@
 import type { Pideck, TerminalEvent } from "../shared/api";
 
 type Size = { cols: number; rows: number };
-export type TerminalStatus = { type: "opening" | "running" | "exited" | "stopped" | "failed"; message: string };
+export type TerminalStatus =
+  | { type: "opening" | "running" | "failed"; message: string }
+  | { type: "exited"; message: string; exitCode?: number };
 
 const inputLimit = 256 * 1024;
 
@@ -64,7 +66,7 @@ export function connectTerminal(options: {
         });
       } else {
         exited = true;
-        status({ type: "exited", message: `Shell exited (${next.exitCode})` });
+        status({ type: "exited", message: `Shell exited (${next.exitCode})`, exitCode: next.exitCode });
         // The screen retains already queued writes even after the shell is released.
         stop();
         return;
@@ -88,7 +90,7 @@ export function connectTerminal(options: {
         acknowledged = through;
         for (const event of events) accept(event);
         if (replay && received === start && outOfOrder.size > 0) {
-          fail(new Error("Terminal output was interrupted. Restart the shell to reconnect."));
+          fail(new Error("Terminal output was interrupted."));
         }
       }, fail).finally(() => {
         synchronizing = false;

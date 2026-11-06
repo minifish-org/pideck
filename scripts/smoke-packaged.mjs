@@ -78,12 +78,20 @@ const temporary = await mkdtemp(join(tmpdir(), "pideck-packaged-"));
 const data = join(temporary, "profile");
 const project = join(temporary, "smoke-project");
 const otherProject = join(temporary, "side-project");
+const shellProfile = join(temporary, "zsh-config");
 let app;
 let modelServer;
 const errors = [];
 
 try {
   await Promise.all([mkdir(project), mkdir(otherProject)]);
+  if (process.platform === "darwin") {
+    await mkdir(shellProfile);
+    await Promise.all([
+      writeFile(join(shellProfile, ".zprofile"), "export PIDECK_SMOKE_LOGIN=loaded\n"),
+      writeFile(join(shellProfile, ".zshrc"), "PROMPT='PIDECK_SMOKE> '\n"),
+    ]);
+  }
   modelServer = await openSmokeProvider();
   const git = (...args) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
   git("init");
@@ -100,7 +108,8 @@ try {
       executablePath: path,
       args: [`--user-data-dir=${data}`],
       env: { ...process.env, AZURE_OPENAI_API_KEY: "pideck-smoke-key",
-        AZURE_OPENAI_BASE_URL: modelServer.endpoint, PIDECK_SMOKE_PRIVATE: "secret-marker" },
+        AZURE_OPENAI_BASE_URL: modelServer.endpoint, PIDECK_SMOKE_PRIVATE: "secret-marker",
+        ...(process.platform === "darwin" ? { SHELL: "/bin/zsh", ZDOTDIR: shellProfile } : {}) },
     });
     const window = await running.firstWindow();
     window.on("pageerror", error => errors.push(error.message));
@@ -234,9 +243,19 @@ try {
   assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("toggle-review").checked), true);
 
+  await page.evaluate(() => {
+    window.pideck.onEvent(event => {
+      if (event.type === "terminal:data") document.documentElement.dataset.ptyId = event.terminalId;
+    });
+  });
   await clickNativeMenu(app, "toggle-terminal");
   await page.getByText("Shell running").waitFor();
-  const terminal = page.locator(".xterm-helper-textarea");
+  const terminalRegion = page.getByRole("region", { name: "Project terminal" });
+  const terminal = terminalRegion.locator(".xterm-helper-textarea");
+  const terminalRows = terminalRegion.locator(".xterm-rows");
+  assert.equal(await terminalRegion.getByRole("button", { name: /end shell|restart shell/i }).count(), 0);
+  if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
+  const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
   const review = page.getByRole("complementary", { name: "Review changes" });
   const externalPath = join(project, "outside-edit.ts");
   const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
@@ -255,7 +274,8 @@ try {
   await terminal.focus();
   const print = process.platform === "win32"
     ? 'if ($null -eq $env:PIDECK_SMOKE_PRIVATE -and $null -eq $env:AZURE_OPENAI_API_KEY) { Write-Host ("PTY_" + "OK") -ForegroundColor Green }'
-    : 'test -z "$PIDECK_SMOKE_PRIVATE$AZURE_OPENAI_API_KEY" && printf \'\\033[32mPTY_%s\\033[0m\\n\' OK';
+    : (process.platform === "darwin" ? 'test "$PIDECK_SMOKE_LOGIN" = loaded && ' : '')
+      + 'test -z "$PIDECK_SMOKE_PRIVATE$AZURE_OPENAI_API_KEY" && printf \'\\033[32mPTY_%s\\033[0m\\n\' OK';
   await page.keyboard.insertText(print);
   await page.keyboard.press("Enter");
   await page.locator(".xterm-rows").getByText("PTY_OK", { exact: true }).waitFor();
@@ -268,6 +288,30 @@ try {
   });
   await page.getByRole("searchbox", { name: "Find in terminal output" }).press("Escape");
 
+  await terminal.focus();
+  await page.keyboard.insertText(process.platform === "win32"
+    ? 'Write-Host ("INTERRUPT_" + "READY"); Start-Sleep -Seconds 30'
+    : "printf 'INTERRUPT_%s\\n' READY; sleep 30");
+  await page.keyboard.press("Enter");
+  await terminalRows.getByText("INTERRUPT_READY", { exact: true }).waitFor();
+  await page.keyboard.press("Control+c");
+  await page.keyboard.insertText(process.platform === "win32" ? 'Write-Host ("INTERRUPT_" + "OK")' : "printf 'INTERRUPT_%s\\n' OK");
+  await page.keyboard.press("Enter");
+  await terminalRows.getByText("INTERRUPT_OK", { exact: true }).waitFor({ timeout: 6_000 });
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
+  await page.keyboard.insertText("exit");
+  await page.keyboard.press("Enter");
+  await terminalRegion.waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "toggle-terminal");
+  await clickNativeMenu(app, "toggle-terminal");
+  await terminalRegion.getByText("Shell running").waitFor();
+  await page.waitForFunction(id => document.documentElement.dataset.ptyId && document.documentElement.dataset.ptyId !== id, firstPty);
+  await terminalRegion.getByRole("button", { name: "Find in terminal" }).click();
+  const retainedSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
+  await retainedSearch.fill("INTERRUPT_OK");
+  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor();
+  await retainedSearch.press("Escape");
+
   const boundsBeforeReview = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
   await terminal.focus();
   await page.keyboard.insertText(process.platform === "win32"
@@ -275,7 +319,6 @@ try {
     : 'sleep 1; printf \'REVIEW_%s\\n\' PTY_OK');
   await page.keyboard.press("Enter");
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
-  const terminalRegion = page.getByRole("region", { name: "Project terminal" });
   await review.getByRole("button", { name: "Back to chat" }).waitFor();
   await page.getByRole("button", { name: "Changes", exact: true }).waitFor({ state: "hidden" });
   await terminalRegion.waitFor({ state: "hidden" });

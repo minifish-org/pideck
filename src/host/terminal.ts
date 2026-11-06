@@ -4,7 +4,7 @@ import { basename, isAbsolute } from "node:path";
 import { spawn } from "node-pty";
 import type { IPty } from "node-pty";
 import type { HostEvent, TerminalEvent, TerminalOpen } from "../shared/api";
-import { shellEnvironment } from "./shell-env";
+import { terminalEnvironment } from "./shell-env";
 
 type Terminal = {
   owner: number;
@@ -41,24 +41,22 @@ export class Terminals {
 
   open(owner: number, projectId: string, cwd: string, cols: number, rows: number): TerminalOpen {
     if ([...this.terminals.values()].filter(terminal => terminal.owner === owner).length >= 4) {
-      throw new Error("This window has four running shells. Stop one before starting another.");
+      throw new Error("This window has four running shells. Use exit in one before opening another.");
     }
     const configuredShell = process.env.SHELL || userInfo().shell;
     const shell = process.platform === "win32" ? "powershell.exe"
       : configuredShell && isAbsolute(configuredShell) ? configuredShell : "/bin/sh";
-    const args = ({
-      zsh: ["-f"],
-      bash: ["--noprofile", "--norc"],
-      fish: ["--no-config"],
-      "powershell.exe": ["-NoLogo", "-NoProfile"],
-    } as Record<string, string[]>)[basename(shell)] ?? [];
+    // macOS Terminal starts a login shell. Other Unix terminals normally load interactive profiles.
+    const interactiveArgs = process.platform === "darwin" ? ["-l", "-i"] : ["-i"];
+    const args = process.platform === "win32" ? ["-NoLogo"]
+      : ["zsh", "bash", "fish"].includes(basename(shell)) ? interactiveArgs : [];
     const terminalId = randomUUID();
     const pty = spawn(shell, args, {
       cwd,
       name: "xterm-256color",
       cols,
       rows,
-      env: { ...shellEnvironment(), TERM: "xterm-256color", COLORTERM: "truecolor" },
+      env: { ...terminalEnvironment(), TERM: "xterm-256color", COLORTERM: "truecolor" },
     });
     const terminal: Terminal = {
       owner, projectId, pty, sequence: 0, pending: "", subscriptions: [],

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { test } from "node:test";
 import type { Credential } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { AuthFlows } from "../src/host/auth-flows";
 import { PersistentCredentials } from "../src/host/credential-store";
-import { shellEnvironment } from "../src/host/shell-env";
+import { shellEnvironment, terminalEnvironment } from "../src/host/shell-env";
 import { hostEnvironment } from "../src/main/host-env";
 import { validPayload } from "../src/main/validation";
 import type { HostEvent } from "../src/shared/api";
@@ -123,17 +124,28 @@ test("closing the owning window aborts pending native login without persisting a
 });
 
 test("native provider environment stays in the host and auth IPC only accepts scoped IDs", () => {
+  const profiles = resolve("shell-profiles");
   const env = hostEnvironment({
     OPENAI_API_KEY: "provider-key",
     AZURE_OPENAI_BASE_URL: "http://127.0.0.1:1234/openai/v1",
     AWS_PROFILE: "workspace",
     NODE_OPTIONS: "--require injected.js",
+    ZDOTDIR: profiles,
+    XDG_CONFIG_HOME: profiles,
   });
   assert.equal(env.OPENAI_API_KEY, "provider-key");
   assert.equal(env.AWS_PROFILE, "workspace");
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(shellEnvironment(env).OPENAI_API_KEY, undefined);
   assert.equal(shellEnvironment(env).AWS_PROFILE, undefined);
+  assert.equal(shellEnvironment(env).ZDOTDIR, undefined);
+  assert.equal(shellEnvironment(env).XDG_CONFIG_HOME, undefined);
+  const terminal = terminalEnvironment(env);
+  assert.equal(terminal.ZDOTDIR, profiles);
+  assert.equal(terminal.XDG_CONFIG_HOME, profiles);
+  assert.equal(terminalEnvironment({ ZDOTDIR: "relative-config" }).ZDOTDIR, undefined);
+  assert.equal(terminal.OPENAI_API_KEY, undefined);
+  assert.equal(terminal.AWS_PROFILE, undefined);
   assert.equal(validPayload("model:auth-open", { flowId: randomUUID(), linkId: "https://example.invalid" }), false);
   assert.equal(validPayload("model:login", { flowId: randomUUID(), method: "invalid", provider: "openai" }), false);
 });

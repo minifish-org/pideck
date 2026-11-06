@@ -5,6 +5,7 @@ async page => {
     const activity = new Map();
     const queuedTexts = new Map();
     const reviewWatches = new Map();
+    const terminalInputs = new Map();
     let activityWatch;
     let nextTaskId = 0;
     let nextQueueId = 2;
@@ -359,8 +360,21 @@ async page => {
             persist();
             return fork;
           }
-          case "terminal:open": return { terminalId: crypto.randomUUID(), data: "Fixture shell\r\n", sequence: 0, exited: false };
-          case "terminal:close":
+          case "terminal:open": {
+            const terminalId = crypto.randomUUID();
+            terminalInputs.set(terminalId, "");
+            document.body.dataset.terminalId = terminalId;
+            return { terminalId, data: "Fixture shell\r\n", sequence: 0, exited: false };
+          }
+          case "terminal:input": {
+            const { projectId, terminalId, data } = payload;
+            const input = (terminalInputs.get(terminalId) ?? "") + data;
+            terminalInputs.set(terminalId, input.includes("\r") ? "" : input);
+            const exit = /^exit(?: (\d+))?\r$/.exec(input);
+            if (exit) emit({ type: "terminal:exit", projectId, terminalId, sequence: 1, exitCode: Number(exit[1] ?? 0) });
+            return;
+          }
+          case "terminal:close": terminalInputs.delete(payload.terminalId); return;
           case "terminal:resize": return;
           case "terminal:sync": return [];
           case "review:watch": reviewWatches.set(payload.subscriptionId, payload); return;

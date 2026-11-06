@@ -76,7 +76,7 @@ test("native PTY pauses unread output, replays in sequence, and resumes after ac
     if (event.type === "terminal:data" || event.type === "terminal:exit") frames.push(event);
   });
   t.after(() => terminals.closeAll());
-  const { terminalId } = terminals.open(1, projectId, process.cwd(), 80, 24);
+  const { terminalId } = openTestTerminal(terminals, 1, projectId);
   terminals.input(1, projectId, terminalId, "yes pideck-flow | head -n 50000; printf '\\nPTY_%s\\n' done\r");
   await waitFor(() => frames.filter(event => event.type === "terminal:data").reduce((sum, event) => sum + event.data.length, 0) > 110_000);
   await setTimeout(100);
@@ -107,8 +107,8 @@ test("closing a project kills its shells across owners and keeps other projects 
     if (event.type === "terminal:data") output.set(event.terminalId, (output.get(event.terminalId) ?? "") + event.data);
   });
   t.after(() => terminals.closeAll());
-  const removed = [1, 2].map(owner => ({ owner, ...terminals.open(owner, projectId, process.cwd(), 80, 24) }));
-  const retained = terminals.open(1, "other-project", process.cwd(), 80, 24);
+  const removed = [1, 2].map(owner => ({ owner, ...openTestTerminal(terminals, owner, projectId) }));
+  const retained = openTestTerminal(terminals, 1, "other-project");
   for (const { owner, terminalId } of removed) terminals.input(owner, projectId, terminalId, "printf 'SHELL_PID:%s\\n' $$\r");
   const readPid = (id: string) => Number(output.get(id)?.match(/\nSHELL_PID:(\d+)\r?\n/)?.[1]);
   await waitFor(() => removed.every(({ terminalId }) => readPid(terminalId) > 0));
@@ -142,6 +142,18 @@ test("closing a project kills its shells across owners and keeps other projects 
   terminals.input(1, "other-project", retained.terminalId, "printf 'STILL_%s\\n' RUNNING\r");
   await waitFor(() => Boolean(output.get(retained.terminalId)?.includes("STILL_RUNNING")));
 });
+
+function openTestTerminal(terminals: Terminals, owner: number, projectId: string) {
+  const previous = process.env.SHELL;
+  // Lifecycle tests expect plain POSIX output independently of local startup files.
+  process.env.SHELL = "/bin/sh";
+  try {
+    return terminals.open(owner, projectId, process.cwd(), 80, 24);
+  } finally {
+    if (previous === undefined) delete process.env.SHELL;
+    else process.env.SHELL = previous;
+  }
+}
 
 async function waitFor(check: () => boolean) {
   for (let attempt = 0; attempt < 180; attempt++) {
