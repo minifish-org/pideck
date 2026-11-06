@@ -9,7 +9,7 @@ import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
 type ProjectRow = DirectoryIdentity & { id: string; name: string; trusted: number; createdAt: number };
-type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1 };
+type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; startPending: 0 | 1 };
 
 function inspectDirectory(path: string): DirectoryIdentity {
   let directory: string;
@@ -40,7 +40,7 @@ function presentProject(row: ProjectRow): Project {
 }
 
 function presentSession(row: SessionRow): Session {
-  const { conversationId: _conversationId, autoTitlePending: _autoTitlePending, ...session } = row;
+  const { conversationId: _conversationId, autoTitlePending: _autoTitlePending, startPending: _startPending, ...session } = row;
   return session;
 }
 
@@ -72,7 +72,8 @@ export class Metadata {
           title TEXT NOT NULL,
           createdAt INTEGER NOT NULL,
           updatedAt INTEGER NOT NULL,
-          autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1))
+          autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1)),
+          startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))
         ) STRICT;
         CREATE INDEX IF NOT EXISTS project_sessions ON sessions(projectId, updatedAt DESC);
 
@@ -90,6 +91,9 @@ export class Metadata {
       `);
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'autoTitlePending'").get()) {
         this.db.exec("ALTER TABLE sessions ADD COLUMN autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1))");
+      }
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'startPending'").get()) {
+        this.db.exec("ALTER TABLE sessions ADD COLUMN startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))");
       }
     } catch (error) {
       this.db.close();
@@ -148,7 +152,7 @@ export class Metadata {
   }
 
   listSessions(projectId: string): Session[] {
-    return this.sessionRows(projectId).map(presentSession);
+    return this.sessionRows(projectId).filter(row => !row.startPending).map(presentSession);
   }
 
   sessionRows(projectId: string): SessionRow[] {
@@ -158,13 +162,31 @@ export class Metadata {
     ).all(projectId) as SessionRow[];
   }
 
-  createSession(projectId: string, conversationId: ConversationId, title: string, autoTitlePending = false): Session {
+  createSession(projectId: string, conversationId: ConversationId, title: string, autoTitlePending = false, startId?: string): Session {
     const now = Date.now();
-    const session = { id: randomUUID(), projectId, title, createdAt: now, updatedAt: now };
+    const session = { id: startId ?? randomUUID(), projectId, title, createdAt: now, updatedAt: now };
     this.db.prepare(
-      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt, autoTitlePending) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt, Number(autoTitlePending));
+      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt, autoTitlePending, startPending) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt, Number(autoTitlePending), Number(startId !== undefined));
     return session;
+  }
+
+  pendingStarts(): Pick<SessionRow, "id" | "conversationId">[] {
+    return this.db.prepare("SELECT id, conversationId FROM sessions WHERE startPending = 1").all() as
+      Pick<SessionRow, "id" | "conversationId">[];
+  }
+
+  findSession(id: string): SessionRow | undefined {
+    return this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
+  }
+
+  finishSessionStart(id: string): Session {
+    const row = this.db.prepare("UPDATE sessions SET startPending = 0 WHERE id = ? RETURNING *").get(id) as SessionRow;
+    return presentSession(row);
+  }
+
+  discardSessionStart(id: string): void {
+    this.db.prepare("DELETE FROM sessions WHERE id = ? AND startPending = 1").run(id);
   }
 
   touchSession(sessionId: string): void {
@@ -183,7 +205,7 @@ export class Metadata {
 
   renameSession(projectId: string, sessionId: string, title: string): Session {
     const row = this.db.prepare(
-      "UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE projectId = ? AND id = ? RETURNING *",
+      "UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE projectId = ? AND id = ? AND startPending = 0 RETURNING *",
     ).get(title, projectId, sessionId) as SessionRow | undefined;
     if (!row) throw new Error("Session not found in this project.");
     return presentSession(row);
@@ -191,7 +213,7 @@ export class Metadata {
 
   session(projectId: string, sessionId: string): SessionRow {
     const row = this.db.prepare(
-      "SELECT * FROM sessions WHERE projectId = ? AND id = ?",
+      "SELECT * FROM sessions WHERE projectId = ? AND id = ? AND startPending = 0",
     ).get(projectId, sessionId) as SessionRow | undefined;
     if (!row) throw new Error("Session not found in this project.");
     return row;

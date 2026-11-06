@@ -7,7 +7,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, Harness, section,
-  type Conversation, type ConversationId, type EntryId, type TranscriptView,
+  type Conversation, type ConversationId, type EntryId, type InputSubmissionDraft, type TranscriptView,
 } from "@earendil-works/pi-durable";
 import { err, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -15,7 +15,8 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
-  ChatGap, ChatView, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, SessionActivity,
+  ChatGap, ChatView, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
+  StartChat,
 } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
@@ -75,6 +76,22 @@ class ToolEnvironment extends NodeExecutionEnv {
 
 type RemovalPlan = RemovalPreview & RemovalResult & { roots: ConversationId[]; conversations: ConversationId[] };
 
+function chatSubmission(input: StartChat | SendChat): InputSubmissionDraft {
+  const images = input.images ?? [];
+  const delivery = ("delivery" in input && input.delivery) || "send";
+  const { requestId } = input;
+  return {
+    type: "input",
+    whenBusy: delivery === "send" ? "reject" : delivery === "steer" ? "steer" : "followUp",
+    ...(delivery === "steer" ? { whenIdle: "reject" } : {}),
+    ...(requestId ? { requestId, entry: { kind: inputEntryKind, data: { requestId } } } : {}),
+    content: images.length ? [
+      ...(input.text ? [{ type: "text" as const, text: input.text }] : []),
+      ...images.map(image => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+    ] : input.text,
+  };
+}
+
 export type ChatWatch = {
   dispose(): void;
   loadEarlier(): Promise<void>;
@@ -85,6 +102,7 @@ export class Runtime {
   private closing?: Promise<void>;
   private removing?: Promise<RemovalResult>;
   private readonly admissions = new Set<Promise<unknown>>();
+  private readonly starting = new Map<string, { projectId: string; result: Promise<Session> }>();
   private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id));
 
   private constructor(
@@ -154,12 +172,17 @@ export class Runtime {
       const harness = await openHarness();
       const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, onStorageFailure);
       try {
-        await runtime.activities.attach(harness);
+        if (await runtime.recoverSessionStarts()) {
+          await harness.close(context);
+          metadata.reapUnmapped(durablePath);
+          runtime.harness = await openHarness();
+        }
+        await runtime.activities.attach(runtime.harness);
         await runtime.recoverSessionTitles();
-        harness.resume();
+        runtime.harness.resume();
       } catch (error) {
         runtime.activities.detach();
-        await harness.close(context).catch(() => {});
+        await runtime.harness.close(context).catch(() => {});
         throw error;
       }
       return runtime;
@@ -211,6 +234,20 @@ export class Runtime {
     }
   }
 
+  private async recoverSessionStarts(): Promise<boolean> {
+    let discarded = false;
+    for (const { id, conversationId } of this.metadata.pendingStarts()) {
+      const conversation = await this.harness.conversation(conversationId, context);
+      const accepted = await conversation?.commit(tx => tx.submissionByRequest(conversationId, id), context);
+      if (accepted) this.metadata.finishSessionStart(id);
+      else {
+        this.metadata.discardSessionStart(id);
+        discarded = true;
+      }
+    }
+    return discarded;
+  }
+
   private async nameFromFirstMessage(sessionId: string, conversation: Conversation): Promise<void> {
     let cursor: Awaited<ReturnType<Conversation["entries"]>>["next"];
     do {
@@ -259,6 +296,49 @@ export class Runtime {
     return this.admit(() => this.submitChat(input));
   }
 
+  start(input: StartChat): Promise<Session> {
+    return this.admit(async () => {
+      const project = this.requireTrustedProject(input.projectId);
+      if (!input.text.trim() && !input.images?.length) throw new Error("Enter a message or attach an image.");
+      const { requestId } = input;
+      const existing = this.starting.get(requestId);
+      if (existing) {
+        if (existing.projectId !== project.id) throw new Error("This message belongs to another project.");
+        return existing.result;
+      }
+      const result = this.submitFirstMessage(input, project.directory);
+      this.starting.set(requestId, { projectId: project.id, result });
+      try { return await result; }
+      finally { this.starting.delete(requestId); }
+    });
+  }
+
+  private async submitFirstMessage(input: StartChat, directory: string): Promise<Session> {
+    const { projectId, requestId } = input;
+    const existing = this.metadata.findSession(requestId);
+    if (existing) {
+      if (existing.projectId !== projectId) throw new Error("This message belongs to another project.");
+      const conversation = await this.harness.conversation(existing.conversationId, context);
+      const accepted = await conversation?.commit(tx => tx.submissionByRequest(existing.conversationId, requestId), context);
+      if (accepted) return this.metadata.finishSessionStart(requestId);
+      if (!existing.startPending) throw new Error("A session already exists with this identifier.");
+      this.metadata.discardSessionStart(requestId);
+    }
+    const model = await this.validateChatModel(input);
+    const conversation = await this.harness.createConversation({
+      ownership: { kind: "ownerless" },
+      agent: { cwd: directory, model: { provider: model.provider, modelId: model.id }, thinkingLevel: input.thinking },
+    }, context);
+    // The mapping must exist before the admitted run can resolve its tool
+    // environment. Keep it hidden until Durable confirms the admission.
+    await conversation.commit(async tx => {
+      await conversation.submit(tx, chatSubmission(input));
+      this.requireTrustedProject(projectId);
+      this.metadata.createSession(projectId, conversation.id, firstSessionTitle(input.text), false, requestId);
+    }, context);
+    return this.metadata.finishSessionStart(requestId);
+  }
+
   readQueuedInput(selection: QueuedInputRef): Promise<{ text: string; hasImages: boolean }> {
     return this.admit(async () => {
       this.requireTrustedProject(selection.projectId);
@@ -275,6 +355,22 @@ export class Runtime {
     });
   }
 
+  private async validateChatModel(input: StartChat | SendChat) {
+    const model = this.models.getModel(input.model.provider, input.model.id);
+    if (!model) throw new Error("The selected model is unavailable.");
+    const available = await this.models.getAvailableOfType("chat", model.provider, {
+      signal: AbortSignal.timeout(2500),
+    }).catch(() => []);
+    if (!available.some(candidate => candidate.id === model.id)) {
+      throw new Error("Sign in to this provider or choose a model your account can access.");
+    }
+    if (!getSupportedThinkingLevels(model).includes(input.thinking)) {
+      throw new Error("The selected model does not support this thinking level.");
+    }
+    if (input.images?.length && !model.input.includes("image")) throw new Error("This model does not accept images.");
+    return model;
+  }
+
   private async submitChat(input: SendChat): Promise<void> {
     this.requireTrustedProject(input.projectId);
     const { autoTitlePending } = this.metadata.session(input.projectId, input.sessionId);
@@ -289,19 +385,7 @@ export class Runtime {
         return;
       }
     }
-    const model = this.models.getModel(input.model.provider, input.model.id);
-    if (!model) throw new Error("The selected model is unavailable.");
-    const available = await this.models.getAvailableOfType("chat", model.provider, {
-      signal: AbortSignal.timeout(2500),
-    }).catch(() => []);
-    if (!available.some(candidate => candidate.id === model.id)) {
-      throw new Error("Sign in to this provider or choose a model your account can access.");
-    }
-    if (!getSupportedThinkingLevels(model).includes(input.thinking)) {
-      throw new Error("The selected model does not support this thinking level.");
-    }
-    const images = input.images ?? [];
-    if (images.length && !model.input.includes("image")) throw new Error("This model does not accept images.");
+    const model = await this.validateChatModel(input);
     const delivery = input.delivery ?? "send";
 
     const admitted = await conversation.commit(async tx => {
@@ -318,19 +402,7 @@ export class Runtime {
           throw new Error("Queued input uses the model and thinking level of the active run.");
         }
       }
-      await conversation.submit(tx, {
-        type: "input",
-        whenBusy: delivery === "send" ? "reject" : delivery === "steer" ? "steer" : "followUp",
-        ...(delivery === "steer" ? { whenIdle: "reject" } : {}),
-        ...(requestId ? {
-          requestId,
-          entry: { kind: inputEntryKind, data: { requestId } },
-        } : {}),
-        content: images.length ? [
-          ...(input.text ? [{ type: "text" as const, text: input.text }] : []),
-          ...images.map(image => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
-        ] : input.text,
-      });
+      await conversation.submit(tx, chatSubmission(input));
       return true;
     }, context);
     if (admitted) this.metadata.touchSession(input.sessionId);

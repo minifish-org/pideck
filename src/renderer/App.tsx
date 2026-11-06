@@ -8,7 +8,7 @@ import { SessionName } from './SessionName';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
 import { WorkspaceDivider } from './WorkspaceDivider';
-import { emptyDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
+import { acceptStartedDraft, emptyDraft, newSessionDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
 import type { Draft, ReadingPosition } from './preferences';
 
 const ReviewPanel = lazy(() => import('./ReviewPanel').then(({ ReviewPanel }) => ({ default: ReviewPanel })));
@@ -71,6 +71,7 @@ function Desktop() {
   const draftsAtStartup = useRef(drafts);
   const savedDrafts = useRef(drafts);
   const [sessionList, setSessionList] = useState<{ projectId: string; items: Session[] }>();
+  const sessionListGeneration = useRef(0);
   const [focusedSession, setFocusedSession] = useState<Selection>();
   const [focusWorkspace, setFocusWorkspace] = useState<string>();
   const [removing, setRemoving] = useState<Removal>();
@@ -101,7 +102,6 @@ function Desktop() {
   const [modelsEpoch, refreshModels] = useState(0);
   const [opening, setOpening] = useState(false);
   const [trusting, setTrusting] = useState(false);
-  const [creating, setCreating] = useState(false);
   const [projectPicker, setProjectPicker] = useState(false);
   const projectPickerArea = useRef<HTMLElement>(null);
   const projectPickerTrigger = useRef<HTMLButtonElement>(null);
@@ -113,19 +113,23 @@ function Desktop() {
   const dockedNavigation = !compactNavigation && navigation && Boolean(project);
   const showNavigation = drawerOpen || dockedNavigation;
   const sessions = sessionList && sessionList.projectId === projectId ? sessionList.items : undefined;
-  const session = projectId ? sessions?.find(({ id }) => id === preferences.sessions[projectId]) ?? sessions?.[0] : undefined;
+  const selected = projectId ? preferences.sessions[projectId] : undefined;
+  const session = selected === newSessionDraft ? undefined : sessions?.find(({ id }) => id === selected) ?? sessions?.[0];
   const sessionId = session?.id;
+  const draftId = sessionId ?? newSessionDraft;
   const activeRemovalBlock = removalBlock?.target.projectId === projectId ? removalBlock : undefined;
   const blockingBranches = activeRemovalBlock?.branches.map(branch => {
     const current = sessions?.find(({ id }) => id === branch.id);
     return { id: branch.id, title: current?.title ?? branch.title, ready: Boolean(current) };
   }) ?? [];
   const projectDrafts = projectId ? drafts[projectId] : undefined;
+  const pendingDraft = projectDrafts?.[newSessionDraft];
+  const hasNewDraft = Boolean(pendingDraft?.text.trim() || pendingDraft?.attachments.length);
   const removingProject = removing && removing.projectId === projectId && !removing.sessionId;
   const sessionsIssue = sessionsError?.projectId === projectId ? sessionsError?.message : undefined;
   const activeReview = review?.projectId === projectId ? review : undefined;
   const canUseWorkspace = Boolean(project?.trusted && !removingProject);
-  const canCreateSession = canUseWorkspace && Boolean(sessions) && !creating;
+  const canCreateSession = canUseWorkspace && Boolean(sessions);
   const showProviders = models.some(({ configured }) => configured) || !session;
   const reviewOverlaysChat = !canSplitWorkspace && Boolean(project?.trusted && activeReview);
   const terminalVisible = Boolean(projectId && terminals[projectId] && !reviewOverlaysChat);
@@ -223,25 +227,33 @@ function Desktop() {
   useEffect(() => {
     if (!projectId) return;
     let active = true;
+    const generation = sessionListGeneration.current;
     setSessionsError(undefined);
     void api.invoke('session:list', { projectId }).then((items) => {
-      if (!active || removed.current.projects.has(projectId)) return;
+      if (!active || generation !== sessionListGeneration.current || removed.current.projects.has(projectId)) return;
       setSessionList((current) => removed.current.projects.has(projectId) ? current
         : { projectId, items: items.filter(({ id }) => !removed.current.sessions.has(id)) });
       const saved = savedAtStartup.current.sessions[projectId];
       const available = new Set(items.map(({ id }) => id));
-      const savedDrafts = draftsAtStartup.current[projectId];
-      if (savedDrafts) setDrafts((current) => {
-        const project = current[projectId];
-        if (!project) return current;
-        const kept = retainKeys(project, (id) => !Object.hasOwn(savedDrafts, id) || available.has(id));
-        if (kept === project) return current;
-        return Object.keys(kept).length ? { ...current, [projectId]: kept } : without(current, projectId);
+      const startupDrafts = draftsAtStartup.current[projectId];
+      const pendingDraft = savedDrafts.current[projectId]?.[newSessionDraft];
+      const pending = pendingDraft?.attempt?.requestId ?? pendingDraft?.pendingRequestId;
+      const acceptedStart = pending && available.has(pending) && !removed.current.sessions.has(pending) ? pending : undefined;
+      if (startupDrafts || acceptedStart) setDrafts((current) => {
+        const next = acceptedStart ? acceptStartedDraft(current, projectId, acceptedStart) : current;
+        const project = next[projectId];
+        if (!project || !startupDrafts) return next;
+        const kept = retainKeys(project, (id) => id === newSessionDraft || !Object.hasOwn(startupDrafts, id) || available.has(id));
+        if (kept === project) return next;
+        return Object.keys(kept).length ? { ...next, [projectId]: kept } : without(next, projectId);
       });
       const savedReading = savedAtStartup.current.reading[projectId];
       setPreferences((current) => {
-        const sessions = saved && !available.has(saved) && current.sessions[projectId] === saved
-          ? without(current.sessions, projectId) : current.sessions;
+        const selected = current.sessions[projectId];
+        const sessions = acceptedStart && (selected === newSessionDraft || !selected)
+          ? { ...current.sessions, [projectId]: acceptedStart }
+          : saved && saved !== newSessionDraft && !available.has(saved) && selected === saved
+            ? without(current.sessions, projectId) : current.sessions;
         const positions = current.reading[projectId];
         const kept = savedReading && positions
           ? retainKeys(positions, (id) => !Object.hasOwn(savedReading, id) || available.has(id)) : positions;
@@ -250,7 +262,9 @@ function Desktop() {
         return sessions === current.sessions && reading === current.reading ? current : { ...current, sessions, reading };
       });
     }).catch((cause) => {
-      if (active && !removed.current.projects.has(projectId)) setSessionsError({ projectId, message: readableError(cause) });
+      if (active && generation === sessionListGeneration.current && !removed.current.projects.has(projectId)) {
+        setSessionsError({ projectId, message: readableError(cause) });
+      }
     });
     return () => { active = false; };
   }, [api, projectId, workspaceEpoch, sessionsEpoch]);
@@ -282,19 +296,25 @@ function Desktop() {
 
   useLayoutEffect(() => {
     if (!project || focusWorkspace !== project.id) return;
-    const target = document.getElementById(!project.trusted ? 'workspace-trust' : session ? 'prompt' : 'workspace-new-session');
+    const target = document.getElementById(!project.trusted ? 'workspace-trust' : 'prompt');
     if (!target || (target instanceof HTMLButtonElement && target.disabled)) return;
     target.focus();
     setFocusWorkspace(undefined);
   }, [focusWorkspace, project, session, sessions, trusting, opening]);
 
   useLayoutEffect(() => {
+    if (canCreateSession && !sessionId && !drawerOpen && !reviewOverlaysChat && !settings && document.activeElement === document.body) {
+      document.getElementById('prompt')?.focus();
+    }
+  }, [canCreateSession, drawerOpen, projectId, reviewOverlaysChat, sessionId, settings]);
+
+  useLayoutEffect(() => {
     if (!removalFocus) return;
     const targetId = removalFocus === 'session'
-      ? sessionId ? `nav-session-${sessionId}` : 'workspace-new-session'
+      ? sessionId ? `nav-session-${sessionId}` : 'prompt'
       : projectId ? projectPicker ? `nav-project-${projectId}` : 'nav-project-picker' : 'workspace-open-project';
     const target = document.getElementById(targetId);
-    (target instanceof HTMLButtonElement && !target.disabled ? target : document.getElementById('toggle-navigation'))?.focus();
+    (target && (!(target instanceof HTMLButtonElement) || !target.disabled) ? target : document.getElementById('toggle-navigation'))?.focus();
     setRemovalFocus(undefined);
   }, [removalFocus, projectId, projectPicker, sessionId]);
 
@@ -330,7 +350,11 @@ function Desktop() {
     if (projectId === id || removed.current.projects.has(id)) return;
     setRenaming(undefined);
     setRemovalBlock(undefined);
-    setPreferences((current) => ({ ...current, projectId: id }));
+    setPreferences((current) => ({
+      ...current, projectId: id,
+      sessions: projectId && current.sessions[projectId] === newSessionDraft && !hasNewDraft && !pendingDraft?.sending
+        ? without(current.sessions, projectId) : current.sessions,
+    }));
     setFocusWorkspace(undefined);
     setFocusTerminal(undefined);
     setReview(undefined);
@@ -379,15 +403,15 @@ function Desktop() {
   }, [projectId]);
 
   const updateActiveDraft = useCallback((update: (draft: Draft) => Draft) => {
-    if (!projectId || !sessionId) return;
+    if (!projectId) return;
     setDrafts((previous) => {
-      if (removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return previous;
+      if (removed.current.projects.has(projectId) || removed.current.sessions.has(draftId)) return previous;
       const projectDrafts = previous[projectId] ?? {};
-      const current = projectDrafts[sessionId] ?? emptyDraft;
+      const current = projectDrafts[draftId] ?? emptyDraft;
       const next = update(current);
-      return next === current ? previous : { ...previous, [projectId]: { ...projectDrafts, [sessionId]: next } };
+      return next === current ? previous : { ...previous, [projectId]: { ...projectDrafts, [draftId]: next } };
     });
-  }, [projectId, sessionId]);
+  }, [draftId, projectId]);
 
   function saveProject(project: Project) {
     setProjectsError(undefined);
@@ -436,26 +460,34 @@ function Desktop() {
     }
   }
 
-  async function createSession() {
-    if (!project?.trusted || !sessions || creating || removingProject) return;
-    setCreating(true);
-    try {
-      const created = await api.invoke('session:create', { projectId: project.id });
-      if (removed.current.projects.has(project.id)) return;
-      setSessionList((previous) => previous?.projectId === project.id
-        ? { projectId: project.id, items: [created, ...previous.items] } : previous);
-      selectSession(project.id, created.id);
-      closeDrawer();
-      if (reviewOverlaysChat) setReview(undefined);
-      setFocusedSession({ projectId: project.id, sessionId: created.id });
-      refreshSessions((current) => current + 1);
-    } catch (cause) {
-      setError(readableError(cause));
-    } finally {
-      setCreating(false);
-    }
+  function openSessionDraft() {
+    if (!projectId || !canCreateSession) return;
+    selectSession(projectId, newSessionDraft);
+    closeDrawer();
+    if (reviewOverlaysChat) setReview(undefined);
+    setFocusWorkspace(projectId);
   }
 
+  const attachStartedSession = useCallback((started: Session) => {
+    const { projectId, id } = started;
+    if (removed.current.projects.has(projectId) || removed.current.sessions.has(id)) return;
+    sessionListGeneration.current += 1;
+    setSessionList((current) => current?.projectId === projectId
+      ? { projectId, items: [started, ...current.items.filter((item) => item.id !== id)] } : current);
+    const draft = savedDrafts.current[projectId]?.[newSessionDraft];
+    if ((draft?.attempt?.requestId ?? draft?.pendingRequestId) === id) {
+      setDrafts((current) => acceptStartedDraft(current, projectId, id));
+      const active = selectionRef.current.projectId === projectId && !selectionRef.current.sessionId;
+      if (active) {
+        selectSession(projectId, id);
+        if (document.activeElement?.id === 'prompt') setFocusedSession({ projectId, sessionId: id });
+      } else {
+        setPreferences((current) => current.sessions[projectId] === newSessionDraft
+          ? { ...current, sessions: { ...current.sessions, [projectId]: id } } : current);
+      }
+    }
+    refreshSessions((current) => current + 1);
+  }, [selectSession]);
   const forkSession = useCallback(async (entryId: number) => {
     if (!projectId || !session || (removalInProgress.current?.projectId === projectId
       && (!removalInProgress.current.sessionId || removalInProgress.current.sessionId === session.id))) return;
@@ -638,14 +670,14 @@ function Desktop() {
     requestAnimationFrame(() => {
       const opener = reviewOpener.current;
       if (opener?.isConnected && opener !== document.body) opener.focus();
-      else document.getElementById('toggle-review')?.focus();
+      else (document.getElementById('toggle-review') ?? document.getElementById('prompt'))?.focus();
     });
   }
 
   function focusComposer() {
-    if (drawerOpen && projectId && sessionId) {
+    if (drawerOpen && projectId) {
       closeDrawer();
-      setFocusedSession({ projectId, sessionId });
+      setFocusWorkspace(projectId);
     } else document.getElementById('prompt')?.focus();
   }
 
@@ -654,7 +686,7 @@ function Desktop() {
     closePopovers();
     switch (action) {
       case 'open-project': void openProject(); break;
-      case 'new-session': void createSession(); break;
+      case 'new-session': openSessionDraft(); break;
       case 'settings': setSettings({}); break;
       case 'toggle-navigation': if (project) toggleNavigation(); break;
       case 'toggle-review': toggleReview(); break;
@@ -701,14 +733,14 @@ function Desktop() {
       canOpenProject: !opening && !modalOpen,
       canOpenSettings: !modalOpen,
       canCreateSession: canCreateSession && !modalOpen,
-      canFocusComposer: Boolean(sessionId && !modalOpen && !reviewOverlaysChat),
+      canFocusComposer: canCreateSession && !modalOpen && !reviewOverlaysChat,
       canToggleNavigation: Boolean(projectId && !modalOpen),
       canUseWorkspace: canUseWorkspace && !modalOpen,
       navigationVisible: showNavigation,
       reviewVisible,
       terminalVisible,
     });
-  }, [api, opening, modalOpen, canCreateSession, reviewOverlaysChat, sessionId, projectId, canUseWorkspace, showNavigation, reviewVisible, terminalVisible]);
+  }, [api, opening, modalOpen, canCreateSession, reviewOverlaysChat, projectId, canUseWorkspace, showNavigation, reviewVisible, terminalVisible]);
 
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${compactNavigation ? ' app--compact' : ''}`}>
@@ -734,17 +766,19 @@ function Desktop() {
                     {session.title}
                   </button>
                 : <span className="workspace-title-current" title={project.directory}>
-                    {!dockedNavigation ? project.name : project.trusted ? 'Sessions' : 'Project setup'}
+                    {!dockedNavigation ? project.name : project.trusted ? 'New session' : 'Project setup'}
                   </span>}
             </div>}
           </div>
           <div className="title-actions">
             {!showNavigation && !reviewOverlaysChat && project?.trusted && session && <button className="icon-button" type="button"
-              aria-label="New session" title={`New session (${modifier}N)`} disabled={!canCreateSession} onClick={createSession}><Icon name="plus" /></button>}
+              aria-label="New session" aria-description={hasNewDraft ? 'Unsent draft' : undefined}
+              title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
+              disabled={!canCreateSession} onClick={openSessionDraft}><Icon name="plus" /></button>}
             {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
-              <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
+              {!reviewOverlaysChat && <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
                 title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
-                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /><span>Changes</span></button>
+                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /><span>Changes</span></button>}
               <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
                 title={`Terminal (${modifier}\`)`} aria-pressed={terminalVisible}
                 disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /><span>Terminal</span></button>
@@ -820,8 +854,11 @@ function Desktop() {
               <div className="nav-session-header">
                 <h2 id="sessions-label">Sessions</h2>
                 <button className="nav-row nav-create-session" id="nav-new-session" type="button"
-                  title={`New session (${modifier}N)`} disabled={!canCreateSession} onClick={createSession}>
+                  title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
+                  aria-description={hasNewDraft ? 'Unsent draft' : undefined}
+                  aria-current={!session ? 'true' : undefined} disabled={!canCreateSession} onClick={openSessionDraft}>
                   <Icon name="plus" /><span>New session</span>
+                  {hasNewDraft && <span className="nav-status" title="Unsent draft" aria-hidden="true" />}
                 </button>
               </div>
               <div className="nav-scroll">
@@ -916,31 +953,23 @@ function Desktop() {
                       <button className="button button--primary" id="workspace-trust" type="button" onClick={trustProject}
                         disabled={trusting || removingProject}><Icon name="shield" /> Review permissions</button>
                     </EmptyScene>
-                  : session
-                    ? <Chat key={session.id} project={project} session={session} models={models}
+                  : sessions
+                    ? <Chat key={`${project.id}/${draftId}`} project={project} session={session} models={models}
                         modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
-                        draft={projectDrafts?.[session.id] ?? emptyDraft} updateDraft={updateActiveDraft}
-                        readingPosition={preferences.reading[project.id]?.[session.id]} onReadingPosition={rememberReadingPosition}
+                        draft={projectDrafts?.[draftId] ?? emptyDraft} updateDraft={updateActiveDraft}
+                        readingPosition={session ? preferences.reading[project.id]?.[session.id] : undefined} onReadingPosition={rememberReadingPosition}
                         onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
                         onRetryModels={() => refreshModels((current) => current + 1)}
                         onSettings={(provider) => setSettings({ provider })}
                         onReview={openReview} onWorkspaceChange={refreshReview}
-                        onSent={() => refreshSessions((current) => current + 1)} onFork={forkSession} />
+                        onSent={() => refreshSessions((current) => current + 1)} onStarted={attachStartedSession} onFork={forkSession} />
                     : sessionsIssue
                       ? <EmptyScene icon="chat" title="Couldn’t load sessions">
                           <p role="alert">{sessionsIssue}</p>
                           <button className="button button--primary" type="button"
                             onClick={() => refreshSessions((current) => current + 1)}>Retry loading sessions</button>
                         </EmptyScene>
-                      : !sessions
-                        ? <div className="workspace-loading" role="status">Loading sessions…</div>
-                        : <EmptyScene icon="chat" title="Start a session">
-                            <p>Ask a question about the codebase or describe a change.</p>
-                            <button className="button button--primary" id="workspace-new-session" type="button"
-                              title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}>
-                              <Icon name="plus" /> New session
-                            </button>
-                          </EmptyScene>}
+                      : <div className="workspace-loading" role="status">Loading sessions…</div>}
             </div>
             <WorkspaceDivider workspace={workspace} pane="review" visible={Boolean(activeReview && !reviewOverlaysChat)} />
             {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>

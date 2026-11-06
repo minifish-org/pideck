@@ -74,7 +74,8 @@
 .tool-detail { padding: 0 9px 8px; min-width: 0; }
 .tool-detail .tool-output { max-height: 180px; margin: 0; padding: 8px 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-state { flex: none; margin-left: auto; color: var(--dim); font-size: 11px; }
-.tool-state--error { color: var(--danger); }
+.tool-state[data-status='done'] { color: var(--success); }
+.tool-state[data-status='error'] { color: var(--danger); }
 .tool-command { padding: 6px 0; color: var(--muted); font: 11px/1.45 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
 .composer-run { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 6px var(--chat-inset); }
 .run-state { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }

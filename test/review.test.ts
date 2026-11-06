@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { listChanges, readPatch } from "../src/host/review.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { listChanges, readPatch, watchChanges } from "../src/host/review.js";
 
 function git(cwd: string, ...args: string[]) {
   execFileSync("git", [
@@ -89,4 +90,56 @@ test("an aborted project review stops in-flight Git work and rejects further rea
   await assert.rejects(inFlight, /Project removed/);
   await assert.rejects(readPatch(cwd, "changed.txt", review.signal), /Project removed/);
   assert.match((await readPatch(cwd, "changed.txt")).patch ?? "", /\+changed/);
+});
+
+test("review watch sees workspace edits and Git index changes outside a selected subdirectory", { timeout: 8_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-review-watch-"));
+  const watch = new AbortController();
+  t.after(async () => {
+    watch.abort();
+    await rm(root, { recursive: true, force: true });
+  });
+  const cwd = join(root, "src");
+  const file = join(cwd, "tracked.ts");
+  await mkdir(cwd);
+  await writeFile(file, "before\n");
+  git(root, "init", "-q");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "start");
+
+  let changed = Promise.withResolvers<void>();
+  let events = 0;
+  await watchChanges(cwd, watch.signal, () => { events++; changed.resolve(); },
+    () => changed.reject(new Error("The review watch failed.")));
+  await writeFile(join(cwd, "temp.ts"), "after\n");
+  await rename(join(cwd, "temp.ts"), file);
+  await changed.promise;
+  assert.deepEqual(await listChanges(cwd), [{ path: "tracked.ts", status: " M" }]);
+
+  changed = Promise.withResolvers<void>();
+  git(cwd, "add", "tracked.ts");
+  await changed.promise;
+  assert.deepEqual(await listChanges(cwd), [{ path: "tracked.ts", status: "M " }]);
+
+  watch.abort();
+  const finalEvents = events;
+  await writeFile(file, "after closing\n");
+  await delay(260);
+  assert.equal(events, finalEvents);
+});
+
+test("review can watch a project before Git is initialized", { timeout: 8_000 }, async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pideck-review-watch-"));
+  const watch = new AbortController();
+  t.after(async () => {
+    watch.abort();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const changed = Promise.withResolvers<void>();
+  await watchChanges(cwd, watch.signal, changed.resolve, () => changed.reject(new Error("The review watch failed.")));
+  assert.deepEqual(await listChanges(cwd), []);
+  git(cwd, "init", "-q");
+  await writeFile(join(cwd, "new.txt"), "hello\n");
+  await changed.promise;
+  assert.deepEqual(await listChanges(cwd), [{ path: "new.txt", status: "??" }]);
 });

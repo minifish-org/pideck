@@ -1,4 +1,4 @@
-import type { ImageInput, SendChat, Thinking } from '../shared/api';
+import type { ImageInput, Thinking } from '../shared/api';
 
 export type ReadingPosition = { messageId: string; entryId: number; offset: number };
 
@@ -62,7 +62,7 @@ export function savePreferences(value: Preferences) {
 }
 
 export type Attachment = ImageInput & { name: string };
-export type SendAttempt = { text: string; attachments: Attachment[]; input: SendChat & { requestId: string } };
+export type SendAttempt = { text: string; attachments: Attachment[]; requestId: string };
 
 export type Draft = {
   text: string;
@@ -77,8 +77,36 @@ export type Draft = {
 };
 
 export const emptyDraft: Draft = { text: '', attachments: [] };
+export const newSessionDraft = 'draft';
 
 type Drafts = Record<string, Record<string, Draft>>;
+
+export function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
+  if (draft.attempt?.requestId !== attempt.requestId) return draft;
+  const unchanged = draft.text === attempt.text && draft.attachments === attempt.attachments;
+  return {
+    ...draft,
+    text: unchanged ? '' : draft.text,
+    attachments: unchanged ? [] : draft.attachments,
+    attempt: undefined,
+    pendingRequestId: undefined,
+    sending: false,
+    error: undefined,
+  };
+}
+
+export function acceptStartedDraft(drafts: Drafts, projectId: string, sessionId: string): Drafts {
+  const project = drafts[projectId];
+  const draft = project?.[newSessionDraft];
+  if (!draft || (draft.attempt?.requestId ?? draft.pendingRequestId) !== sessionId) return drafts;
+  const remaining = without(project, newSessionDraft);
+  if (draft.attempt) {
+    const next = completeAttempt(draft, draft.attempt);
+    // Text typed during the first send is the new session's next draft.
+    if (next.text) remaining[sessionId] = { ...next, attachments: [] };
+  }
+  return Object.keys(remaining).length ? { ...drafts, [projectId]: remaining } : without(drafts, projectId);
+}
 
 export function readDrafts(): Drafts {
   const drafts: Drafts = {};
@@ -86,7 +114,8 @@ export function readDrafts(): Drafts {
     for (const key of Object.keys(localStorage)) {
       if (!key.startsWith(draftKey)) continue;
       const [projectId, sessionId, extra] = key.slice(draftKey.length).split('/');
-      if (!projectId || !sessionId || extra !== undefined || !identifier.test(projectId) || !identifier.test(sessionId)) continue;
+      if (!projectId || !sessionId || extra !== undefined || !identifier.test(projectId)
+        || (sessionId !== newSessionDraft && !identifier.test(sessionId))) continue;
       try {
         const { text, requestId } = record(JSON.parse(localStorage.getItem(key) ?? 'null'));
         if (typeof text !== 'string' || !text || text.length > maxDraftLength) continue;
@@ -106,7 +135,7 @@ export function readDrafts(): Drafts {
 
 function draftRequestId(draft?: Draft): string | undefined {
   return draft?.attempt && draft.attempt.text === draft.text && draft.attempt.attachments === draft.attachments
-    ? draft.attempt.input.requestId : draft?.pendingRequestId;
+    ? draft.attempt.requestId : draft?.pendingRequestId;
 }
 
 export function saveDrafts(previous: Drafts, current: Drafts) {

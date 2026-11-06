@@ -62,6 +62,7 @@ export type SendChat = Selection & {
   requestId?: string;
   delivery?: "send" | "follow-up" | "steer";
 };
+export type StartChat = Omit<SendChat, "sessionId" | "delivery" | "requestId"> & { requestId: string };
 export type ChatBlock =
   | { type: "text" | "thinking"; text: string }
   | { type: "image"; mimeType: string; data: string }
@@ -109,6 +110,7 @@ export type ReviewFile = {
   status: string;
 };
 export type ReviewPatch = { patch: string | null; reason?: string };
+type ReviewWatchRef = { projectId: string; subscriptionId: string };
 
 type TerminalRef = { projectId: string; terminalId: string };
 type TerminalSize = { cols: number; rows: number };
@@ -143,6 +145,7 @@ export type Commands = {
   "chat:watch": [WatchRef & { readingEntryId?: number }, void];
   "chat:unwatch": [{ subscriptionId: string }, void];
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
+  "chat:start": [StartChat, Session];
   "chat:send": [SendChat, void];
   "chat:queue-read": [QueuedInputRef, { text: string; hasImages: boolean }];
   "chat:queue-update": [QueuedInputRef & QueueUpdate, void];
@@ -150,6 +153,8 @@ export type Commands = {
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];
   "review:list": [{ projectId: string }, ReviewFile[]];
   "review:patch": [{ projectId: string; path: string }, ReviewPatch];
+  "review:watch": [ReviewWatchRef, void];
+  "review:unwatch": [ReviewWatchRef, void];
   "terminal:open": [{ projectId: string } & TerminalSize, TerminalOpen];
   "terminal:input": [TerminalRef & { data: string }, void];
   "terminal:resize": [TerminalRef & TerminalSize, void];
@@ -174,6 +179,7 @@ export type HostEvent =
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))
   | ({ type: "chat:error"; subscriptionId: string; message: string } & Selection)
   | ({ type: "chat:reset" } & Selection)
+  | ({ type: "review:changed" | "review:watch-error" } & ReviewWatchRef)
   | { type: "auth:prompt"; flowId: string; promptId: string; prompt: AuthPrompt }
   | { type: "auth:prompt-closed"; flowId: string; promptId: string }
   | { type: "auth:notice"; flowId: string; notice: AuthNotice }

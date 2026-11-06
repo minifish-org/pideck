@@ -13,12 +13,13 @@ async page => {
   await open.click();
   await page.waitForFunction(() => document.activeElement?.id === "workspace-trust");
   await workspace.getByRole("button", { name: "Review permissions" }).click();
-  await page.waitForFunction(() => document.activeElement?.id === "workspace-new-session");
-  if (await page.getByRole("button", { name: "New session", exact: true }).count() !== 1) {
-    throw new Error("First session has duplicate entry points.");
-  }
-  await workspace.getByRole("button", { name: "New session", exact: true }).click();
-  await prompt.waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  const sessionCount = () => page.evaluate(async () => {
+    const [project] = await window.pideck.invoke("project:list");
+    return (await window.pideck.invoke("session:list", { projectId: project.id })).length;
+  });
+  if (await sessionCount() !== 0) throw new Error("Trust created a blank session.");
+  await page.screenshot({ path: "output/playwright/pideck-ui-first-draft.png" });
   const connect = page.getByRole("button", { name: "Connect a provider", exact: true });
   if (await connect.count() !== 1) throw new Error("The composer has duplicate provider setup actions.");
   await connect.click();
@@ -40,19 +41,9 @@ async page => {
   await settings.getByRole("button", { name: "Close settings" }).click();
 
   await prompt.fill("Update and verify the status.");
-  await nav.getByRole("button", { name: "New session", exact: true }).click();
-  const currentRow = nav.locator(".nav-scroll .nav-row[aria-current=true]");
-  await currentRow.press("F2");
-  const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
-  await sessionName.fill("Separate draft");
-  await sessionName.press("Enter");
-  const draftSession = nav.getByRole("button", { name: "Separate draft", exact: true });
-  await draftSession.waitFor();
-  await prompt.fill("A separate draft.");
-  await draftSession.focus();
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
-  if (await prompt.inputValue() !== "Update and verify the status.") throw new Error("Draft did not survive a session switch.");
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Update and verify the status.");
+  if (await sessionCount() !== 0) throw new Error("Writing an unsent draft created a session.");
 
   const model = page.getByRole("button", { name: "Model", exact: true });
   const picker = page.getByRole("region", { name: "Choose a model" });
@@ -75,6 +66,39 @@ async page => {
   const runningSession = nav.locator(`#${runningSessionId}`);
   await runningSession.locator("[data-activity=running]").waitFor();
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
+  if (await sessionCount() !== 1) throw new Error("The first send did not create exactly one session.");
+  await page.getByText("Running the status check…", { exact: true }).waitFor();
+
+  const newSession = nav.getByRole("button", { name: "New session", exact: true });
+  await newSession.click();
+  await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  if (await sessionCount() !== 1 || await prompt.inputValue() !== "") throw new Error("New session did not open a blank draft.");
+  await runningSession.click();
+  if (await sessionCount() !== 1) throw new Error("Leaving a blank draft left an empty session.");
+  await newSession.click();
+  await prompt.fill("Start a separate session.");
+  await runningSession.click();
+  await newSession.click();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Start a separate session.");
+  if (await sessionCount() !== 1) throw new Error("Switching away from a draft created a session.");
+  await prompt.press("Enter");
+  await runningSession.click();
+  await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-start")));
+  const startedSession = nav.getByRole("button", { name: "Start a separate session.", exact: true });
+  await startedSession.waitFor();
+  if (await runningSession.getAttribute("aria-current") !== "true") throw new Error("A late first-send reply changed the active session.");
+  await startedSession.click();
+  const currentRow = nav.locator(".nav-scroll .nav-row[aria-current=true]");
+  await currentRow.press("F2");
+  const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
+  await sessionName.fill("Separate draft");
+  await sessionName.press("Enter");
+  const draftSession = nav.getByRole("button", { name: "Separate draft", exact: true });
+  await draftSession.waitFor();
+  await prompt.fill("A separate draft.");
+  await draftSession.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Queue next" }).waitFor();
   if (await page.getByRole("button", { name: "Steer run", exact: true }).count()) throw new Error("The composer exposes a second send action.");
   const queue = page.getByRole("list", { name: "Queued messages" });
@@ -141,7 +165,17 @@ async page => {
   await runningSession.click();
   await finishedBadge.waitFor({ state: "detached" });
   await page.getByText("I updated the status and checked the result.").waitFor();
-  await page.getByText("Checks passed.").waitFor();
+  const successfulCommand = page.locator(".tool-card summary").filter({ hasText: "npm test" });
+  const successOutput = page.getByText("Checks passed.", { exact: true });
+  await successfulCommand.getByText("Succeeded", { exact: true }).waitFor();
+  await successOutput.waitFor({ state: "hidden" });
+  await page.getByText("Lint reported an error.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Open review", exact: true }).waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-tool-logs.png" });
+  await successfulCommand.press("Enter");
+  await successOutput.waitFor();
+  await successfulCommand.press("Enter");
+  await successOutput.waitFor({ state: "hidden" });
   await nav.getByRole("button", { name: "Update and verify the status.", exact: true }).waitFor();
   await page.getByRole("button", { name: "Rename session Update and verify the status.", exact: true }).click();
   await sessionName.fill("Verify status");
@@ -197,12 +231,32 @@ async page => {
   const changes = page.getByRole("button", { name: "Changes", exact: true });
   const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
   const terminal = page.getByRole("region", { name: "Project terminal" });
+  await page.evaluate(() => sessionStorage.setItem("pideck-review-list-failure", "1"));
   await changes.click();
   const review = page.getByRole("complementary", { name: "Review changes" });
+  const retry = review.getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  await page.evaluate(() => sessionStorage.removeItem("pideck-review-list-failure"));
+  await retry.click();
   const layout = review.getByRole("combobox", { name: "Diff layout" });
   const singleDiff = review.locator("diffs-container [data-diff-type=single]").first();
   const splitDiff = review.locator("diffs-container [data-diff-type=split]").first();
   await singleDiff.waitFor();
+  await review.getByRole("button", { name: /Refresh/i }).waitFor({ state: "hidden" });
+  await page.evaluate(() => {
+    sessionStorage.setItem("pideck-review-patch-failure", "1");
+    window.dispatchEvent(new Event("pideck-fixture-review-change"));
+  });
+  await retry.waitFor();
+  await page.evaluate(() => sessionStorage.removeItem("pideck-review-patch-failure"));
+  await retry.click();
+  await retry.waitFor({ state: "hidden" });
+  await page.evaluate(() => {
+    sessionStorage.setItem("pideck-review-edit", "1");
+    window.dispatchEvent(new Event("pideck-fixture-review-change"));
+  });
+  await singleDiff.getByText("updated", { exact: false }).waitFor();
+  await page.evaluate(() => sessionStorage.removeItem("pideck-review-edit"));
   const divider = page.getByRole("separator", { name: "Resize review" });
   const reviewWidthBefore = (await review.boundingBox()).width;
   await divider.press("Shift+ArrowLeft");
@@ -239,10 +293,11 @@ async page => {
     && document.querySelector("#review-panel").contains(document.activeElement));
   await back.waitFor();
   await nav.waitFor({ state: "detached" });
+  await changes.waitFor({ state: "hidden" });
   const reviewWidth = await review.evaluate(panel => panel.getBoundingClientRect().width);
   if (reviewWidth < 755) throw new Error("The compact review does not use the full window.");
   await page.screenshot({ path: "output/playwright/pideck-ui-narrow.png" });
-  await page.keyboard.press("Escape");
+  await back.click();
   await review.waitFor({ state: "detached" });
   await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
     && document.activeElement?.id === "toggle-review");

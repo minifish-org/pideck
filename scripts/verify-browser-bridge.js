@@ -4,6 +4,7 @@ async page => {
     const watches = new Map();
     const activity = new Map();
     const queuedTexts = new Map();
+    const reviewWatches = new Map();
     let activityWatch;
     let nextTaskId = 0;
     let nextQueueId = 2;
@@ -49,8 +50,8 @@ async page => {
       }
     }
 
-    function addSession(title, view = { messages: [], status: "idle" }) {
-      const session = { id: crypto.randomUUID(), projectId: project.id, title: title ?? "Untitled session",
+    function addSession(title, view = { messages: [], status: "idle" }, id = crypto.randomUUID()) {
+      const session = { id, projectId: project.id, title: title ?? "Untitled session",
         createdAt: Date.now(), updatedAt: Date.now() };
       if (title === undefined) state.untitled[session.id] = true;
       state.sessions.unshift(session);
@@ -230,6 +231,29 @@ async page => {
             change(payload.sessionId, { messages: [old, ...view.messages], hasEarlier: false });
             return;
           }
+          case "chat:start": {
+            if (!state.configured || !payload.requestId || payload.projectId !== project.id) {
+              throw new Error("Expected a configured model, project, and first message request ID.");
+            }
+            const existing = state.sessions.find(({ id }) => id === payload.requestId);
+            if (existing) return { ...existing };
+            const session = addSession(payload.text.split("\n")[0].trim(), undefined, payload.requestId);
+            const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [{ type: "text", text: payload.text }] };
+            const first = payload.text === "Update and verify the status.";
+            if (first && payload.thinking !== "high") throw new Error("Expected the selected thinking level.");
+            const messages = first ? [prompt, { id: "reply", role: "assistant", blocks: [
+              { type: "tool", name: "bash", id: "bash", status: "running", output: "Running the status check…", arguments: { command: "npm test" } },
+            ] }] : [prompt];
+            change(session.id, { messages, status: first ? "running" : "idle", canSteerQueued: first, model, thinking: payload.thinking });
+            if (first) {
+              watches.clear();
+              emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
+              setTimeout(() => emit({ type: "host:restart" }), 100);
+              throw new Error("The fixture lost the first message acknowledgement.");
+            }
+            await new Promise(resolve => window.addEventListener("pideck-fixture-finish-start", resolve, { once: true }));
+            return { ...session };
+          }
           case "chat:send": {
             if (!state.configured || !payload.requestId || payload.thinking !== "high") throw new Error("Expected a configured model and selected thinking.");
             const { sessionId } = payload;
@@ -301,9 +325,10 @@ async page => {
                   { type: "text", text: "I updated the status and checked the result." },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
+                  { type: "tool", name: "bash", id: "failed-bash", status: "error", output: "Lint reported an error.", arguments: { command: "npm run lint" } },
                 ] };
                 for (const { id } of queued) queuedTexts.delete(id);
-                change(sessionId, { messages: [...state.views[sessionId].messages, reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
+                change(sessionId, { messages: [state.views[sessionId].messages[0], reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
               }, 700);
             }
             return;
@@ -322,14 +347,26 @@ async page => {
           case "terminal:close":
           case "terminal:resize": return;
           case "terminal:sync": return [];
-          case "review:list": return [
-            { path: "example.ts", status: " M", added: 1, removed: 1 },
-            ...(sessionStorage.getItem("pideck-extra-review-file") ? [{ path: "second.ts", status: " M", added: 1, removed: 1 }] : []),
-          ];
-          case "review:patch": return { patch: payload.path === "second.ts" ? patch.replaceAll("example.ts", "second.ts") : patch };
+          case "review:watch": reviewWatches.set(payload.subscriptionId, payload); return;
+          case "review:unwatch": reviewWatches.delete(payload.subscriptionId); return;
+          case "review:list": {
+            if (sessionStorage.getItem("pideck-review-list-failure")) throw new Error("Could not load changed files.");
+            return [
+              { path: "example.ts", status: " M", added: 1, removed: 1 },
+              ...(sessionStorage.getItem("pideck-extra-review-file") ? [{ path: "second.ts", status: " M", added: 1, removed: 1 }] : []),
+            ];
+          }
+          case "review:patch": {
+            if (sessionStorage.getItem("pideck-review-patch-failure")) throw new Error("Could not load this diff.");
+            const filePatch = payload.path === "second.ts" ? patch.replaceAll("example.ts", "second.ts") : patch;
+            return { patch: sessionStorage.getItem("pideck-review-edit") ? filePatch.replace("verified", "updated") : filePatch };
+          }
           default: throw new Error("Unexpected fixture command " + command);
         }
       },
     };
+    window.addEventListener("pideck-fixture-review-change", () => {
+      for (const watch of reviewWatches.values()) emit({ type: "review:changed", ...watch });
+    });
   });
 }

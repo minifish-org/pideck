@@ -63,6 +63,13 @@ function images(value: unknown): boolean {
   return true;
 }
 
+function chatInput(value: Record<string, unknown>): boolean {
+  return string(value.text, 200_000) && object(value.model) && match(value.model.provider, provider)
+    && string(value.model.id, 240) && value.model.id.length > 0
+    && thinking.has(value.thinking as Thinking) && images(value.images)
+    && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length));
+}
+
 const validators = {
   "project:list": empty,
   "project:open": empty,
@@ -94,13 +101,11 @@ const validators = {
   "chat:earlier": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
     && (value.gap === undefined || (object(value.gap) && entry(value.gap.after, 0) && entry(value.gap.upTo)
       && Number(value.gap.after) < Number(value.gap.upTo))),
-  "chat:send": (value) => object(value) && selection(value) && string(value.text, 200_000)
-    && object(value.model) && match(value.model.provider, provider)
-    && string(value.model.id, 240) && value.model.id.length > 0
+  "chat:start": (value) => object(value) && project(value) && chatInput(value)
+    && match(value.requestId, id) && value.sessionId === undefined && value.delivery === undefined,
+  "chat:send": (value) => object(value) && selection(value) && chatInput(value)
     && (value.requestId === undefined || match(value.requestId, id))
-    && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer")
-    && thinking.has(value.thinking as Thinking) && images(value.images)
-    && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length)),
+    && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer"),
   "chat:queue-read": (value) => object(value) && selection(value) && entry(value.id),
   "chat:queue-update": (value) => object(value) && selection(value) && entry(value.id)
     && (value.action === "steer" || value.action === "remove"
@@ -112,6 +117,8 @@ const validators = {
     && (value.title === undefined || string(value.title, sessionTitleLimit)),
   "review:list": (value) => object(value) && project(value),
   "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
+  "review:watch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
+  "review:unwatch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
   "terminal:open": (value) => object(value) && project(value) && size(value),
   "terminal:input": (value) => object(value) && terminal(value)
     && typeof value.data === "string" && value.data.length <= 65536,

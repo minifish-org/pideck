@@ -2,12 +2,13 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, 
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, SendChat, Session, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
+import { completeAttempt } from './preferences';
 import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
@@ -38,22 +39,25 @@ function ToolCard({ block, onReview }: {
   const argPath = block.arguments?.path;
   const path = block.path ?? (typeof argPath === 'string' ? argPath : undefined);
   const target = typeof command === 'string' ? command : path;
+  const shell = block.name === 'bash';
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
-  const status = { pending: 'Queued', running: 'Running', done: undefined, error: 'Failed' }[block.status];
+  const status = { pending: 'Queued', running: 'Running', done: shell ? 'Succeeded' : undefined, error: 'Failed' }[block.status];
   const longCommand = typeof command === 'string' && (command.includes('\n') || command.length > 48);
-  const [expanded, setExpanded] = useState<boolean>();
+  const disclosureMode = shell ? block.status : 'default';
+  const [disclosure, setDisclosure] = useState<{ mode: typeof disclosureMode; open: boolean }>();
+  const defaultOpen = Boolean(block.patch) || block.status === 'error' || (shell && block.status !== 'done');
+  const open = disclosure?.mode === disclosureMode ? disclosure.open : defaultOpen;
 
   return (
-    <details className="tool-card" open={expanded ?? (Boolean(block.patch) || block.name === 'bash' || block.status === 'error')}>
+    <details className="tool-card" open={open}>
       <summary title={target} onClick={(event) => {
         event.preventDefault();
-        const details = event.currentTarget.parentElement as HTMLDetailsElement;
-        setExpanded(!details.open);
+        setDisclosure({ mode: disclosureMode, open: !open });
       }}>
-        <Icon name={block.name === 'bash' ? 'terminal' : 'file'} />
-        <span className="tool-label">{toolLabels[block.name] ?? block.name}</span>
+        <Icon name={shell ? 'terminal' : 'file'} />
+        {(!shell || !target) && <span className="tool-label">{toolLabels[block.name] ?? block.name}</span>}
         {target && <span className="tool-target">{target}</span>}
-        {status && <span className={`tool-state ${block.status === 'error' ? 'tool-state--error' : ''}`}>{status}</span>}
+        {status && <span className="tool-state" data-status={block.status}>{status}</span>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
       </summary>
       <div className="tool-detail">
@@ -179,24 +183,10 @@ function sameGap(left: ChatGap, right: ChatGap) {
   return left.after === right.after && left.upTo === right.upTo;
 }
 
-function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
-  if (draft.attempt?.input.requestId !== attempt.input.requestId) return draft;
-  const unchanged = draft.text === attempt.text && draft.attachments === attempt.attachments;
-  return {
-    ...draft,
-    text: unchanged ? '' : draft.text,
-    attachments: unchanged ? [] : draft.attachments,
-    attempt: undefined,
-    pendingRequestId: undefined,
-    sending: false,
-    error: undefined,
-  };
-}
-
 export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft, readingPosition, onReadingPosition,
-  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
+  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onStarted, onFork }: {
   project: Project;
-  session: Session;
+  session?: Session;
   models: ModelOption[];
   modelsReady: boolean;
   modelsError?: string;
@@ -211,12 +201,15 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   onReview: (selection: ReviewSelection) => void;
   onWorkspaceChange: () => void;
   onSent: () => void;
+  onStarted: (session: Session) => void;
   onFork: (entryId: number) => Promise<void>;
 }) {
-  const selection = { projectId: project.id, sessionId: session.id };
+  const selection = session ? { projectId: project.id, sessionId: session.id } : undefined;
   const currentPosition = useRef(readingPosition);
   const lastWatch = useRef<string | undefined>(undefined);
-  const { view, watchId, connected, error: connectionError, retry, loadEarlier } = useConversation(selection, currentPosition);
+  const { view, watchId, connected: watchConnected, error: connectionError, retry, loadEarlier } =
+    useConversation({ projectId: project.id, sessionId: session?.id }, currentPosition);
+  const connected = !session || watchConnected;
   const [stopping, setStopping] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
   const [readingHistory, setReadingHistory] = useState(false);
@@ -248,6 +241,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const thinking = desiredThinking && model?.thinking.includes(desiredThinking) ? desiredThinking
     : model?.thinking.includes('off') ? 'off' : model?.thinking[0] ?? 'off';
   const hasDraft = Boolean(text.trim() || attachments.length);
+  const startingSession = !session && draft.sending;
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
   const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured)
@@ -323,7 +317,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
 
   useEffect(() => {
     const attempt = draft.attempt;
-    const id = attempt?.input.requestId ?? draft.pendingRequestId;
+    const id = attempt?.requestId ?? draft.pendingRequestId;
     if (!id || !view) return;
     if (view.messages.some((message) => message.requestId === id) || view.queued?.some((queued) => queued.requestId === id)) {
       updateDraft((current) => attempt ? completeAttempt(current, attempt)
@@ -344,37 +338,35 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
 
   async function send() {
     if (!canSend || !model) return;
-    const deliveryMode: SendChat['delivery'] = busy ? 'follow-up' : 'send';
     const previous = draft.attempt;
     const requestId = previous?.text === text && previous.attachments === attachments
-      ? previous.input.requestId : draft.pendingRequestId ?? crypto.randomUUID();
-    const attempt: SendAttempt = {
-      text, attachments,
-      input: {
-        ...selection,
-        requestId,
-        text,
-        model: { provider: model.provider, id: model.id },
-        thinking,
-        delivery: deliveryMode,
-        images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
-      },
+      ? previous.requestId : draft.pendingRequestId ?? crypto.randomUUID();
+    const attempt: SendAttempt = { text, attachments, requestId };
+    const input: StartChat = {
+      projectId: project.id, requestId, text, model: { provider: model.provider, id: model.id }, thinking,
+      images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
     };
     update({ attempt, sending: true, error: undefined });
     textarea.current?.focus({ preventScroll: true });
     try {
-      await window.pideck.invoke('chat:send', attempt.input);
-      updateDraft((current) => completeAttempt(current, attempt));
-      jumpToLatest();
-      onSent();
+      if (selection) {
+        await window.pideck.invoke('chat:send', { ...input, ...selection, delivery: busy ? 'follow-up' : 'send' });
+        updateDraft((current) => completeAttempt(current, attempt));
+        jumpToLatest();
+        onSent();
+      } else {
+        const started = await window.pideck.invoke('chat:start', input);
+        onStarted(started);
+      }
     } catch (error) {
-      updateDraft((current) => current.attempt?.input.requestId === attempt.input.requestId
+      updateDraft((current) => current.attempt?.requestId === attempt.requestId
         ? { ...current, sending: false, error: readableError(error) }
         : current);
     }
   }
 
   async function cancel() {
+    if (!selection) return;
     setStopping(true);
     update({ error: undefined });
     try {
@@ -386,7 +378,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   }
 
   async function addFiles(files: File[]) {
-    if (draft.reading || !files.length) return;
+    if (draft.reading || startingSession || !files.length) return;
     const existingSize = attachments.reduce((sum, file) => sum + file.data.length, 0);
     const additionalSize = files.reduce((sum, file) => sum + Math.ceil(file.size / 3) * 4, 0);
     if (files.length + attachments.length > 4 || additionalSize + existingSize > 12_000_000) {
@@ -519,9 +511,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
             disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
         </div>}
-        <QueuedMessages selection={selection} items={view?.queued} canSteer={Boolean(view?.canSteerQueued)}
+        {selection && <QueuedMessages selection={selection} items={view?.queued} canSteer={Boolean(view?.canSteerQueued)}
           enabled={connected && !stopping && view?.status !== 'cancelling'}
-          onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />
+          onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />}
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
           <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
           {modelsError && !draft.error
@@ -536,6 +528,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
                 <img src={imageSource(attachment)} alt="" />
                 <span>{attachment.name}</span>
                 <button className="icon-button" type="button" aria-label={`Remove ${attachment.name}`}
+                  disabled={startingSession}
                   onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item !== attachment) }))}><Icon name="close" width={13} height={13} /></button>
               </div>
             ))}
@@ -552,11 +545,11 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             onPaste={(event) => {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
               if (images.length) {
-                if (model?.configured && model.supportsImages) {
+                if (model?.configured && model.supportsImages && !startingSession) {
                   event.preventDefault();
                   void addFiles(images);
                 } else if (!event.clipboardData.getData('text/plain')) {
-                  update({ error: 'Choose a model that accepts images to paste a screenshot.' });
+                  if (!startingSession) update({ error: 'Choose a model that accepts images to paste a screenshot.' });
                 }
               }
             }} />
@@ -570,7 +563,8 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
                     void addFiles(files);
                   }} />
                 <button className="icon-button composer-attach" type="button" title="Attach images" aria-label="Attach images"
-                  disabled={draft.reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
+                  disabled={startingSession || draft.reading || attachments.length >= 4}
+                  onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
               </>}
               {busy || agentCompacting ? modelName && <span className="composer-current-model" title={modelName}>{modelName}</span> : setupRequired
                 ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>

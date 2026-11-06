@@ -28,6 +28,9 @@ test("IPC rejects unknown commands and malformed payloads", () => {
   assert.equal(validPayload("chat:watch", { ...watch, readingEntryId: -1 }), false);
   assert.equal(validPayload("chat:watch", { ...watch, readingEntryId: "42" }), false);
   assert.equal(validPayload("review:patch", { projectId, path: "abc\0def" }), false);
+  assert.equal(validPayload("review:watch", { projectId, subscriptionId: watch.subscriptionId }), true);
+  assert.equal(validPayload("review:watch", { projectId: "../project", subscriptionId: watch.subscriptionId }), false);
+  assert.equal(validPayload("review:unwatch", { projectId }), false);
   assert.equal(validPayload("terminal:open", { projectId, cols: -1, rows: 20 }), false);
   assert.equal(validPayload("terminal:open", { projectId, cols: 80, rows: 20 }), true);
   assert.equal(validPayload("terminal:input", { projectId, terminalId, data: "\x03" }), true);
@@ -41,6 +44,13 @@ test("IPC accepts supported thinking and bounded image input", () => {
   assert.equal(validPayload("chat:send", { ...input, images: [{ mimeType: "text/html", data: "AAAA" }] }), false);
   assert.equal(validPayload("chat:send", { ...input, images: [{ mimeType: "image/png", data: "AA?A" }] }), false);
   assert.equal(validPayload("chat:send", { ...input, text: "", images: [{ mimeType: "image/png", data: "AAAA" }] }), true);
+  const { sessionId: _session, ...firstInput } = input;
+  const first = { ...firstInput, requestId: randomUUID() };
+  assert.equal(validPayload("chat:start", first), true);
+  assert.equal(validPayload("chat:start", { ...first, requestId: undefined }), false);
+  assert.equal(validPayload("chat:start", { ...first, sessionId }), false);
+  assert.equal(validPayload("chat:start", { ...first, delivery: "steer" }), false);
+  assert.equal(validPayload("chat:start", { ...first, text: " " }), false);
 });
 
 test("IPC validates queue item identity, edits, and relative moves", () => {

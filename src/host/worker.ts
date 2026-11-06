@@ -2,7 +2,7 @@ import { diffRevisions, type JsonValue } from "@earendil-works/chord/delta";
 import { AuthFlows } from "./auth-flows";
 import { PersistentCredentials } from "./credential-store";
 import { Runtime, type ChatWatch } from "./runtime";
-import { listChanges, readPatch } from "./review";
+import { listChanges, readPatch, watchChanges } from "./review";
 import { Terminals } from "./terminal";
 import type { FromHost, HostRequest, RemovalTarget, ToHost } from "../shared/transport";
 import type { ChatView, HostEvent, RemovalResult, Selection } from "../shared/api";
@@ -20,6 +20,7 @@ const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>(
 const activityWatches = new Map<number, { id: string; dispose: () => void }>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
 const reviews = new Map<string, Set<{ controller: AbortController; pending: Promise<unknown> }>>();
+const reviewWatches = new Map<number, { projectId: string; subscriptionId: string; controller: AbortController }>();
 let nextWrite = 0;
 
 function send(message: FromHost) {
@@ -40,11 +41,18 @@ function unwatch(owner: number, subscriptionId: string) {
   watch?.watch?.dispose();
 }
 
+function closeReviewWatch(owner: number) {
+  const watch = reviewWatches.get(owner);
+  reviewWatches.delete(owner);
+  watch?.controller.abort();
+}
+
 function closeOwner(owner: number) {
   closedOwners.add(owner);
   for (const id of watches.get(owner)?.keys() ?? []) unwatch(owner, id);
   activityWatches.get(owner)?.dispose();
   activityWatches.delete(owner);
+  closeReviewWatch(owner);
   terminals.closeOwner(owner);
   auth?.closeOwner(owner);
 }
@@ -99,6 +107,11 @@ async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: st
     return result;
   } finally {
     removing = undefined;
+    if (result && !target.sessionId) {
+      for (const [owner, watch] of reviewWatches) {
+        if (watch.projectId === target.projectId) closeReviewWatch(owner);
+      }
+    }
     const deleted = new Set(result?.sessionIds);
     for (const { owner, ...selection } of detached) {
       if (!deleted.has(selection.sessionId)) emit(owner, { type: "chat:reset", ...selection });
@@ -169,6 +182,8 @@ async function handle(request: HostRequest): Promise<unknown> {
       return auth.link(owner, payload.flowId, payload.linkId);
     case "model:auth-copy":
       return auth.code(owner, payload.flowId, payload.copyId);
+    case "chat:start":
+      return runtime.start(payload);
     case "chat:send":
       return runtime.send(payload);
     case "chat:queue-read":
@@ -225,6 +240,35 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runReview(runtime, payload.projectId, listChanges);
     case "review:patch":
       return runReview(runtime, payload.projectId, (cwd, signal) => readPatch(cwd, payload.path, signal));
+    case "review:watch": {
+      const { projectId, subscriptionId } = payload;
+      requireOpenWorkspace(projectId);
+      const project = runtime.requireTrustedProject(projectId);
+      closeReviewWatch(owner);
+      const controller = new AbortController();
+      const watch = { projectId, subscriptionId, controller };
+      reviewWatches.set(owner, watch);
+      try {
+        await watchChanges(project.directory, controller.signal,
+          () => emit(owner, { type: "review:changed", projectId, subscriptionId }),
+          () => {
+            if (reviewWatches.get(owner) !== watch) return;
+            closeReviewWatch(owner);
+            emit(owner, { type: "review:watch-error", projectId, subscriptionId });
+          });
+      } catch {
+        if (reviewWatches.get(owner) === watch) {
+          closeReviewWatch(owner);
+          throw new Error("Automatic updates are unavailable.");
+        }
+      }
+      return;
+    }
+    case "review:unwatch": {
+      const watch = reviewWatches.get(owner);
+      if (watch?.projectId === payload.projectId && watch.subscriptionId === payload.subscriptionId) closeReviewWatch(owner);
+      return;
+    }
     case "terminal:open": {
       requireOpenWorkspace(payload.projectId);
       const project = runtime.requireTrustedProject(payload.projectId);
@@ -272,7 +316,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
   } else if (data.type === "shutdown" && !closing) {
     closing = true;
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
-    for (const owner of new Set([...watches.keys(), ...activityWatches.keys()])) closeOwner(owner);
+    for (const owner of new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()])) closeOwner(owner);
     terminals.closeAll();
     auth?.close();
     void Promise.resolve(runtime?.close()).finally(() => process.exit(0));

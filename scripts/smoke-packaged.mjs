@@ -150,17 +150,19 @@ try {
   await app.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
   });
-  const trusted = await command("project:trust", { projectId });
-  assert.equal(trusted.trusted, true);
-  const conversation = await command("session:create", { projectId, title: "Smoke session" });
+  await page.getByRole("button", { name: "Review permissions", exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  assert.equal((await command("project:list"))[0].trusted, true);
+  assert.deepEqual(await command("session:list", { projectId }), []);
   await assert.rejects(command("chat:watch", { projectId, sessionId: crypto.randomUUID(), subscriptionId: crypto.randomUUID() }), /Session not found/);
 
-  // Reload through the shipped app to show the project and session created above.
+  const prompt = page.getByRole("textbox", { name: "Message Pideck" });
+  await prompt.fill("Edit example.ts and verify it.");
   await page.reload();
   await page.getByRole("button", { name: "Switch project, current project smoke-project", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Smoke session", exact: true }).click();
-  const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   await prompt.waitFor();
+  assert.equal(await prompt.inputValue(), "Edit example.ts and verify it.");
+  assert.deepEqual(await command("session:list", { projectId }), []);
   await verifyNativeTitlebar(app, page);
   await prompt.blur();
   await clickNativeMenu(app, "focus-composer");
@@ -184,10 +186,17 @@ try {
   await modelPicker.click();
   await page.getByRole("region", { name: "Choose a model" }).getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
   await page.getByRole("button", { name: /GPT-4\.1.*Azure|Azure.*GPT-4\.1/i }).first().click();
-  await prompt.fill("Edit example.ts and verify it.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  const sessions = await command("session:list", { projectId });
+  assert.equal(sessions.length, 1);
+  const [conversation] = sessions;
+  await page.getByRole("button", { name: "Edit example.ts and verify it.", exact: true }).press("F2");
+  const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
+  await sessionName.fill("Smoke session");
+  await sessionName.press("Enter");
+  await page.getByRole("button", { name: "Smoke session", exact: true }).waitFor();
   assert.equal(await readFile(join(project, "example.ts"), "utf8"), "export const result = 'after';\n");
   assert.ok(modelServer.requests.some(request => request.input.some(item =>
     item.type === "function_call_output" && String(item.output).includes("export const result = 'after'"))));
@@ -205,6 +214,21 @@ try {
   await clickNativeMenu(app, "toggle-terminal");
   await page.getByText("Shell running").waitFor();
   const terminal = page.locator(".xterm-helper-textarea");
+  const review = page.getByRole("complementary", { name: "Review changes" });
+  const externalPath = join(project, "outside-edit.ts");
+  const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
+  assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
+  await writeFile(externalPath, "export const source = 'externalMarker';\n");
+  await changedFile.click();
+  await review.locator("diffs-container").filter({ hasText: "externalMarker" }).waitFor();
+  await terminal.focus();
+  await page.keyboard.insertText(process.platform === "win32"
+    ? `Set-Content outside-edit.ts "export const source = 'terminalMarker';"`
+    : `printf '%s\\n' "export const source = 'terminalMarker';" > outside-edit.ts`);
+  await page.keyboard.press("Enter");
+  await review.locator("diffs-container").filter({ hasText: "terminalMarker" }).waitFor();
+  await rm(externalPath);
+  await changedFile.waitFor({ state: "detached" });
   await terminal.focus();
   const print = process.platform === "win32"
     ? 'if ($null -eq $env:PIDECK_SMOKE_PRIVATE -and $null -eq $env:AZURE_OPENAI_API_KEY) { Write-Host ("PTY_" + "OK") -ForegroundColor Green }'
@@ -228,9 +252,9 @@ try {
     : 'sleep 1; printf \'REVIEW_%s\\n\' PTY_OK');
   await page.keyboard.press("Enter");
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
-  const review = page.getByRole("complementary", { name: "Review changes" });
   const terminalRegion = page.getByRole("region", { name: "Project terminal" });
   await review.getByRole("button", { name: "Back to chat" }).waitFor();
+  await page.getByRole("button", { name: "Changes", exact: true }).waitFor({ state: "hidden" });
   await terminalRegion.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await review.waitFor({ state: "detached" });

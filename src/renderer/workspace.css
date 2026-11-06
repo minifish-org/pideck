@@ -111,6 +111,7 @@
   font-size: 13px;
   line-height: 1.5;
 }
+.workspace-review-issue { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 .workspace-file-list {
   display: flex;

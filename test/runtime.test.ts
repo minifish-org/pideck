@@ -5,11 +5,12 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { ChatView, Selection } from "../src/shared/api.js";
+import type { ChatView, Selection, StartChat } from "../src/shared/api.js";
 import { Runtime } from "../src/host/runtime.js";
 import { fauxRuntime, toolResponse, waitForView } from "./support/faux-runtime.js";
 
@@ -116,6 +117,54 @@ test("native provider catalog and host credentials determine model availability"
   } finally {
     if (previous === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previous;
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("first send creates one durable session and recovers interrupted admissions", async () => {
+  const fixture = await openFixture();
+  const { root, data, project, session, faux } = fixture;
+  let runtime = fixture.runtime;
+  try {
+    const input: StartChat = {
+      projectId: project.id, requestId: randomUUID(), text: "Verify the new session.",
+      model: fixture.input.model, thinking: fixture.input.thinking,
+    };
+    await assert.rejects(runtime.start(input), /Trust this project/);
+    runtime.trustProject(project.id);
+    await assert.rejects(runtime.start({ ...input, text: "  " }), /Enter a message/);
+    const unavailable = { ...input, model: { ...input.model, id: "unavailable-model" } };
+    await assert.rejects(runtime.start(unavailable), /model is unavailable/);
+    assert.deepEqual(runtime.listSessions(project.id).map(({ id }) => id), [session.id]);
+
+    faux.setResponses([toolResponse("bash", { command: "printf 'Started in the project'" }), fauxAssistantMessage("Done.")]);
+    const [started, duplicate] = await Promise.all([runtime.start(input), runtime.start(input)]);
+    assert.deepEqual(duplicate, started);
+    assert.equal(started.id, input.requestId);
+    assert.equal(started.title, input.text);
+    const selection = { projectId: project.id, sessionId: started.id };
+    const view = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Done."));
+    assert.equal(view.messages.filter(message => message.requestId === input.requestId).length, 1);
+    assert.ok(view.messages.some(message => message.blocks.some(block =>
+      block.type === "tool" && block.name === "bash" && block.output === "Started in the project")));
+
+    const interrupted = await runtime.createSession(project.id);
+    await runtime.close();
+    // Simulate a stop before acknowledgement for one admission and before
+    // Durable committed for another. Both mappings are still provisional.
+    {
+      using metadata = new DatabaseSync(join(data, "workspace.sqlite"));
+      metadata.prepare("UPDATE sessions SET startPending = 1 WHERE id IN (?, ?)").run(started.id, interrupted.id);
+    }
+    runtime = await fixture.open();
+    assert.deepEqual(runtime.listSessions(project.id).map(({ id }) => id), [started.id, session.id]);
+    assert.deepEqual(await runtime.start(unavailable), started);
+    const reopened = await waitForView(runtime, selection, () => true);
+    assert.deepEqual(reopened.messages, view.messages);
+    using metadata = new DatabaseSync(join(data, "workspace.sqlite"));
+    assert.equal(metadata.prepare("SELECT 1 FROM sessions WHERE id = ?").get(interrupted.id), undefined);
+  } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }

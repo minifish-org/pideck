@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { watch } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ReviewFile, ReviewPatch } from "../shared/api.js";
 import { shellEnvironment } from "./shell-env.js";
@@ -35,6 +36,63 @@ async function git(cwd: string, args: string[], signal?: AbortSignal, accept: nu
     if (error.stderr?.startsWith("fatal: not a git repository")) return "";
     throw new Error("Git could not read the project's changes.");
   }
+}
+
+export async function watchChanges(cwd: string, signal: AbortSignal, onChange: () => void, onError: () => void) {
+  const metadataPaths = new Set([join(cwd, ".git")]);
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  signal.addEventListener("abort", () => clearTimeout(pending), { once: true });
+
+  const notify = () => {
+    if (pending || signal.aborted) return;
+    pending = setTimeout(() => {
+      pending = undefined;
+      onChange();
+    }, 180);
+  };
+  const attach = (directory: string, recursive: boolean, accepts: (name: string) => boolean) => {
+    signal.throwIfAborted();
+    const watcher = watch(directory, { recursive, signal }, (_, name) => {
+      if (name === null || accepts(name)) notify();
+    });
+    watcher.on("error", onError);
+  };
+  attach(cwd, true, name => {
+    const path = join(cwd, name);
+    for (const directory of metadataPaths) {
+      const nested = relative(directory, path);
+      if (nested && !isAbsolute(nested) && nested !== ".." && !nested.startsWith(`..${sep}`)) {
+        return reviewMetadata(nested);
+      }
+    }
+    return true;
+  });
+
+  const paths = await Promise.all(["--git-dir", "--git-common-dir"].map(option =>
+    git(cwd, ["rev-parse", "--path-format=absolute", option], signal).then(path => path.replace(/\r?\n$/, ""))));
+  signal.throwIfAborted();
+  for (const directory of new Set(paths.filter(Boolean))) {
+    if (directory === cwd) continue;
+    if (isProjectPath(cwd, relative(cwd, directory))) {
+      metadataPaths.add(directory);
+      continue;
+    }
+    // Subdirectory projects and linked worktrees can keep Git state outside the workspace.
+    attach(directory, false, reviewMetadata);
+    for (const part of ["refs", "info"]) {
+      try {
+        attach(join(directory, part), true, name => !name.endsWith(".lock"));
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+      }
+    }
+  }
+}
+
+function reviewMetadata(name: string): boolean {
+  if (name.endsWith(".lock")) return false;
+  const [top] = name.split(sep, 1);
+  return ["HEAD", "index", "packed-refs", "config", "config.worktree", "refs", "info"].includes(top);
 }
 
 export async function listChanges(cwd: string, signal?: AbortSignal): Promise<ReviewFile[]> {

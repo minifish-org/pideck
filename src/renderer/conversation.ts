@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { applyImmutable } from '@earendil-works/chord/delta';
-import type { ChatGap, ChatView, Selection } from '../shared/api';
+import type { ChatGap, ChatView } from '../shared/api';
 import type { ReadingPosition } from './preferences';
 
 export function readableError(error: unknown) {
@@ -12,12 +12,14 @@ export function readableError(error: unknown) {
 type Conversation = { view: ChatView | null; watchId?: string; connected: boolean; error: string | null };
 type Watch = { id: string; sequence: number; view: ChatView | null; requested: Promise<void> };
 
-export function useConversation({ projectId, sessionId }: Selection, readingPosition: RefObject<ReadingPosition | undefined>) {
+export function useConversation({ projectId, sessionId }: { projectId: string; sessionId?: string }, readingPosition: RefObject<ReadingPosition | undefined>) {
   const [conversation, setConversation] = useState<Conversation>({ view: null, connected: false, error: null });
   const [attempt, setAttempt] = useState(0);
   const activeWatch = useRef<Watch | null>(null);
 
   useEffect(() => {
+    if (!sessionId) return;
+    const watchedSessionId = sessionId;
     let disposed = false;
     let repairingGap = false;
     let subscription: Watch | undefined;
@@ -44,7 +46,7 @@ export function useConversation({ projectId, sessionId }: Selection, readingPosi
       setConversation((current) => ({ ...current, connected: false, error: null }));
       const id = crypto.randomUUID();
       const readingEntryId = readingPosition.current?.entryId;
-      const requested = api.invoke('chat:watch', { projectId, sessionId, subscriptionId: id, readingEntryId });
+      const requested = api.invoke('chat:watch', { projectId, sessionId: watchedSessionId, subscriptionId: id, readingEntryId });
       subscription = { id, sequence: 0, view: null, requested };
       void requested.catch((error: unknown) => {
         if (disposed || subscription?.id !== id) return;
@@ -110,7 +112,7 @@ export function useConversation({ projectId, sessionId }: Selection, readingPosi
 
   async function loadEarlier(gap?: ChatGap) {
     const watch = activeWatch.current;
-    if (!watch) throw new Error('Reconnect to load conversation history.');
+    if (!watch || !sessionId) throw new Error('Reconnect to load conversation history.');
     await window.pideck.invoke('chat:earlier', {
       projectId, sessionId, subscriptionId: watch.id,
       ...(gap ? { gap: { after: gap.after, upTo: gap.upTo } } : {}),
