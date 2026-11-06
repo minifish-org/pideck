@@ -276,7 +276,7 @@ try {
   await modelMenu.getByRole("button", { name: /\bAzure\b/i })
     .filter({ has: page.getByText(azure.name, { exact: true }) }).click();
   await modelPicker.getByText(azure.name, { exact: true }).waitFor();
-  await modelPicker.locator(".model-summary-thinking").filter({ hasText: /^Thinking \S/ }).waitFor();
+  await modelPicker.getByText("Off", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
   await page.getByText("Package stream verified with the real coding tools.").waitFor();

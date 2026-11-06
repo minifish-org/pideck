@@ -454,13 +454,13 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const submitLabel = queueing ? 'Queue next' : 'Send';
   const thinkingOptions = model?.configured && model.thinking.length > 1 ? { level: thinking, labels: thinkingLabels } : undefined;
   const displayedThinking = busy ? view?.thinking ?? (activeKey ? 'off' : undefined) : model?.configured ? thinking : undefined;
-  const thinkingLabel = displayedThinking && `Thinking ${thinkingLabels[displayedThinking].toLowerCase()}`;
+  const thinkingLabel = displayedThinking && thinkingLabels[displayedThinking];
   const modelLabel = <span className="model-summary">
     <span className="model-summary-name">{modelName ?? 'Choose a model'}</span>
     {thinkingLabel && <span className="model-summary-thinking">{thinkingLabel}</span>}
   </span>;
   const modelDescription = modelName
-    ? [desiredProvider && providerLabel(desiredProvider), modelName, thinkingLabel]
+    ? [desiredProvider && providerLabel(desiredProvider), modelName, thinkingLabel && `Thinking ${thinkingLabel.toLowerCase()}`]
       .filter(Boolean).join(' · ')
     : 'Choose a model';
 

@@ -70,7 +70,7 @@ async page => {
   const picker = page.getByRole("region", { name: "Choose a model" });
   const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
   const thinkingLevel = picker.getByRole("combobox", { name: "Thinking level" });
-  await model.getByText("Thinking off", { exact: true }).waitFor();
+  await model.getByText("Off", { exact: true }).waitFor();
   await model.press("ArrowDown");
   if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
     throw new Error("The picker still offers unconfigured models.");
@@ -79,7 +79,7 @@ async page => {
   await picker.getByText("No models match your search.", { exact: true }).waitFor();
   await modelSearch.fill("fixture fixed");
   await picker.getByRole("button", { name: /Fixture fixed model/ }).click();
-  await model.getByText("Thinking off", { exact: true }).waitFor();
+  await model.getByText("Off", { exact: true }).waitFor();
   await model.click();
   await modelSearch.waitFor();
   if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
@@ -99,7 +99,10 @@ async page => {
   await picker.waitFor({ state: "hidden" });
   await model.click();
   await thinkingLevel.selectOption("high");
-  await model.getByText("Thinking high", { exact: true }).waitFor();
+  await model.getByText("High", { exact: true }).waitFor();
+  if (!(await model.getAttribute("aria-description"))?.endsWith(" · Thinking high")) {
+    throw new Error("The model button does not describe what its level means.");
+  }
   await page.screenshot({ path: "output/playwright/pideck-ui-model-menu.png" });
   await thinkingLevel.press("Escape");
   await picker.waitFor({ state: "hidden" });
@@ -107,7 +110,7 @@ async page => {
   await page.locator(".composer").screenshot({ path: "output/playwright/pideck-ui-model-thinking.png" });
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Pideck is working").waitFor();
-  await page.locator(".composer-current-model").getByText("Thinking high", { exact: true }).waitFor();
+  await page.locator(".composer-current-model").getByText("High", { exact: true }).waitFor();
   const runningSessionId = await nav.locator(".nav-session-row[aria-current=true]").getAttribute("id");
   const runningSession = nav.locator(`#${runningSessionId}`);
   await runningSession.locator("[data-activity=running] svg.lucide-loader-circle").waitFor();
