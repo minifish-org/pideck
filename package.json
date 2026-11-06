@@ -29,6 +29,7 @@
   "devDependencies": {
     "@pierre/diffs": "1.6.4",
     "@playwright/cli": "0.1.23",
+    "@primer/primitives": "11.10.0",
     "@types/node": "^22.19.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -58,6 +59,12 @@
     "files": [
       "dist/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/@primer/primitives/LICENSE",
+        "to": "licenses/primer-primitives.txt"
+      }
     ],
     "asarUnpack": [
       "**/node_modules/node-pty/**/*"

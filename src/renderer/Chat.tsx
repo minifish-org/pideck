@@ -135,7 +135,7 @@ export function EmptyScene({ icon, title, children }: {
   return (
     <div className="empty-scene">
       <section className="empty-card">
-        <div className="hero-mark"><Icon name={icon} /></div>
+        <div className="hero-mark" data-icon={icon}><Icon name={icon} /></div>
         <h1>{title}</h1>
         {children}
       </section>

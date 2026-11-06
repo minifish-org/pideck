@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } from "electron";
 import type { IpcMainInvokeEvent, MessageBoxOptions } from "electron";
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -84,7 +84,7 @@ function openWindow() {
     ...initial.bounds,
     minWidth: minimumWindow.width,
     minHeight: minimumWindow.height,
-    backgroundColor: "#0d1117",
+    backgroundColor: "#0d1117", // Primer Dark Default canvas before the renderer loads.
     ...(process.platform === "darwin" ? {
       titleBarStyle: "hidden",
       trafficLightPosition: { x: 20, y: 21 },
@@ -137,6 +137,7 @@ function openWindow() {
 }
 
 async function initialize() {
+  nativeTheme.themeSource = "dark";
   protocol.handle("pideck", async request => {
     try {
       const url = new URL(request.url);

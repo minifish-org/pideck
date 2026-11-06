@@ -198,6 +198,7 @@ try {
 
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
+  assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), "dark");
   const nativeMenu = await app.evaluate(({ Menu }) => {
     const menu = Menu.getApplicationMenu();
     return {

@@ -5,14 +5,39 @@ async page => {
   const workspace = page.getByRole("region", { name: "Workspace" });
   const nav = page.getByRole("complementary", { name: "Workspace navigation" });
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
+  const canvas = "rgb(13, 17, 23)";
+  const overlay = "rgb(1, 4, 9)";
+  const foreground = "rgb(240, 246, 252)";
+  const green = "rgb(35, 134, 54)";
+  async function expectColors(target, expected, pseudo) {
+    const differences = await target.evaluate((element, { expected, pseudo }) => {
+      const style = getComputedStyle(element, pseudo);
+      return Object.entries(expected).flatMap(([property, color]) => {
+        const actual = style.getPropertyValue(property).trim();
+        return actual === color ? [] : [`${property} expected ${color}, received ${actual}`];
+      });
+    }, { expected, pseudo });
+    if (differences.length) throw new Error(`${target}: ${differences.join(", ")}`);
+  }
 
   const open = page.getByRole("button", { name: /^Open (?:a project )?folder$/i });
   await open.waitFor();
   if (await open.count() !== 1 || await nav.count()) throw new Error("Welcome has duplicate workspace navigation.");
+  await expectColors(page.locator("html"), {
+    "--bgColor-default": "#0d1117",
+    "--button-primary-bgColor-rest": "#238636",
+    "background-color": canvas,
+    "color": foreground,
+  });
+  await expectColors(open, { "background-color": green, "color": "rgb(255, 255, 255)" });
   await page.screenshot({ path: "output/playwright/pideck-ui-welcome.png" });
   await open.click();
   await page.waitForFunction(() => document.activeElement?.id === "workspace-trust");
-  await workspace.getByRole("button", { name: "Review permissions" }).click();
+  const permissions = workspace.getByRole("button", { name: "Review permissions" });
+  await page.mouse.move(2, 2);
+  await expectColors(permissions, { "background-color": green });
+  await page.screenshot({ path: "output/playwright/pideck-ui-permissions.png" });
+  await permissions.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
   const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const newSession = nav.getByRole("button", { name: "New session in Sample project", exact: true });
@@ -31,8 +56,18 @@ async page => {
   const settings = page.getByRole("dialog", { name: "Model providers" });
   const provider = settings.getByRole("combobox", { name: "Provider", exact: true });
   await provider.locator('option[value="openai"]').waitFor({ state: "attached" });
+  await expectColors(settings, { "background-color": overlay, "border-top-color": "rgba(61, 68, 77, 0.7)", "color": foreground });
+  await expectColors(settings, { "background-color": "rgba(33, 40, 48, 0.4)" }, "::backdrop");
+  await expectColors(provider, { "background-color": canvas, "border-top-color": "rgb(61, 68, 77)", "color": foreground });
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "hidden" });
+  if (!await connect.evaluate(button => button === document.activeElement)) throw new Error("Closing the provider dialog did not restore focus.");
+  await connect.press("Enter");
+  await provider.locator('option[value="openai"]').waitFor({ state: "attached" });
   if (await provider.inputValue() !== "") throw new Error("Provider setup chose an account without user input.");
-  await provider.selectOption("openai");
+  await provider.click();
+  await expectColors(provider, { "background-color": overlay }, "::picker(select)");
+  await provider.getByRole("option", { name: "Fixture provider", exact: true }).click();
   if (await settings.getByRole("combobox", { name: "Sign-in method" }).count()) throw new Error("Connection methods repeat an extra selection step.");
   await settings.getByRole("button", { name: "Use API key", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-providers.png" });
@@ -40,10 +75,18 @@ async page => {
   await settings.getByText("PIDE-CK99").waitFor();
   await settings.getByRole("button", { name: /Open fixture.invalid/ }).click();
   await settings.getByRole("button", { name: "Copy code" }).click();
-  await settings.getByLabel("Authorization code").fill("test-authorization");
-  await settings.getByRole("button", { name: "Continue" }).click();
+  const authorization = settings.getByLabel("Authorization code");
+  const continueSignIn = settings.getByRole("button", { name: "Continue" });
+  await expectColors(authorization, { "background-color": canvas });
+  await expectColors(continueSignIn, { "background-color": "rgb(16, 88, 35)" });
+  await page.screenshot({ path: "output/playwright/pideck-ui-provider-sign-in.png" });
+  await authorization.fill("test-authorization");
+  await expectColors(continueSignIn, { "background-color": green });
+  await continueSignIn.click();
   await settings.getByText("Fixture provider connected.").waitFor();
   const connection = settings.getByRole("region", { name: "Provider connection" });
+  await expectColors(connection, { "background-color": canvas });
+  await expectColors(connection.locator(".key-status > span"), { "background-color": "rgb(63, 185, 80)" });
   const alignedConnection = await connection.evaluate(card => {
     const middle = element => {
       const bounds = element.getBoundingClientRect();
@@ -67,11 +110,16 @@ async page => {
   if (await sessionCount() !== 0) throw new Error("Writing an unsent draft created a session.");
 
   const model = page.getByRole("button", { name: "Model", exact: true });
+  const composer = page.locator(".composer");
   const picker = page.getByRole("region", { name: "Choose a model" });
   const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
   const thinkingLevel = picker.getByRole("combobox", { name: "Thinking level" });
   await model.getByText("Off", { exact: true }).waitFor();
+  await expectColors(composer, { "background-color": canvas });
+  await expectColors(prompt, { "color": foreground });
   await model.press("ArrowDown");
+  await expectColors(picker, { "background-color": overlay, "color": foreground });
+  await expectColors(modelSearch, { "background-color": canvas });
   if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
     throw new Error("The picker still offers unconfigured models.");
   }
@@ -100,6 +148,10 @@ async page => {
   await model.click();
   await thinkingLevel.selectOption("high");
   await model.getByText("High", { exact: true }).waitFor();
+  await expectColors(picker.locator('.model-option[aria-current="true"]'), {
+    "background-color": "rgba(101, 108, 118, 0.2)",
+    "border-top-color": "rgba(0, 0, 0, 0)",
+  });
   if (!(await model.getAttribute("aria-description"))?.endsWith(" · Thinking high")) {
     throw new Error("The model button does not describe what its level means.");
   }
@@ -107,8 +159,10 @@ async page => {
   await thinkingLevel.press("Escape");
   await picker.waitFor({ state: "hidden" });
   if (!await model.evaluate(button => button === document.activeElement)) throw new Error("Dismissing the model menu did not restore focus.");
-  await page.locator(".composer").screenshot({ path: "output/playwright/pideck-ui-model-thinking.png" });
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await composer.screenshot({ path: "output/playwright/pideck-ui-model-thinking.png" });
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await expectColors(send, { "background-color": green });
+  await send.click();
   await page.getByText("Pideck is working").waitFor();
   await page.locator(".composer-current-model").getByText("High", { exact: true }).waitFor();
   const runningSessionId = await nav.locator(".nav-session-row[aria-current=true]").getAttribute("id");
@@ -392,12 +446,11 @@ async page => {
       throw new Error("A workspace toggle needs a visible icon and a tooltip.");
     }
   }
-  const hasSelectedToggleColors = toggle => toggle.evaluate(button => {
-    const style = getComputedStyle(button);
-    return style.backgroundColor === "rgba(101, 108, 118, 0.2)"
-      && style.color === "rgb(240, 246, 252)"
-      && style.borderTopColor === "rgba(0, 0, 0, 0)";
-  });
+  const selectedToggleColors = {
+    "background-color": "rgba(101, 108, 118, 0.2)",
+    "color": foreground,
+    "border-top-color": "rgba(0, 0, 0, 0)",
+  };
   const terminal = page.getByRole("region", { name: "Project terminal" });
   await page.evaluate(() => sessionStorage.setItem("pideck-review-list-failure", "1"));
   await changes.click();
@@ -447,14 +500,16 @@ async page => {
       && Math.abs(bounds(".chat-thread").left - bounds(".composer").left) <= 1;
   });
   if (!aligned) throw new Error("The titlebar, sidebar toggle, or conversation layout does not align.");
-  const darkCanvas = await page.evaluate(() => {
-    const background = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
-    return background(".titlebar") === "rgb(13, 17, 23)" && background(".navigation") === "rgb(13, 17, 23)"
-      && background(".nav-session-row[aria-current=true]") === "rgb(33, 40, 48)";
+  for (const surface of [page.locator(".titlebar"), nav, review]) await expectColors(surface, { "background-color": canvas });
+  await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(33, 40, 48)" });
+  await expectColors(sidebar, selectedToggleColors);
+  await expectColors(changes, selectedToggleColors);
+  await expectColors(singleDiff.locator('[data-line-type="change-addition"] [data-diff-span]').first(), {
+    "background-color": "rgba(46, 160, 67, 0.4)",
   });
-  if (!darkCanvas || !await hasSelectedToggleColors(sidebar) || !await hasSelectedToggleColors(changes)) {
-    throw new Error("The workspace chrome does not use the GitHub Dark canvas and neutral selections.");
-  }
+  await expectColors(singleDiff.locator('[data-line-type="change-deletion"] [data-diff-span]').first(), {
+    "background-color": "rgba(248, 81, 73, 0.4)",
+  });
   await divider.blur();
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
   await page.setViewportSize({ width: 1920, height: 960 });
@@ -509,11 +564,12 @@ async page => {
   await terminalToggle.click();
   await nav.waitFor({ state: "detached" });
   await terminal.getByText("Shell running").waitFor();
-  if (await terminalToggle.getAttribute("aria-pressed") !== "true" || !await hasSelectedToggleColors(terminalToggle)) {
-    throw new Error("The active terminal toggle does not use GitHub Dark neutral selection.");
-  }
+  if (await terminalToggle.getAttribute("aria-pressed") !== "true") throw new Error("The active terminal toggle is not pressed.");
+  await expectColors(terminalToggle, selectedToggleColors);
   const screen = terminal.locator(".xterm-helper-textarea");
   await screen.waitFor();
+  await expectColors(terminal.locator(".workspace-panel-header"), { "background-color": canvas });
+  await expectColors(terminal.locator(".xterm-scrollable-element"), { "background-color": "rgb(1, 4, 9)" });
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
   await changes.click();

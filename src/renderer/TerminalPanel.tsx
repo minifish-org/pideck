@@ -63,32 +63,43 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
     const container = element.current;
     if (!container) return;
     const tokens = getComputedStyle(container);
-    const token = (name: string, fallback: string) => tokens.getPropertyValue(name).trim() || fallback;
-    const accent = token("--accent", "#58a6ff");
-    const background = token("--terminal-bg", token("--bg", "#0d1117"));
-    const border = token("--border", "#30363d");
-    const selection = token("--accent-border", "#1f6feb");
+    const token = (name: string) => tokens.getPropertyValue(name).trim();
+    const accent = token("--fgColor-accent");
+    const background = token("--bgColor-inset");
+    const border = token("--borderColor-default");
     const terminal = new Terminal({
       // SearchAddon's match decorations use xterm's registerDecoration API.
       allowProposedApi: true,
       convertEol: false,
       cursorBlink: true,
-      fontFamily: token("--mono", '"SF Mono", Consolas, "Liberation Mono", monospace'),
+      fontFamily: token("--mono"),
       fontSize: 12,
       lineHeight: 1.25,
       scrollback: 5_000,
       overviewRuler: { width: 8 },
       theme: {
-        background, foreground: token("--text", "#f0f6fc"), cursor: accent, cursorAccent: background,
+        background, foreground: token("--fgColor-default"), cursor: accent, cursorAccent: background,
         overviewRulerBorder: border, scrollbarSliderBackground: border,
-        scrollbarSliderHoverBackground: token("--dim", "#8b949e"),
-        scrollbarSliderActiveBackground: token("--muted", "#9198a1"),
-        selectionBackground: selection, selectionInactiveBackground: token("--surface-hover", "#21262d"),
-        // Primer Dark Default ANSI colors.
-        black: "#2f3742", red: "#ff7b72", green: "#3fb950", yellow: "#d29922",
-        blue: "#58a6ff", magenta: "#be8fff", cyan: "#39c5cf", white: "#f0f6fc",
-        brightBlack: "#656c76", brightRed: "#ffa198", brightGreen: "#56d364", brightYellow: "#e3b341",
-        brightBlue: "#79c0ff", brightMagenta: "#d2a8ff", brightCyan: "#56d4dd", brightWhite: "#ffffff",
+        scrollbarSliderHoverBackground: token("--borderColor-emphasis"),
+        scrollbarSliderActiveBackground: token("--fgColor-muted"),
+        selectionBackground: token("--selection-bgColor"),
+        selectionInactiveBackground: token("--control-transparent-bgColor-selected"),
+        black: token("--ansi-black"),
+        red: token("--ansi-red"),
+        green: token("--ansi-green"),
+        yellow: token("--ansi-yellow"),
+        blue: token("--ansi-blue"),
+        magenta: token("--ansi-magenta"),
+        cyan: token("--ansi-cyan"),
+        white: token("--ansi-white"),
+        brightBlack: token("--ansi-blackBright"),
+        brightRed: token("--ansi-redBright"),
+        brightGreen: token("--ansi-greenBright"),
+        brightYellow: token("--ansi-yellowBright"),
+        brightBlue: token("--ansi-blueBright"),
+        brightMagenta: token("--ansi-magentaBright"),
+        brightCyan: token("--ansi-cyanBright"),
+        brightWhite: token("--ansi-whiteBright"),
       },
     });
     const addon = new FitAddon();
@@ -104,7 +115,7 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
       else addon.fit();
     };
     screen.current = { terminal, fit, search, searchOptions: { decorations: {
-      matchBackground: token("--accent-soft", "#1f6feb26"), matchOverviewRuler: selection,
+      matchBackground: token("--control-bgColor-active"), matchOverviewRuler: token("--fgColor-muted"),
       activeMatchBorder: accent, activeMatchColorOverviewRuler: accent,
     } } };
     fit();

@@ -25,10 +25,10 @@
   width: 100%;
   min-width: 0;
   padding: 4px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-borderColor-rest);
   border-radius: 5px;
-  background: var(--surface);
-  color: var(--text);
+  background: var(--bgColor-default);
+  color: var(--fgColor-default);
 }
 
 .workspace-title .session-name { width: min(26ch, 100%); }

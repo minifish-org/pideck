@@ -30,6 +30,6 @@
 
 .workspace-divider:focus-visible { outline: none; }
 .workspace-divider:is(:hover, :focus-visible, [data-dragging])::after {
-  background: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--focus-outline-color);
+  box-shadow: 0 0 0 1px var(--focus-outline-color);
 }
