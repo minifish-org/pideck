@@ -14,6 +14,11 @@ async page => {
   await page.waitForFunction(() => document.activeElement?.id === "workspace-trust");
   await workspace.getByRole("button", { name: "Review permissions" }).click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
+  const newSession = nav.getByRole("button", { name: "New session in Sample project", exact: true });
+  await projectRow.hover();
+  await newSession.click();
+  await page.waitForFunction(() => document.activeElement?.id === "prompt");
   const sessionCount = () => page.evaluate(async () => {
     const [project] = await window.pideck.invoke("project:list");
     return (await window.pideck.invoke("session:list", { projectId: project.id })).length;
@@ -110,15 +115,31 @@ async page => {
   if (await sessionCount() !== 1) throw new Error("The first send did not create exactly one session.");
   await page.getByText("Running the status check…", { exact: true }).waitFor();
 
-  const newSession = nav.getByRole("button", { name: "New session", exact: true });
+  await prompt.hover();
+  await prompt.focus();
+  if (await nav.getByRole("button", { name: "New session", exact: true }).count()
+    || !await newSession.evaluate(button => button.parentElement.classList.contains("nav-project-row")
+      && getComputedStyle(button).opacity === "0")) {
+    throw new Error("The new-session action is not tucked into the project row.");
+  }
+  await projectRow.hover();
+  if (await newSession.evaluate(button => getComputedStyle(button).opacity) !== "1") {
+    throw new Error("Hovering over the project did not reveal the new-session button.");
+  }
   await newSession.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
   if (await sessionCount() !== 1 || await prompt.inputValue() !== "") throw new Error("New session did not open a blank draft.");
   await runningSession.click();
   if (await sessionCount() !== 1) throw new Error("Leaving a blank draft left an empty session.");
-  await newSession.click();
+  await prompt.hover();
+  await projectRow.press("Tab");
+  if (!await newSession.evaluate(button => button === document.activeElement && getComputedStyle(button).opacity === "1")) {
+    throw new Error("Tab did not reach and reveal the project's new-session button.");
+  }
+  await newSession.press("Enter");
   await prompt.fill("Start a separate session.");
   await runningSession.click();
+  await projectRow.hover();
   await newSession.click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Start a separate session.");
   if (await sessionCount() !== 1) throw new Error("Switching away from a draft created a session.");
@@ -533,7 +554,6 @@ async page => {
   await terminalToggle.click();
   await terminalToggle.click();
   await page.getByText("Shell running").waitFor();
-  const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const primaryBranch = nav.getByRole("list", { name: "Sample project sessions", exact: true });
   await primaryBranch.getByRole("button", { name: "Separate draft", exact: true }).waitFor();
   if (await fallback.locator(":scope > svg").count()) throw new Error("The session row still displays a leading icon.");
@@ -557,9 +577,30 @@ async page => {
   }
   await primaryBranch.getByRole("button", { name: "Separate draft", exact: true }).click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Draft to remove with the project.");
+  const otherProjectRow = nav.getByRole("button", { name: "Other project", exact: true });
+  const otherNewSession = nav.getByRole("button", { name: "New session in Other project", exact: true });
+  await nav.getByRole("button", { name: "Collapse Other project", exact: true }).click();
+  await otherBranch.waitFor({ state: "detached" });
+  await otherProjectRow.hover();
+  await otherNewSession.click();
   await otherTask.waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === "prompt" && document.activeElement.value === "");
+  if (await otherProjectRow.getAttribute("aria-current") !== "true" || await otherTask.getAttribute("aria-current") === "true") {
+    throw new Error("The other project's new-session button did not select a draft in that project.");
+  }
+  await prompt.fill("A draft only in Other project.");
+  await fallback.click();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Draft to remove with the project.");
+  await otherProjectRow.hover();
+  await otherNewSession.click();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "A draft only in Other project.");
+  if (await otherBranch.locator(".nav-session-row").count() !== 1) throw new Error("An unsent draft appeared as a session.");
+  await fallback.click();
+  await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Draft to remove with the project.");
+  await otherProjectRow.hover();
   await page.screenshot({ path: "output/playwright/pideck-ui-project-tree.png" });
-  await nav.getByRole("button", { name: "Remove project Other project", exact: true }).click();
+  await otherProjectRow.press("Backspace");
+  await otherProjectRow.waitFor({ state: "detached" });
   await otherBranch.waitFor({ state: "detached" });
   if (await fallback.getAttribute("aria-current") !== "true") throw new Error("Removing a sibling project changed the selected session.");
   const removeProject = nav.getByRole("button", { name: "Remove project Sample project", exact: true });

@@ -42,7 +42,7 @@ function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
   if (!(event.target instanceof HTMLButtonElement) || !event.target.matches('.nav-item > .nav-row')) return;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
   if (event.key === 'Delete' || event.key === 'Backspace') {
-    const remove = event.target.nextElementSibling;
+    const remove = event.target.parentElement?.querySelector(':scope > .nav-remove');
     if (remove instanceof HTMLButtonElement && remove.getAttribute('aria-disabled') !== 'true') {
       event.preventDefault();
       remove.focus();
@@ -453,7 +453,7 @@ function Desktop() {
   }
 
   function openSessionDraft(id = projectId) {
-    if (!id || !sessionLists[id] || !projects?.some(project => project.id === id && project.trusted)
+    if (!id || removed.current.projects.has(id) || !projects?.some(project => project.id === id && project.trusted)
       || (removing?.projectId === id && !removing.sessionId)) return;
     selectProject(id);
     selectSession(id, newSessionDraft);
@@ -836,7 +836,7 @@ function Desktop() {
                         <Icon name="chevron" width={14} height={14} />
                       </button> : <span className="nav-project-lock" title="Project permissions required"><Icon name="lock" width={13} height={13} /></span>}
                       <button className="nav-row" id={`nav-project-${id}`} type="button" title={item.directory}
-                        aria-description={item.directory} aria-current={active && (!expanded || (!sessionId && !branch?.length)) ? 'true' : undefined}
+                        aria-description={item.directory} aria-current={active && (!expanded || !sessionId) ? 'true' : undefined}
                         aria-keyshortcuts={item.trusted ? 'ArrowLeft ArrowRight Delete Backspace' : 'Delete Backspace'}
                         onKeyDown={(event) => {
                           if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -854,6 +854,12 @@ function Desktop() {
                             setFocusWorkspace(id);
                           }
                         }}><span>{item.name}</span></button>
+                      {item.trusted && <button className="icon-button nav-new-session" type="button"
+                        aria-label={`New session in ${item.name}`} title={unsent ? 'Resume unsent draft' : 'New session'}
+                        aria-description={unsent ? 'Unsent draft' : undefined}
+                        disabled={removing?.projectId === id && !removing.sessionId} onClick={() => openSessionDraft(id)}>
+                        <Icon name="plus" width={14} height={14} />
+                      </button>}
                       <RemoveRowButton label={`Remove project ${item.name}`} current={active} disabled={Boolean(removing)}
                         onClick={(button) => void remove({ projectId: id }, button)} />
                     </div>
@@ -901,14 +907,6 @@ function Desktop() {
                       {sessionErrors[id] ? <li className="nav-empty"><span role="alert">Could not load sessions.</span> <button className="inline-action"
                         type="button" onClick={() => refreshSessions((current) => current + 1)}>Retry</button></li>
                         : !branch ? <li className="nav-empty"><span role="status">Loading sessions…</span></li> : null}
-                      {Boolean(branch?.length) && <li><button className="nav-row nav-create-session" type="button"
-                        title={`${unsent ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
-                        aria-description={unsent ? 'Unsent draft' : undefined}
-                        aria-current={active && !sessionId ? 'true' : undefined} disabled={removing?.projectId === id && !removing.sessionId}
-                        onClick={() => openSessionDraft(id)}>
-                        <Icon name="plus" width={14} height={14} /><span>New session</span>
-                        {unsent && <span className="nav-session-status" title="Unsent draft" aria-hidden="true"><Icon name="edit" width={13} height={13} /></span>}
-                      </button></li>}
                     </ul>}
                   </li>;
                 })}

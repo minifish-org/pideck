@@ -138,6 +138,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-project-lock { color: var(--dim); pointer-events: none; }
 .nav-disclosure[aria-expanded='true'] svg { rotate: 90deg; }
 .nav-children { margin: 2px 0 6px 13px; padding-left: 18px; border-left: 1px solid var(--border-soft); }
+.nav-children:empty { display: none; }
 .nav-empty { margin: 4px 8px; color: var(--dim); font-size: 12px; }
 .nav-row {
   display: flex;
@@ -156,10 +157,16 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-item { position: relative; }
 .nav-item + .nav-item { margin-top: 2px; }
 .nav-item .nav-row { padding-right: 34px; }
-.nav-item .nav-remove { position: absolute; top: 4px; right: 3px; width: 28px; height: 28px; opacity: 0; }
-.nav-item:hover .nav-remove, .nav-item:focus-within .nav-remove { opacity: 1; }
+.nav-project-row:has(.nav-new-session) > .nav-row { padding-right: 62px; }
+.nav-item :is(.nav-remove, .nav-new-session) {
+  position: absolute; top: 4px; right: 3px; width: 28px; height: 28px; opacity: 0;
+}
+.nav-project-row .nav-new-session { right: 31px; pointer-events: none; }
+.nav-item:is(:hover, :focus-within) :is(.nav-remove, .nav-new-session) { opacity: 1; }
+.nav-project-row:is(:hover, :focus-within) .nav-new-session { pointer-events: auto; }
 @media (hover: none) {
-  .nav-item .nav-row[aria-current='true'] + .nav-remove { opacity: .8; }
+  .nav-item .nav-row[aria-current='true'] ~ .nav-remove { opacity: .8; }
+  .nav-project-row .nav-new-session { opacity: 1; pointer-events: auto; }
 }
 .nav-item .nav-remove:hover:not([aria-disabled='true']), .nav-item .nav-remove:focus-visible { color: var(--danger); }
 .nav-item .nav-remove[aria-disabled='true'] { color: var(--dim); cursor: default; }
@@ -168,7 +175,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-row svg { flex: none; }
 .nav-row[aria-current='true'] svg { color: var(--accent); }
 .nav-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
-.nav-create-session { min-height: 32px; margin-top: 2px; gap: 6px; }
 .nav-footer { flex: none; margin-top: auto; padding: 8px 12px; border-top: 1px solid var(--border-soft); }
 
 .workspace {
