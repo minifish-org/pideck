@@ -7,7 +7,9 @@ import { shellEnvironment } from "./shell-env.js";
 
 const exec = promisify(execFile);
 const patchLimit = 512 * 1024;
-const diffOptions = ["--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+const diffOptions = [
+  "--no-ext-diff", "--no-textconv", "--no-color", "--word-diff=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+];
 
 async function git(cwd: string, args: string[], accept: number[] = [], maxBuffer = 2 * 1024 * 1024) {
   try {
@@ -56,7 +58,12 @@ export async function listChanges(cwd: string): Promise<ReviewFile[]> {
     if (!name.startsWith(prefix)) continue;
     const path = name.slice(prefix.length);
     const oldPath = oldName?.startsWith(prefix) ? oldName.slice(prefix.length) : undefined;
-    if (path) files.set(path, { path, status, ...(oldPath ? { oldPath } : {}) });
+    if (!path) continue;
+    const previous = files.get(path);
+    // A staged deletion followed by recreating the path yields two status rows.
+    // Keep both transitions instead of silently replacing the staged deletion.
+    if (previous && status === "??") files.set(path, { ...previous, status: `${previous.status[0]}?` });
+    else files.set(path, { path, status, ...(oldPath ? { oldPath } : {}) });
   }
   return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -68,7 +75,7 @@ export async function readPatch(cwd: string, path: string): Promise<ReviewPatch>
 
   let patch: string;
   try {
-    if (file.status === "??") {
+    if (file.status.endsWith("?")) {
       const fullPath = resolve(cwd, path);
       const parent = await realpath(dirname(fullPath));
       const project = await realpath(cwd);
@@ -81,6 +88,10 @@ export async function readPatch(cwd: string, path: string): Promise<ReviewPatch>
       }
       if (stat.size > patchLimit) return largePatch();
       patch = await git(cwd, ["diff", "--no-index", ...diffOptions, "--", "/dev/null", `./${path}`], [1], patchLimit);
+      if (file.status !== "??") {
+        const staged = await git(cwd, ["diff", "--cached", "--relative", ...diffOptions, "--", path], [], patchLimit);
+        patch = staged + patch;
+      }
     } else {
       const head = (await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], [1])).trim();
       const base = head || (await git(cwd, ["hash-object", "-t", "tree", "--stdin"])).trim();
@@ -91,7 +102,6 @@ export async function readPatch(cwd: string, path: string): Promise<ReviewPatch>
         const staged = await git(cwd, [...diff, "--cached", "--", ...paths], [], patchLimit);
         const unstaged = await git(cwd, [...diff, "--", ...paths], [], patchLimit);
         patch = staged + unstaged;
-        if (patch.length > patchLimit) return largePatch();
       }
     }
   } catch (cause) {
@@ -101,6 +111,7 @@ export async function readPatch(cwd: string, path: string): Promise<ReviewPatch>
     throw cause;
   }
 
+  if (Buffer.byteLength(patch) > patchLimit) return largePatch();
   if (!patch) return { patch: null, reason: "There are no text changes to display for this file." };
   if (!/^@@ /m.test(patch) && /^Binary files .* differ$/m.test(patch)) {
     return { patch: null, reason: "This binary file has changed." };

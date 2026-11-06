@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Project, Session } from "../shared/api.js";
 
@@ -71,6 +72,16 @@ export class Metadata {
           updatedAt INTEGER NOT NULL
         ) STRICT;
         CREATE INDEX IF NOT EXISTS project_sessions ON sessions(projectId, updatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS model_catalogs (
+          provider TEXT PRIMARY KEY,
+          catalog TEXT NOT NULL
+        ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS installation (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          deviceId TEXT NOT NULL
+        ) STRICT;
       `);
     } catch (error) {
       this.db.close();
@@ -163,6 +174,34 @@ export class Metadata {
     ).get(conversationId);
     if (!row) throw new Error("Conversation is not attached to a project.");
     return row.projectId as string;
+  }
+
+  readonly modelsStore: ModelsStore = {
+    read: async (provider, options) => {
+      options?.signal?.throwIfAborted();
+      const row = this.db.prepare("SELECT catalog FROM model_catalogs WHERE provider = ?").get(provider);
+      return row && JSON.parse(row.catalog as string) as ModelsStoreEntry;
+    },
+    write: async (provider, catalog, options) => {
+      options?.signal?.throwIfAborted();
+      this.db.prepare(`
+        INSERT INTO model_catalogs (provider, catalog) VALUES (?, ?)
+        ON CONFLICT(provider) DO UPDATE SET catalog = excluded.catalog
+      `).run(provider, JSON.stringify(catalog));
+    },
+    delete: async (provider, options) => {
+      options?.signal?.throwIfAborted();
+      this.db.prepare("DELETE FROM model_catalogs WHERE provider = ?").run(provider);
+    },
+  };
+
+  deviceId(): string {
+    const query = this.db.prepare("SELECT deviceId FROM installation WHERE singleton = 1");
+    const existing = query.get();
+    if (existing) return existing.deviceId as string;
+    const deviceId = randomUUID();
+    this.db.prepare("INSERT INTO installation (singleton, deviceId) VALUES (1, ?)").run(deviceId);
+    return deviceId;
   }
 
   close(): void {

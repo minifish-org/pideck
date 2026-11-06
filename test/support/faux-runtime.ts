@@ -41,9 +41,9 @@ export function waitForView(
     const timer = setTimeout(() => finish(new Error("Timed out waiting for a conversation update.")), timeoutMs);
     void runtime.watch(selection, view => {
       if (predicate(view)) finish(undefined, view);
-    }, message => finish(new Error(message))).then(dispose => {
-      stop = dispose;
-      if (settled) dispose();
+    }, message => finish(new Error(message))).then(watch => {
+      stop = watch.dispose;
+      if (settled) watch.dispose();
     }, finish);
   });
 }

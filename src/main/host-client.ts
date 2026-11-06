@@ -1,7 +1,8 @@
 import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";
 import { fileURLToPath } from "node:url";
-import { shellEnvironment } from "../host/shell-env";
+import { CredentialVault } from "./credentials";
+import { hostEnvironment } from "./host-env";
 import type { HostEvent } from "../shared/api";
 import type { FromHost, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
 
@@ -17,15 +18,16 @@ export class HostClient {
 
   constructor(
     private dataDir: string,
-    private keys: Record<string, string>,
+    private vault: CredentialVault,
     private onEvent: (owner: number, event: HostEvent) => void,
     private onRestart: () => void,
+    private onDisconnect: (message: string) => void,
   ) {}
 
   start(): void {
     if (this.stopping || this.process) return;
     const child = utilityProcess.fork(fileURLToPath(new URL("../host/worker.js", import.meta.url)), [], {
-      env: shellEnvironment(),
+      env: hostEnvironment(),
       stdio: "ignore",
       serviceName: "Pideck workspace",
     });
@@ -40,7 +42,21 @@ export class HostClient {
     let initialized = false;
     let fatal = false;
     child.on("message", (message: FromHost) => {
-      if (this.process !== child || this.stopping) return;
+      if (this.process !== child) return;
+      if (message.type === "credential:write") {
+        const { id, provider, credential } = message;
+        void this.vault.write(provider, credential).then(
+          () => {
+            if (this.process === child) this.post(child, { type: "credential:result", id });
+          },
+          error => {
+            if (this.process === child) this.post(child, { type: "credential:result", id,
+              error: error instanceof Error ? error.message : "The credential could not be saved." });
+          },
+        );
+        return;
+      }
+      if (this.stopping) return;
       switch (message.type) {
         case "ready":
           clearTimeout(timeout);
@@ -52,6 +68,7 @@ export class HostClient {
           clearTimeout(timeout);
           fatal = true;
           boot.reject(new Error(message.error));
+          this.onDisconnect(message.error);
           child.kill();
           break;
         case "event":
@@ -77,6 +94,7 @@ export class HostClient {
       for (const entry of this.pending.values()) entry.reject(error);
       this.pending.clear();
 
+      if (!fatal && !this.stopping) this.onDisconnect(error.message);
       if (initialized && Date.now() - startedAt >= 30_000) this.restartAttempts = 0;
       if (!fatal && !this.stopping && this.restartAttempts < 5) {
         const delay = Math.min(4_000, 250 * 2 ** this.restartAttempts++);
@@ -88,11 +106,13 @@ export class HostClient {
         void restart.catch(() => { /* requests report startup errors */ });
       }
     });
-    this.post(child, { type: "start", dataDir: this.dataDir, keys: this.keys });
-  }
-
-  setKeys(keys: Record<string, string>) {
-    this.keys = keys;
+    const bootHost = (startup: Extract<ToHost, { type: "start" }>) => {
+      if (this.process === child && !this.stopping) this.post(child, startup);
+    };
+    void this.vault.snapshot().then(
+      credentials => bootHost({ type: "start", dataDir: this.dataDir, credentials }),
+      () => bootHost({ type: "start", dataDir: this.dataDir, credentials: {}, credentialStoreLocked: true }),
+    );
   }
 
   async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C]): Promise<HostResult[C]> {

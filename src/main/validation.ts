@@ -41,6 +41,14 @@ function terminal(value: Record<string, unknown>): boolean {
   return project(value) && match(value.terminalId, id);
 }
 
+function flow(value: Record<string, unknown>): boolean {
+  return match(value.flowId, id);
+}
+
+function entry(value: unknown, min = 1): boolean {
+  return integer(value, min, Number.MAX_SAFE_INTEGER);
+}
+
 function images(value: unknown): boolean {
   if (value === undefined) return true;
   if (!Array.isArray(value) || value.length > 4) return false;
@@ -62,16 +70,33 @@ const validators = {
   "session:create": (value) => object(value) && project(value)
     && (value.title === undefined || string(value.title, 120)),
   "model:list": empty,
-  "model:save-key": (value) => object(value) && match(value.provider, provider)
-    && string(value.key, 8192) && !/[\r\n]/.test(value.key) && value.key.trim().length > 0,
+  "model:providers": empty,
+  "model:login": (value) => object(value) && flow(value) && match(value.provider, provider)
+    && (value.method === "api_key" || value.method === "oauth"),
+  "model:logout": (value) => object(value) && match(value.provider, provider),
+  "model:refresh": (value) => object(value) && (value.provider === undefined || match(value.provider, provider)),
+  "model:auth-answer": (value) => object(value) && flow(value)
+    && match(value.promptId, id) && string(value.value, 16_384),
+  "model:auth-cancel": (value) => object(value) && flow(value),
+  "model:auth-open": (value) => object(value) && flow(value) && match(value.linkId, id),
+  "model:auth-copy": (value) => object(value) && flow(value) && match(value.copyId, id),
   "chat:watch": (value) => object(value) && selection(value) && match(value.subscriptionId, id),
   "chat:unwatch": (value) => object(value) && match(value.subscriptionId, id),
+  "chat:earlier": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
+    && (value.gap === undefined || (object(value.gap) && entry(value.gap.after, 0) && entry(value.gap.upTo)
+      && Number(value.gap.after) < Number(value.gap.upTo))),
   "chat:send": (value) => object(value) && selection(value) && string(value.text, 200_000)
     && object(value.model) && match(value.model.provider, provider)
     && string(value.model.id, 240) && value.model.id.length > 0
+    && (value.requestId === undefined || match(value.requestId, id))
+    && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer")
     && thinking.has(value.thinking as Thinking) && images(value.images)
     && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length)),
   "chat:cancel": (value) => object(value) && selection(value),
+  "chat:fork": (value) => object(value) && selection(value) && entry(value.entryId)
+    && (value.title === undefined || string(value.title, 120)),
+  "chat:compact": (value) => object(value) && selection(value)
+    && (value.instructions === undefined || string(value.instructions, 8_192)),
   "review:list": (value) => object(value) && project(value),
   "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
   "terminal:open": (value) => object(value) && project(value) && size(value),
@@ -79,6 +104,8 @@ const validators = {
     && typeof value.data === "string" && value.data.length <= 65536,
   "terminal:resize": (value) => object(value) && terminal(value) && size(value),
   "terminal:close": (value) => object(value) && terminal(value),
+  "terminal:sync": (value) => object(value) && terminal(value) && entry(value.through, 0)
+    && (value.replay === undefined || value.replay === true),
 } satisfies Record<Command, (value: unknown) => boolean>;
 
 export function isCommand(command: unknown): command is Command {

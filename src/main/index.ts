@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, session } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol, safeStorage, session, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eventChannel, invokeChannel } from "../shared/transport";
-import { loadKeys, storeKeys } from "./credentials";
+import { safeAuthUrl } from "../host/auth-flows";
+import { CredentialVault } from "./credentials";
 import { HostClient } from "./host-client";
 import { isCommand, validPayload } from "./validation";
 
@@ -24,7 +25,7 @@ const csp = [
 ].join("; ");
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: "pideck", privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  { scheme: "pideck", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 app.enableSandbox();
 
@@ -104,12 +105,13 @@ async function initialize() {
 
   const dataDir = app.getPath("userData");
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  let keys = await loadKeys(dataDir);
-  let keySaves: Promise<void> = Promise.resolve();
-  const client = new HostClient(dataDir, keys, (target, event) => {
+  const vault = new CredentialVault(dataDir, safeStorage);
+  const client = new HostClient(dataDir, vault, (target, event) => {
     if (target === owner && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, event);
   }, () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:restart" });
+  }, message => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:disconnected", message });
   });
   host = client;
   client.start();
@@ -142,20 +144,18 @@ async function initialize() {
       if (result.response !== 1 || window.isDestroyed() || requestOwner !== owner) return null;
       return client.request(requestOwner, command, payload);
     }
-    if (command === "model:save-key" && validPayload(command, payload)) {
-      const { provider, key } = payload;
-      const save = keySaves.then(async () => {
-        const models = await client.request(requestOwner, "model:list", undefined);
-        if (!models.some(model => model.provider === provider)) throw new Error("Provider not supported.");
-        if (window.isDestroyed() || requestOwner !== owner) throw new Error("This window has closed.");
-        const next = { ...keys, [provider]: key.trim() };
-        await storeKeys(dataDir, next);
-        keys = next;
-        client.setKeys(keys);
-        await client.request(requestOwner, command, { provider, key: key.trim() });
-      });
-      keySaves = save.catch(() => {});
-      return save;
+    if (command === "model:auth-copy" && validPayload(command, payload)) {
+      const code = await client.request(requestOwner, command, payload);
+      if (window.isDestroyed() || requestOwner !== owner) throw new Error("This window has closed.");
+      clipboard.writeText(code);
+      return;
+    }
+    if (command === "model:auth-open" && validPayload(command, payload)) {
+      const url = safeAuthUrl(await client.request(requestOwner, command, payload));
+      if (window.isDestroyed() || requestOwner !== owner) throw new Error("This window has closed.");
+      if (!url) throw new Error("This provider link could not be opened safely.");
+      await shell.openExternal(url.href);
+      return;
     }
     return client.request(requestOwner, command, payload);
   });

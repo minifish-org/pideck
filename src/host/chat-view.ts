@@ -1,9 +1,13 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentState, ConversationView, LiveState, RunFailure } from "@earendil-works/pi-durable";
-import type { ChatBlock, ChatMessage, ChatView } from "../shared/api.js";
+import type { AgentState, InboxState, LiveState, RunFailure, TranscriptView } from "@earendil-works/pi-durable";
+import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
+
+export const inputEntryKind = "pideck.input";
 
 type ToolBlock = Extract<ChatBlock, { type: "tool" }>;
+type ToolPosition = { message: number; block: number };
 const inlineImageBudget = 16_000_000;
+const inlinePatchLimit = 512_000;
 
 function userBlocks(content: UserMessage["content"]): ChatBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -12,15 +16,17 @@ function userBlocks(content: UserMessage["content"]): ChatBlock[] {
     : { type: "image", mimeType: block.mimeType, data: block.data });
 }
 
-function assistantBlocks(message: AssistantMessage, tools?: Map<string, ToolBlock>): ChatBlock[] {
+function assistantBlocks(message: AssistantMessage): ChatBlock[] {
   return message.content.map(block => {
     if (block.type === "text") return { type: "text", text: block.text };
     if (block.type === "thinking") return { type: "thinking", text: block.thinking };
-    const status = message.stopReason === "aborted" || message.stopReason === "error" ? "error" : "pending";
-    const tool: ToolBlock = { type: "tool", id: block.id, name: block.name, arguments: block.arguments, status };
-    if (typeof block.arguments?.path === "string") tool.path = block.arguments.path;
-    tools?.set(block.id, tool);
-    return tool;
+    const { command, path } = block.arguments ?? {};
+    const status = message.stopReason === "toolUse" || message.stopReason === "pending" ? "pending" : "error";
+    return {
+      type: "tool", id: block.id, name: block.name, status,
+      ...(typeof command === "string" ? { arguments: { command } } : {}),
+      ...(typeof path === "string" ? { path } : {}),
+    };
   });
 }
 
@@ -31,9 +37,10 @@ function applyToolResult(tool: ToolBlock, result: ToolResultMessage): void {
     ? [{ mimeType: block.mimeType, data: block.data }]
     : []);
   if (images.length) tool.images = images;
-  if (tool.name === "edit" && result.details && typeof result.details === "object"
+  if ((tool.name === "edit" || tool.name === "write") && result.details && typeof result.details === "object"
       && "patch" in result.details && typeof result.details.patch === "string") {
-    tool.patch = result.details.patch;
+    if (result.details.patch.length <= inlinePatchLimit) tool.patch = result.details.patch;
+    else tool.output += "\nPatch is too large to display in chat. Open the file in review.";
   }
 }
 
@@ -52,8 +59,8 @@ function failureMessage(failure: RunFailure): string {
 }
 
 function limitInlineImages(messages: ChatMessage[]): void {
-  // Watch updates carry complete views across IPC. Prioritize recent images and
-  // keep the aggregate payload bounded without altering Durable's transcript.
+  // A fresh watch can attach after many image-heavy turns. Keep its projection
+  // bounded while Durable retains the original images in the transcript.
   let remaining = inlineImageBudget;
   const fits = (image: { data: string }) => {
     if (image.data.length > remaining) return false;
@@ -78,59 +85,159 @@ function limitInlineImages(messages: ChatMessage[]): void {
   }
 }
 
-// The projection is rebuilt from a Durable watch value, including live tool slots
-// and partial text. It never owns transcript or task state.
-export function projectChatView(view: ConversationView): ChatView {
-  const messages: ChatMessage[] = [];
-  const tools = new Map<string, ToolBlock>();
-  const live = view.docs["pi.live"] as LiveState | undefined;
-  const agent = view.docs["pi.agent"] as AgentState | undefined;
+function inputRequestId(data: unknown): string | undefined {
+  if (data && typeof data === "object" && "requestId" in data && typeof data.requestId === "string") return data.requestId;
+  return undefined;
+}
 
-  for (const entry of view.entries) {
-    if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant" && entry.kind !== "pi.tool-result") continue;
+function projectTranscript(items: TranscriptView["items"], forkAt: number | undefined) {
+  const messages: ChatMessage[] = [];
+  const tools = new Map<string, ToolPosition>();
+  const gaps: ChatGap[] = [];
+  let firstUnplacedGap = 0;
+  function push(message: ChatMessage) {
+    for (const gap of gaps.slice(firstUnplacedGap)) gap.beforeMessageId = message.id;
+    firstUnplacedGap = gaps.length;
+    messages.push(message);
+  }
+
+  for (const item of items) {
+    if (item.kind === "gap") {
+      gaps.push({ after: item.after, upTo: item.upTo });
+      continue;
+    }
+    if (item.kind !== "entry") continue;
+    const { entry } = item;
+    if (entry.kind !== "pi.user" && entry.kind !== inputEntryKind
+        && entry.kind !== "pi.assistant" && entry.kind !== "pi.tool-result") continue;
     for (const [index, message] of (entry.model ?? []).entries()) {
       const id = `${entry.id}:${index}`;
       if (message.role === "user") {
-        messages.push({ id, role: "user", blocks: userBlocks(message.content) });
+        const requestId = entry.kind === inputEntryKind ? inputRequestId(entry.data) : undefined;
+        push({ id, entryId: entry.id, role: "user", blocks: userBlocks(message.content), ...(requestId ? { requestId } : {}) });
       } else if (message.role === "assistant") {
-        const blocks = assistantBlocks(message, tools);
-        if (blocks.length) messages.push({ id, role: "assistant", blocks });
-      } else if (message.role === "toolResult") {
-        let tool = tools.get(message.toolCallId);
-        if (!tool) {
-          // The corresponding call may have fallen outside the transcript window.
-          tool = { type: "tool", id: message.toolCallId, name: message.toolName, status: "pending" };
-          tools.set(message.toolCallId, tool);
-          messages.push({ id, role: "assistant", blocks: [tool] });
+        const blocks = assistantBlocks(message);
+        const error = message.stopReason === "length" ? "The model reached its output limit."
+          : message.stopReason === "aborted" ? "This response was interrupted." : undefined;
+        if (!blocks.length && !error) continue;
+        for (const [block, value] of blocks.entries()) {
+          if (value.type === "tool") tools.set(value.id, { message: messages.length, block });
         }
-        applyToolResult(tool, message);
+        // Upstream permits fork after any visible entry. If a provider response
+        // was interrupted before becoming usable, offer the preceding entries.
+        push({
+          id, role: "assistant", blocks,
+          ...(message.stopReason === "error" || message.stopReason === "aborted" ? {} : { entryId: entry.id }),
+          ...(error ? { error } : {}),
+        });
+      } else if (message.role === "toolResult") {
+        const position = tools.get(message.toolCallId);
+        const matching = position && messages[position.message]?.blocks[position.block];
+        if (matching?.type === "tool") {
+          applyToolResult(matching, message);
+        } else {
+          const tool: ToolBlock = { type: "tool", id: message.toolCallId, name: message.toolName, status: "pending" };
+          applyToolResult(tool, message);
+          push({ id, role: "assistant", blocks: [tool] });
+        }
       }
     }
   }
 
-  for (const slot of live?.tools ?? []) {
-    let tool = tools.get(slot.callId);
-    if (!tool) {
-      tool = { type: "tool", id: slot.callId, name: slot.name, status: "pending" };
-      messages.push({ id: `live-tool:${slot.callId}`, role: "assistant", blocks: [tool] });
+  if (forkAt !== undefined && !gaps.length) {
+    for (const position of tools.values()) {
+      const message = messages[position.message];
+      const tool = message.blocks[position.block];
+      if (message.entryId !== undefined && message.entryId <= forkAt && tool.type === "tool" && tool.status === "pending") {
+        tool.status = "error";
+        tool.output = "Tool result unavailable in this fork.";
+      }
     }
-    if (tool.status === "done" || tool.status === "error") continue;
-    tool.status = slot.status;
-    if (slot.output !== undefined) tool.output = slot.output;
   }
-
-  const partial = live?.generation?.message;
-  if (partial) {
-    const blocks = assistantBlocks(partial);
-    if (blocks.length) messages.push({ id: "live-assistant", role: "assistant", blocks });
-  }
-
   limitInlineImages(messages);
-  return {
-    messages,
-    status: live?.run ? "running" : "idle",
-    ...(agent?.model ? { model: { provider: agent.model.provider, id: agent.model.modelId } } : {}),
-    ...(agent?.thinkingLevel ? { thinking: agent.thinkingLevel } : {}),
-    ...(live?.runFailure ? { error: failureMessage(live.runFailure) } : {}),
+  return { messages, tools, gaps, hasEarlier: items[0]?.kind === "earlier" };
+}
+
+function liveActivity(live: LiveState | undefined): ChatView["activity"] {
+  if (live?.compactions?.length) return { kind: "compacting" };
+  if (live?.generation?.retry) return { kind: "retrying", retryAt: live.generation.retry.at };
+  if (live?.generation?.deferred) return { kind: "waiting", retryAt: live.generation.deferred.pollAt };
+  return undefined;
+}
+
+function queuedInputs(inbox: InboxState | undefined): ChatView["queued"] {
+  if (!inbox?.items.length) return undefined;
+  return inbox.items.flatMap(item => {
+    if (item.mode === "write") return [];
+    const preview = (typeof item.content === "string" ? item.content
+      : item.content.flatMap(block => block.type === "text" ? [block.text] : []).join(" ")).trim();
+    const requestId = inputRequestId(item.entry?.data);
+    return [{
+      id: item.id,
+      delivery: item.mode === "steer" ? "steer" as const : "follow-up" as const,
+      preview: preview.length > 200 ? preview.slice(0, 199) + "…" : preview || "Attached image",
+      ...(requestId ? { requestId } : {}),
+    }];
+  });
+}
+
+// This cache belongs to one watch. Durable's transcript helper owns the
+// loaded history. Immutable committed rows are reused during live deltas.
+export function chatProjection() {
+  let items: TranscriptView["items"] | undefined;
+  let committed: ReturnType<typeof projectTranscript>;
+  return (view: TranscriptView): ChatView => {
+    if (items !== view.items) {
+      items = view.items;
+      committed = projectTranscript(items, view.conversation.parent?.at);
+    }
+    const { hasEarlier, gaps, tools } = committed;
+    const messages = committed.messages.slice();
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    const agent = view.docs["pi.agent"] as AgentState | undefined;
+    const inbox = view.docs["pi.inbox"] as InboxState | undefined;
+    const activity = liveActivity(live);
+    const queued = queuedInputs(inbox);
+
+    for (const slot of live?.tools ?? []) {
+      const position = tools.get(slot.callId);
+      const existing = position && messages[position.message].blocks[position.block];
+      if (existing?.type === "tool" && (existing.status === "done" || existing.status === "error")) continue;
+      const tool: ToolBlock = {
+        ...(existing?.type === "tool" ? existing : { type: "tool", id: slot.callId, name: slot.name }),
+        status: slot.unoffered || (slot.status === "done" && slot.entry === undefined) ? "error" : slot.status,
+      };
+      if (slot.output !== undefined) {
+        tool.output = slot.droppedBytes || slot.droppedLines
+          ? "[Earlier tool output omitted.]\n" + slot.output : slot.output;
+      }
+      if (position) {
+        const row = messages[position.message];
+        const blocks = row.blocks.slice();
+        blocks[position.block] = tool;
+        messages[position.message] = { ...row, blocks };
+      } else {
+        messages.push({ id: `live-tool:${slot.callId}`, role: "assistant", blocks: [tool] });
+      }
+    }
+
+    const partial = live?.generation?.message;
+    if (partial) {
+      const blocks = assistantBlocks(partial);
+      if (blocks.length) messages.push({ id: "live-assistant", role: "assistant", blocks });
+    }
+
+    return {
+      messages,
+      status: live?.run || activity?.kind === "compacting" ? "running" : "idle",
+      ...(hasEarlier ? { hasEarlier: true } : {}),
+      ...(gaps.length ? { gaps } : {}),
+      ...(queued?.length ? { queued } : {}),
+      ...(activity ? { activity } : {}),
+      ...(agent?.model ? { model: { provider: agent.model.provider, id: agent.model.modelId } } : {}),
+      ...(agent?.thinkingLevel ? { thinking: agent.thinkingLevel } : {}),
+      ...(live?.runFailure ? { error: failureMessage(live.runFailure) }
+        : live?.compactionFailure ? { error: "The model could not compact the conversation." } : {}),
+    };
   };
 }

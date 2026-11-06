@@ -61,3 +61,19 @@ test("reads the working tree of an unborn branch and preserves staged changes re
   assert.match(patch, /-first\n\+third/);
   assert.match(patch, /-third\n\+first/);
 });
+
+test("shows both sides when a staged removal is recreated as an untracked file", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pideck-review-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  git(cwd, "init", "-q");
+  await writeFile(join(cwd, "a.txt"), "old\n");
+  git(cwd, "add", "a.txt");
+  git(cwd, "commit", "-qm", "start");
+  git(cwd, "rm", "-q", "a.txt");
+  await writeFile(join(cwd, "a.txt"), "new\n");
+
+  assert.deepEqual(await listChanges(cwd), [{ path: "a.txt", status: "D?" }]);
+  const patch = (await readPatch(cwd, "a.txt")).patch ?? "";
+  assert.match(patch, /\n-old\n/);
+  assert.match(patch, /\n\+new\n/);
+});

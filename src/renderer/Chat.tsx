@@ -1,22 +1,14 @@
-import { lazy, memo, Suspense, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ChatBlock, ChatMessage, ImageInput, ModelOption, ModelRef, Project, Session, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, SendChat, Session, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { readableError, useConversation } from './conversation';
+import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
+import type { Attachment, Draft, SendAttempt } from './preferences';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
-
-export function modelKey(model: ModelRef) {
-  return `${model.provider}/${model.id}`;
-}
-
-export function providerLabel(provider: string) {
-  return ({ openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', openrouter: 'OpenRouter',
-    github: 'GitHub', xai: 'xAI', deepseek: 'DeepSeek', mistral: 'Mistral' } as Record<string, string>)[provider]
-    ?? provider.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' ');
-}
 
 type ReviewSelection = { path?: string; patch?: string };
 
@@ -84,13 +76,14 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
   </div>;
 });
 
-function Message({ message, onReview }: {
+const Message = memo(function Message({ message, onReview, onFork }: {
   message: ChatMessage;
   onReview: (selection: ReviewSelection) => void;
+  onFork?: (entryId: number) => void;
 }) {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   return (
-    <article className={`chat-entry chat-entry--${message.role}`} aria-label={message.role === 'user' ? 'You' : 'Pideck'}>
+    <article className={`chat-entry chat-entry--${message.role}`} aria-label={message.role === 'user' ? 'You' : 'Pideck'} data-message-id={message.id}>
       {message.role === 'assistant' && <span className="message-avatar"><Icon name="mark" /></span>}
       <div className="message-content">
         {message.blocks.map((block, index) => {
@@ -108,10 +101,12 @@ function Message({ message, onReview }: {
           }
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
+        {onFork && message.entryId !== undefined && <button type="button" className="message-fork inline-action"
+          title="Start a separate session from this point" onClick={() => onFork(message.entryId!)}><Icon name="fork" width={12} height={12} /> Fork here</button>}
       </div>
     </article>
   );
-}
+});
 
 export function EmptyScene({ icon, eyebrow, title, children }: {
   icon: 'mark' | 'folderPlus' | 'lock' | 'chat';
@@ -131,8 +126,6 @@ export function EmptyScene({ icon, eyebrow, title, children }: {
   );
 }
 
-type Attachment = ImageInput & { name: string };
-
 async function readAttachment(file: File): Promise<Attachment> {
   if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
     throw new Error('Choose a PNG, JPEG, WebP, or GIF image.');
@@ -149,40 +142,155 @@ async function readAttachment(file: File): Promise<Attachment> {
   });
 }
 
-export function Chat({ project, session, models, onSettings, onReview, onError, onSent }: {
+type Delivery = NonNullable<SendChat['delivery']>;
+
+function SessionActions({ busy, available, onCompact, onFork }: {
+  busy: boolean;
+  available: boolean;
+  onCompact: () => void;
+  onFork?: () => void;
+}) {
+  const disclosure = useRef<HTMLDetailsElement>(null);
+  function choose(action: () => void) {
+    if (disclosure.current) disclosure.current.open = false;
+    action();
+  }
+  return <div className="session-tools">
+    <details ref={disclosure} className="session-actions"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.currentTarget.open = false;
+          event.currentTarget.querySelector('summary')?.focus();
+        }
+      }}>
+      <summary title="Session actions" aria-label="Session actions"><Icon name="more" /></summary>
+      <div className="session-actions-list">
+        <button type="button" disabled={!available || !onFork} onClick={() => onFork && choose(onFork)}>
+          <Icon name="fork" /> Fork from latest turn
+        </button>
+        <button type="button" disabled={!available || busy} onClick={() => choose(onCompact)}>
+          <Icon name="layers" /> Compact context…
+        </button>
+      </div>
+    </details>
+  </div>;
+}
+
+function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: (instructions: string) => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [instructions, setInstructions] = useState('');
+  useLayoutEffect(() => {
+    if (!dialog.current?.open) dialog.current?.showModal();
+  }, []);
+
+  return <dialog className="settings-dialog" ref={dialog} aria-labelledby="compact-title"
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <div className="dialog-heading"><h2 id="compact-title">Compact context</h2>
+      <button type="button" className="icon-button" aria-label="Close compaction" onClick={onClose}><Icon name="close" /></button>
+    </div>
+    <p className="dialog-copy">Summarize earlier turns to make room in the model’s context. The conversation history stays available.</p>
+    <form onSubmit={(event) => { event.preventDefault(); onConfirm(instructions.trim()); }}>
+      <div className="settings-fields"><label>What should the summary preserve? (optional)
+        <textarea rows={3} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
+      </label></div>
+      <div className="dialog-actions"><button type="button" className="button" onClick={onClose}>Cancel</button>
+        <button type="submit" className="button button--primary"><Icon name="layers" /> Compact context</button></div>
+    </form>
+  </dialog>;
+}
+
+const starters = [
+  { label: 'Explore this project', text: 'Inspect this project and explain its structure, entry points, and how to run the tests.' },
+  { label: 'Review current changes', text: 'Review the current Git changes for bugs and missing verification. Keep the review grounded in the diff.' },
+];
+
+type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
+
+function sameGap(left: ChatGap, right: ChatGap) {
+  return left.after === right.after && left.upTo === right.upTo;
+}
+
+function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
+  if (draft.attempt?.input.requestId !== attempt.input.requestId) return draft;
+  const unchanged = draft.text === attempt.text && draft.attachments === attempt.attachments;
+  return {
+    ...draft,
+    text: unchanged ? '' : draft.text,
+    attachments: unchanged ? [] : draft.attachments,
+    attempt: undefined,
+    sending: false,
+    error: undefined,
+  };
+}
+
+export function Chat({ project, session, models, modelsReady, modelsError, defaultModel, draft, updateDraft,
+  onModelChosen, onSettings, onRetryModels, onReview, onWorkspaceChange, onSent, onFork }: {
   project: Project;
   session: Session;
   models: ModelOption[];
-  onSettings: (provider: string) => void;
+  modelsReady: boolean;
+  modelsError?: string;
+  defaultModel?: string;
+  draft: Draft;
+  updateDraft: (update: (draft: Draft) => Draft) => void;
+  onModelChosen: (key: string) => void;
+  onSettings: (provider?: string) => void;
+  onRetryModels: () => void;
   onReview: (selection: ReviewSelection) => void;
-  onError: (message: string) => void;
+  onWorkspaceChange: () => void;
   onSent: () => void;
+  onFork: (entryId: number) => Promise<void>;
 }) {
   const selection = { projectId: project.id, sessionId: session.id };
-  const { view, connected, error: connectionError, retry } = useConversation(selection);
-  const [pickedModel, setPickedModel] = useState('');
-  const [pickedThinking, setPickedThinking] = useState<Thinking>();
-  const [text, setText] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [reading, setReading] = useState(false);
-  const [pending, setPending] = useState(false);
+  const { view, connected, error: connectionError, retry, loadEarlier } = useConversation(selection);
+  const [picker, setPicker] = useState(false);
+  const [compactDialog, setCompactDialog] = useState(false);
+  const [compacting, setCompacting] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const [delivery, setDelivery] = useState<Delivery>('follow-up');
   const [stopping, setStopping] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
+  const [readingHistory, setReadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string>();
+  const [forking, setForking] = useState(false);
   const form = useRef<HTMLFormElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const pinned = useRef(true);
+  const historyAnchor = useRef<HistoryAnchor | undefined>(undefined);
+  const toolStates = useRef<Map<string, string> | undefined>(undefined);
+  const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
+  const { text, attachments } = draft;
 
-  const hasMessages = Boolean(view?.messages.length);
+  const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
   const busy = view?.status === 'running' || view?.status === 'cancelling';
-  const desiredModel = pickedModel || (view?.model && modelKey(view.model));
-  const model = models.find((option) => modelKey(option) === desiredModel)
-    ?? models.find((option) => option.configured) ?? models[0];
-  const desiredThinking = pickedThinking ?? view?.thinking ?? 'off';
-  const thinking = model?.thinking.includes(desiredThinking) ? desiredThinking : model?.thinking[0] ?? 'off';
-  const groupedModels = useMemo(() => Map.groupBy(models, ({ provider }) => provider), [models]);
-  const canSend = connected && !busy && !pending && !reading && Boolean(model?.configured)
+  const agentCompacting = compacting || view?.activity?.kind === 'compacting';
+  const activeKey = view?.model && modelKey(view.model);
+  const desiredModel = draft.model || activeKey || defaultModel;
+  const chosen = models.find((option) => modelKey(option) === desiredModel && (option.configured || Boolean(draft.model)))
+    ?? models.find((option) => option.configured);
+  const model = busy ? models.find((option) => modelKey(option) === activeKey) : chosen;
+  const desiredThinking = busy ? view?.thinking : draft.thinking ?? (model && modelKey(model) === activeKey ? view?.thinking : undefined);
+  const thinking = desiredThinking && model?.thinking.includes(desiredThinking) ? desiredThinking
+    : model?.thinking.includes('off') ? 'off' : model?.thinking[0] ?? 'off';
+  const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
+    && view?.status !== 'cancelling' && Boolean(model?.configured)
     && Boolean(text.trim() || attachments.length) && (!attachments.length || Boolean(model?.supportsImages));
+  const latestFork = view?.messages.findLast(({ entryId }) => entryId !== undefined)?.entryId;
+  const gaps = view?.gaps ?? [];
+
+  useEffect(() => {
+    if (!connected || (!busy && !agentCompacting)) setStopping(false);
+  }, [agentCompacting, busy, connected]);
+
+  function update(patch: Partial<Draft>) {
+    updateDraft((current) => ({ ...current, ...patch }));
+  }
 
   function jumpToLatest() {
     if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
@@ -191,70 +299,203 @@ export function Chat({ project, session, models, onSettings, onReview, onError, 
   }
 
   useLayoutEffect(() => {
-    if (scroll.current && pinned.current) scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [view]);
+    const element = scroll.current;
+    if (!element) return;
+    const anchor = historyAnchor.current;
+    if (anchor && view && view !== anchor.view) {
+      const gap = anchor.gap;
+      const changed = gap ? !view.gaps?.some((item) => sameGap(item, gap))
+        : view.messages[0]?.id !== anchor.view.messages[0]?.id || !view.hasEarlier;
+      if (changed) {
+        historyAnchor.current = undefined;
+        const entry = anchor.id && element.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(anchor.id)}"]`);
+        if (entry) element.scrollTop += entry.getBoundingClientRect().top - anchor.top;
+        pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+        setJumpVisible(!pinned.current);
+        return;
+      }
+    }
+    if (!readingHistory && anchor && view === anchor.view) historyAnchor.current = undefined;
+    if (pinned.current) element.scrollTop = element.scrollHeight;
+  }, [readingHistory, view]);
+
+  useLayoutEffect(() => {
+    if (!scroll.current || !thread.current) return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current && !historyAnchor.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+    });
+    observer.observe(thread.current);
+    observer.observe(scroll.current);
+    return () => observer.disconnect();
+  }, [hasMessages]);
+
+  useEffect(() => {
+    if (!draft.attempt || !view) return;
+    const attempt = draft.attempt;
+    const id = attempt.input.requestId;
+    if (view.messages.some((message) => message.requestId === id) || view.queued?.some((queued) => queued.requestId === id)) {
+      updateDraft((current) => completeAttempt(current, attempt));
+    }
+  }, [draft.attempt, updateDraft, view]);
+
+  useEffect(() => {
+    if (!view || !connected) return;
+    const last = toolStates.current;
+    const next = new Map(view.messages.flatMap(({ blocks }) => blocks.flatMap((block) =>
+      block.type === 'tool' && ['edit', 'write', 'bash'].includes(block.name)
+        ? [[block.id, block.status] as const] : [],
+    )));
+    if (last && [...next].some(([id, status]) => (status === 'done' || status === 'error') && last.get(id) !== status)) onWorkspaceChange();
+    toolStates.current = next;
+  }, [connected, onWorkspaceChange, view]);
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!canSend || !model) return;
-    setPending(true);
-    try {
-      await window.pideck.invoke('chat:send', {
+    if (!canSend || !model) {
+      if (text.trim() || attachments.length) {
+        if (!connected) update({ error: 'Reconnect before sending. Your draft is still here.' });
+        else if (modelsReady && !model?.configured) update({ error: 'Connect a model provider to send this draft.' });
+        else if (attachments.length && !model?.supportsImages) update({ error: 'Choose a model that accepts images or remove the attachments.' });
+      }
+      return;
+    }
+    const deliveryMode = busy ? delivery : 'send';
+    const previous = draft.attempt;
+    const requestId = previous?.text === text && previous.attachments === attachments
+      ? previous.input.requestId : crypto.randomUUID();
+    const attempt: SendAttempt = {
+      text, attachments,
+      input: {
         ...selection,
-        text: text.trim(),
+        requestId,
+        text,
         model: { provider: model.provider, id: model.id },
         thinking,
+        delivery: deliveryMode,
         images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
-      });
-      setText((current) => current === text ? '' : current);
-      setAttachments((current) => current.filter((attachment) => !attachments.includes(attachment)));
+      },
+    };
+    update({ attempt, sending: true, error: undefined });
+    try {
+      await window.pideck.invoke('chat:send', attempt.input);
+      updateDraft((current) => completeAttempt(current, attempt));
+      setDelivery('follow-up');
       jumpToLatest();
       onSent();
     } catch (error) {
-      onError(readableError(error));
-    } finally {
-      setPending(false);
+      updateDraft((current) => current.attempt?.input.requestId === attempt.input.requestId
+        ? { ...current, sending: false, error: readableError(error) }
+        : current);
     }
   }
 
   async function cancel() {
     setStopping(true);
+    update({ error: undefined });
     try {
       await window.pideck.invoke('chat:cancel', selection);
     } catch (error) {
-      onError(readableError(error));
-    } finally {
+      update({ error: readableError(error) });
       setStopping(false);
     }
   }
 
   async function addFiles(files: File[]) {
-    if (reading || !files.length) return;
+    if (draft.reading || !files.length) return;
     const existingSize = attachments.reduce((sum, file) => sum + file.data.length, 0);
     const additionalSize = files.reduce((sum, file) => sum + Math.ceil(file.size / 3) * 4, 0);
     if (files.length + attachments.length > 4 || additionalSize + existingSize > 12_000_000) {
-      onError('Attach up to four images with a combined size of 9 MB.');
+      update({ error: 'Attach up to four images with a combined size of 9 MB.' });
       return;
     }
-    setReading(true);
+    update({ reading: true, error: undefined });
     try {
       const newAttachments = await Promise.all(files.map(readAttachment));
-      setAttachments((current) => [...current, ...newAttachments]);
+      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...newAttachments], reading: false }));
     } catch (error) {
-      onError(readableError(error));
-    } finally {
-      setReading(false);
+      update({ reading: false, error: readableError(error) });
     }
   }
 
-  const sendHint = model && !model.configured
-    ? <button className="inline-action" type="button" onClick={() => onSettings(model.provider)}>Set up {providerLabel(model.provider)} to send</button>
-    : attachments.length > 0 && !model?.supportsImages
-      ? 'Choose a model that accepts images'
-      : 'Enter to send · Shift+Enter for a new line';
+  async function showEarlier(gap?: ChatGap) {
+    const element = scroll.current;
+    if (!element || !view || readingHistory) return;
+    const edge = element.getBoundingClientRect().top;
+    const visible = [...element.querySelectorAll<HTMLElement>('[data-message-id]')]
+      .find((entry) => entry.getBoundingClientRect().bottom > edge);
+    historyAnchor.current = { id: visible?.dataset.messageId, top: visible?.getBoundingClientRect().top ?? 0, view, gap };
+    pinned.current = false;
+    setReadingHistory(true);
+    setHistoryError(undefined);
+    try {
+      await loadEarlier(gap);
+    } catch (error) {
+      historyAnchor.current = undefined;
+      setHistoryError(readableError(error));
+    } finally {
+      setReadingHistory(false);
+    }
+  }
+
+  async function compact(instructions: string) {
+    setCompactDialog(false);
+    setCompacting(true);
+    setNotice(undefined);
+    update({ error: undefined });
+    try {
+      const result = await window.pideck.invoke('chat:compact', { ...selection, instructions: instructions || undefined });
+      if (result === 'failed') update({ error: 'Context compaction failed. Your conversation history is still available.' });
+      else setNotice({
+        compacted: 'Context compacted.',
+        'no-change': 'There is no earlier context to compact yet.',
+        stopped: 'Context compaction stopped.',
+      }[result]);
+    } catch (error) {
+      update({ error: readableError(error) });
+    } finally {
+      setCompacting(false);
+    }
+  }
+
+  const fork = useCallback(async (entryId: number) => {
+    if (!connected || forking) return;
+    setForking(true);
+    try {
+      await onFork(entryId);
+    } catch (error) {
+      updateDraft((current) => ({ ...current, error: readableError(error) }));
+    } finally {
+      setForking(false);
+    }
+  }, [connected, forking, onFork, updateDraft]);
+
+  function renderGaps(beforeMessageId?: string) {
+    return gaps.filter((gap) => gap.beforeMessageId === beforeMessageId).map((gap) => (
+      <button key={`${gap.after}:${gap.upTo}`} className="button history-button" type="button"
+        disabled={!connected || readingHistory} onClick={() => void showEarlier(gap)}>Load messages here</button>
+    ));
+  }
+
+  const retryTime = view?.activity?.kind === 'retrying' && view.activity.retryAt
+    ? new Date(view.activity.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined;
+  const runStatus = stopping || view?.status === 'cancelling' ? 'Stopping…'
+    : agentCompacting ? 'Compacting context…'
+    : view?.activity?.kind === 'retrying' ? retryTime ? `Model retry scheduled for ${retryTime}` : 'Retrying the model…'
+    : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
+    : busy ? 'Pideck is working' : undefined;
+  const sendHint = !connected ? 'Your draft stays here while the session reconnects'
+    : modelsError ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry loading models</button>
+    : !model?.configured && modelsReady
+      ? <button className="inline-action" type="button" onClick={() => onSettings(model?.provider)}>Connect {model ? providerLabel(model.provider) : 'a model provider'} to send</button>
+      : attachments.length > 0 && !model?.supportsImages ? 'Choose a model that accepts images'
+        : agentCompacting ? 'You can draft a message while context is compacting'
+          : busy ? (delivery === 'steer' ? 'Enter to steer the current run' : 'Enter to queue a follow-up')
+          : 'Enter to send · Shift+Enter for a new line';
 
   return (
     <main className="chat" aria-label="Conversation">
+      <SessionActions busy={busy || agentCompacting} available={connected && hasMessages && !forking}
+        onCompact={() => setCompactDialog(true)} onFork={latestFork !== undefined ? () => void fork(latestFork) : undefined} />
       {!connected && (
         <div className={`notice ${connectionError ? '' : 'notice--info'}`} role={connectionError ? 'alert' : 'status'}>
           <Icon name={connectionError ? 'alert' : 'chat'} />
@@ -262,26 +503,60 @@ export function Chat({ project, session, models, onSettings, onReview, onError, 
           {connectionError && <button className="button" type="button" onClick={retry}>Reconnect</button>}
         </div>
       )}
-      <div className={`chat-scroll ${hasMessages || view?.error ? '' : 'chat-scroll--empty'}`} ref={scroll}
+      <div className={`chat-scroll ${hasMessages || view?.error || runStatus ? '' : 'chat-scroll--empty'}`} ref={scroll}
         onScroll={(event) => {
           const element = event.currentTarget;
-          pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
+          const previous = geometry.current;
+          geometry.current = { height: element.scrollHeight, viewport: element.clientHeight };
+          if (pinned.current && previous && (previous.height !== element.scrollHeight || previous.viewport !== element.clientHeight)) {
+            element.scrollTop = element.scrollHeight;
+          } else {
+            pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+          }
           setJumpVisible(!pinned.current);
         }}>
-        {hasMessages || view?.error ? (
-          <div className="chat-thread">
-            {view?.messages.map((message) => <Message key={message.id} message={message} onReview={onReview} />)}
-            {busy && <div className="run-state" role="status"><span className="run-state-dot" />{view?.status === 'cancelling' ? 'Stopping…' : 'Pideck is working'}</div>}
+        {hasMessages || view?.error || runStatus ? (
+          <div className="chat-thread" ref={thread}>
+            {view?.hasEarlier && <button className="button history-button" type="button" disabled={!connected || readingHistory}
+              onClick={() => void showEarlier()}>{readingHistory ? 'Loading history…' : 'Load earlier messages'}</button>}
+            {historyError && <div className="notice" role="alert"><Icon name="alert" /><span>{historyError}</span></div>}
+            {view?.messages.map((message) => (
+              <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
+                {renderGaps(message.id)}
+                <Message message={message} onReview={onReview} onFork={connected && !forking ? fork : undefined} />
+              </div>
+            ))}
+            {renderGaps()}
+            {runStatus && <div className="run-state" role="status"><span className="run-state-dot" />{runStatus}</div>}
             {view?.error && <div className="notice" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
           </div>
         ) : (
           <EmptyScene icon="mark" eyebrow={project.name} title="What are we building?">
-            <p>Ask Pideck to explore the codebase, make a change, or verify a fix.</p>
+            {!model?.configured && modelsReady
+              ? <><p>Connect a model provider to use Pideck in this project. You can start drafting while you set it up.</p>
+                <button className="button button--primary" type="button" onClick={() => onSettings(model?.provider)}>
+                  <Icon name="key" /> Connect a provider
+                </button></>
+              : <p>Ask Pideck to explore the codebase, make a change, or verify a fix.</p>}
+            <div className="starter-prompts">
+              {starters.map((starter) => <button type="button" className="button" key={starter.label} disabled={Boolean(text.trim())}
+                onClick={() => { update({ text: starter.text, error: undefined }); textarea.current?.focus(); }}>{starter.label}</button>)}
+            </div>
           </EmptyScene>
         )}
       </div>
       {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" onClick={jumpToLatest}><Icon name="arrowDown" /> Latest</button></div>}
       <div className="composer-wrap">
+        {view?.queued?.length ? <div className="queued-list" aria-label="Queued messages">
+          {view.queued.map((item) => <div key={item.id}><span>{item.delivery === 'steer' ? 'Steer' : 'Follow-up'}</span><span title={item.preview}>{item.preview}</span></div>)}
+        </div> : null}
+        {(draft.error || modelsError || notice) && <div className={`notice composer-notice ${draft.error || modelsError ? '' : 'notice--info'}`}
+          role={draft.error || modelsError ? 'alert' : 'status'}>
+          <Icon name={draft.error || modelsError ? 'alert' : 'check'} /><span>{draft.error ?? modelsError ?? notice}</span>
+          {!modelsError && <button className="icon-button" type="button" aria-label="Dismiss chat notice" onClick={() => {
+            update({ error: undefined }); setNotice(undefined);
+          }}><Icon name="close" /></button>}
+        </div>}
         <form className="composer" ref={form} onSubmit={send}>
           {attachments.length > 0 && <div className="attachments">
             {attachments.map((attachment, index) => (
@@ -289,40 +564,41 @@ export function Chat({ project, session, models, onSettings, onReview, onError, 
                 <img src={imageSource(attachment)} alt="" />
                 <span>{attachment.name}</span>
                 <button className="icon-button" type="button" aria-label={`Remove ${attachment.name}`}
-                  onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" width={13} height={13} /></button>
+                  onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item !== attachment) }))}><Icon name="close" width={13} height={13} /></button>
               </div>
             ))}
           </div>}
-          <textarea id="prompt" value={text} maxLength={200000} rows={2} aria-label="Message Pideck"
-            placeholder="Message Pideck…" onChange={(event) => setText(event.target.value)}
+          <textarea ref={textarea} id="prompt" value={text} maxLength={200000} rows={2} aria-label="Message Pideck"
+            placeholder={busy && !agentCompacting ? 'Draft a follow-up or steer the current run…' : 'Message Pideck…'}
+            onChange={(event) => update({ text: event.target.value, error: undefined })}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault();
                 form.current?.requestSubmit();
               }
             }}
             onPaste={(event) => {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
-              if (model?.supportsImages && images.length) {
-                event.preventDefault();
-                void addFiles(images);
+              if (images.length) {
+                if (model?.supportsImages) {
+                  event.preventDefault();
+                  void addFiles(images);
+                } else if (!event.clipboardData.getData('text/plain')) {
+                  update({ error: 'Choose a model that accepts images to paste a screenshot.' });
+                }
               }
             }} />
           <div className="composer-controls">
-            <div className="select-shell model-select">
-              <select aria-label="Model" value={model ? modelKey(model) : ''} disabled={models.length === 0}
-                onChange={(event) => { setPickedModel(event.target.value); setPickedThinking(undefined); }}>
-                {!models.length && <option value="">Loading models…</option>}
-                {[...groupedModels].map(([provider, options]) => (
-                  <optgroup label={providerLabel(provider)} key={provider}>
-                    {options.map((option) => <option value={modelKey(option)} key={modelKey(option)}>{option.name}{option.configured ? '' : ' · Setup required'}</option>)}
-                  </optgroup>
-                ))}
-              </select>
-              <Icon name="down" width={13} height={13} />
-            </div>
+            <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
+              disabled={!models.length || busy} title={model ? `${providerLabel(model.provider)} · ${model.name}` : 'Choose a model'}
+              onClick={() => setPicker(true)}>
+              <Icon name="layers" width={14} height={14} />
+              <span>{model?.name ?? (modelsReady ? 'Choose model' : 'Loading models…')}</span>
+              <Icon name="down" width={12} height={12} />
+            </button>
             {model && model.thinking.length > 1 && <div className="select-shell">
-              <select aria-label="Thinking level" value={thinking} onChange={(event) => setPickedThinking(event.target.value as Thinking)}>
+              <select aria-label="Thinking level" value={thinking} disabled={busy}
+                onChange={(event) => update({ thinking: event.target.value as Thinking })}>
                 {model.thinking.map((level) => <option key={level} value={level}>{level === 'off' ? 'Thinking off' : `Thinking · ${level}`}</option>)}
               </select>
               <Icon name="down" width={13} height={13} />
@@ -336,16 +612,32 @@ export function Chat({ project, session, models, onSettings, onReview, onError, 
                   void addFiles(files);
                 }} />
               <button className="icon-button" type="button" title="Attach images" aria-label="Attach images"
-                disabled={reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
+                disabled={draft.reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
             </>}
-            {busy
-              ? <button className="button send-button stop-button" type="button" onClick={cancel} title="Stop the run" aria-label="Stop the run"
-                  disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>
-              : <button className="button button--primary send-button" type="submit" title="Send" aria-label="Send" disabled={!canSend}><Icon name="arrowUp" /></button>}
+            {(busy || agentCompacting) && <button className="button send-button stop-button" type="button" onClick={cancel}
+              title={agentCompacting ? 'Stop compaction' : 'Stop the run'} aria-label={agentCompacting ? 'Stop compaction' : 'Stop the run'} disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>}
+            {busy && !agentCompacting && <div className="select-shell delivery-select">
+              <select aria-label="Message delivery" value={delivery} onChange={(event) => setDelivery(event.target.value as Delivery)}>
+                <option value="follow-up">Follow-up</option><option value="steer">Steer</option>
+              </select><Icon name="down" width={13} height={13} />
+            </div>}
+            <button className="button button--primary send-button" type="submit"
+              title={busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send'}
+              aria-label={busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send'}
+              disabled={!canSend}><Icon name="arrowUp" /></button>
           </div>
         </form>
-        <div className="composer-hints"><span>{sendHint}</span><span>{session.title}</span></div>
+        <div className="composer-hints"><span>{sendHint}</span><span>{draft.sending ? 'Sending…' : draft.reading ? 'Attaching images…' : session.title}</span></div>
       </div>
+      {picker && <ModelPicker models={models} selected={model} onClose={() => setPicker(false)} onChoose={(option) => {
+        const key = modelKey(option);
+        update({ model: key, thinking: undefined, error: undefined });
+        if (option.configured) onModelChosen(key);
+        setPicker(false);
+        if (!option.configured) onSettings(option.provider);
+        else textarea.current?.focus();
+      }} />}
+      {compactDialog && <CompactDialog onClose={() => setCompactDialog(false)} onConfirm={compact} />}
     </main>
   );
 }

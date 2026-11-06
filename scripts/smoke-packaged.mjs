@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { _electron } from "playwright";
+import { openSmokeProvider } from "./smoke-provider.mjs";
 
 async function executable() {
   if (process.argv[2]) return resolve(process.argv[2]);
@@ -21,22 +22,28 @@ const temporary = await mkdtemp(join(tmpdir(), "pideck-packaged-"));
 const data = join(temporary, "profile");
 const project = join(temporary, "smoke-project");
 let app;
+let modelServer;
 const errors = [];
 
 try {
   await mkdir(project);
+  modelServer = await openSmokeProvider();
   const git = (...args) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
   git("init");
   await writeFile(join(project, "example.ts"), "export const result = 'before';\n");
-  git("add", "example.ts");
+  const largeFile = value => Array.from({ length: 500 }, (_, i) =>
+    `export const workerLine${i} = "${value}";\n`).join("");
+  await writeFile(join(project, "long-change.ts"), largeFile("beforeMarker"));
+  git("add", "example.ts", "long-change.ts");
   git("-c", "user.email=test@example.invalid", "-c", "user.name=Pideck Smoke", "-c", "commit.gpgsign=false", "commit", "-m", "Fixture");
-  await writeFile(join(project, "example.ts"), "export const result = 'after';\n");
+  await writeFile(join(project, "long-change.ts"), largeFile("afterMarker"));
 
   const launch = async () => {
     const running = await _electron.launch({
       executablePath: path,
       args: [`--user-data-dir=${data}`],
-      env: { ...process.env, PIDECK_SMOKE_PRIVATE: "secret-marker" },
+      env: { ...process.env, AZURE_OPENAI_API_KEY: "pideck-smoke-key",
+        AZURE_OPENAI_BASE_URL: modelServer.endpoint, PIDECK_SMOKE_PRIVATE: "secret-marker" },
     });
     const window = await running.firstWindow();
     window.on("pageerror", error => errors.push(error.message));
@@ -58,6 +65,9 @@ try {
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
   await assert.rejects(page.evaluate(() => window.pideck.invoke("project:add", { directory: "/" })), /Invalid workspace request/);
+  await assert.rejects(page.evaluate(() => window.pideck.invoke("model:auth-open", {
+    flowId: crypto.randomUUID(), linkId: crypto.randomUUID(),
+  })), /no longer active/);
 
   const added = await page.evaluate(() => window.pideck.invoke("project:open"));
   assert.equal(added.name, "smoke-project");
@@ -79,23 +89,51 @@ try {
   await page.reload();
   await page.getByRole("button", { name: /smoke-project/ }).first().click();
   await page.getByRole("button", { name: "Smoke session" }).click();
-  await page.getByRole("textbox", { name: "Message Pideck" }).waitFor();
+  const prompt = page.getByRole("textbox", { name: "Message Pideck" });
+  await prompt.waitFor();
+  const modelList = await command("model:list");
+  assert.ok(!JSON.stringify(modelList).includes("pideck-smoke-key"));
+  const azure = modelList.find(model => model.provider === "azure" && model.id === "gpt-4.1");
+  assert.equal(azure?.configured, true);
+  const modelPicker = page.getByRole("button", { name: "Model", exact: true });
+  await modelPicker.click();
+  await page.getByRole("searchbox", { name: "Search models" }).fill("gpt-4.1");
+  await page.getByRole("button", { name: /GPT-4\.1.*Azure|Azure.*GPT-4\.1/i }).first().click();
+  await prompt.fill("Edit example.ts and verify it.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByText("Package stream", { exact: true }).waitFor();
+  await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  assert.equal(await readFile(join(project, "example.ts"), "utf8"), "export const result = 'after';\n");
+  assert.ok(modelServer.requests.some(request => request.input.some(item =>
+    item.type === "function_call_output" && String(item.output).includes("export const result = 'after'"))));
 
   await page.getByRole("button", { name: /^(toggle )?(review|changes)$/i }).first().click();
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
   await page.getByRole("button", { name: "Split" }).click();
   await page.locator("diffs-container").filter({ hasText: "after" }).last().waitFor();
+  await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /long-change.ts/ }).click();
+  const highlighted = page.locator("diffs-container").filter({ hasText: "afterMarker" });
+  await highlighted.locator("[data-line] span[style]").filter({ hasText: "export" }).first().waitFor();
+  assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
 
   await page.getByRole("button", { name: /^(toggle )?terminal$/i }).first().click();
   await page.getByText("Shell running").waitFor();
   const terminal = page.locator(".xterm-helper-textarea");
   await terminal.focus();
   const print = process.platform === "win32"
-    ? 'if ($null -eq $env:PIDECK_SMOKE_PRIVATE) { Write-Host ("PTY_" + "OK") -ForegroundColor Green }'
-    : 'test -z "$PIDECK_SMOKE_PRIVATE" && printf \'\\033[32mPTY_%s\\033[0m\\n\' OK';
+    ? 'if ($null -eq $env:PIDECK_SMOKE_PRIVATE -and $null -eq $env:AZURE_OPENAI_API_KEY) { Write-Host ("PTY_" + "OK") -ForegroundColor Green }'
+    : 'test -z "$PIDECK_SMOKE_PRIVATE$AZURE_OPENAI_API_KEY" && printf \'\\033[32mPTY_%s\\033[0m\\n\' OK';
   await page.keyboard.insertText(print);
   await page.keyboard.press("Enter");
   await page.locator(".xterm-rows").getByText("PTY_OK", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Find in terminal" }).click();
+  await page.getByRole("searchbox", { name: "Find in terminal output" }).fill("PTY_OK");
+  const match = page.locator(".workspace-search-results");
+  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor({ timeout: 5_000 }).catch(async error => {
+    const text = await match.allTextContents();
+    throw new Error("Terminal search status was " + text.join(" "), { cause: error });
+  });
+  await page.getByRole("searchbox", { name: "Find in terminal output" }).press("Escape");
   if (process.platform !== "win32") {
     async function ptySize(filename) {
       await page.keyboard.insertText(`stty size > ${filename}`);
@@ -121,6 +159,9 @@ try {
       if (event.type === "host:restart") document.documentElement.dataset.hostRestarted = "true";
     });
   });
+  await prompt.fill("Recover the active request");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByText("Recovery request is in progress.", { exact: true }).waitFor();
   await app.evaluate(({ app }) => {
     const host = app.getAppMetrics().find(metric => metric.name === "Pideck workspace");
     if (!host) throw new Error("Workspace process was not found.");
@@ -128,6 +169,16 @@ try {
   });
   await page.waitForFunction(() => document.documentElement.dataset.hostRestarted === "true");
   await page.getByText("Shell running").waitFor();
+  await page.getByText("Recovered after host restart.", { exact: true }).waitFor({ timeout: 35_000 });
+  assert.equal(await page.getByText("Recover the active request", { exact: true }).count(), 1);
+  await page.getByRole("button", { name: "Find in terminal" }).click();
+  const previousOutput = page.getByRole("searchbox", { name: "Find in terminal output" });
+  await previousOutput.fill("pty_ok");
+  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor({ timeout: 5_000 }).catch(async error => {
+    const text = await match.allTextContents();
+    const terminal = await page.locator(".xterm-rows").allTextContents();
+    throw new Error("Recovered terminal search status was " + text.join(" ") + "\n" + terminal.join("\n"), { cause: error });
+  });
   assert.equal((await command("session:list", { projectId }))[0].id, conversation.id);
   await app.close();
   app = undefined;
@@ -137,8 +188,14 @@ try {
   assert.equal((await reopened.window.evaluate(() => window.pideck.invoke("project:list")))[0].id, projectId);
   assert.equal((await reopened.window.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), projectId))[0].id, conversation.id);
   assert.deepEqual(errors, []);
-  console.log("Packaged Electron verified: sandboxed bridge, trust, Git review, PTY input and output, host restart, persisted session.");
+  assert.deepEqual(modelServer.failures, []);
+  console.log("Packaged Electron verified: provider streaming, coding tools, Git review, PTY search and resize, and recovery of an active model request.");
+} catch (error) {
+  if (errors.length) console.error("Renderer errors:", errors);
+  if (modelServer?.failures.length) console.error("Provider fixture errors:", modelServer.failures);
+  throw error;
 } finally {
   await app?.close();
+  await modelServer?.close();
   await rm(temporary, { recursive: true, force: true });
 }
