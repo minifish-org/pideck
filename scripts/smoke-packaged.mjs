@@ -495,6 +495,39 @@ try {
   await sideProject.press("Backspace");
   await sideProject.waitFor({ state: "detached" });
 
+  const terminalScreen = terminalRegion.locator(".xterm-screen");
+  const terminalTrack = terminalRegion.locator(".xterm-scrollable-element > .scrollbar.vertical");
+  async function verifyTerminalScrollSpace() {
+    const [screen, track, viewport] = await Promise.all([
+      terminalScreen.boundingBox(), terminalTrack.boundingBox(), terminalRegion.locator(".xterm").boundingBox(),
+    ]);
+    assert.ok(screen && track && viewport, "Expected a rendered terminal and scroll track.");
+    assert.ok(screen.x + screen.width <= track.x + 0.5, "The scroll track overlaps the terminal's final column.");
+    assert.ok(screen.y + screen.height <= viewport.y + viewport.height + 0.5, "The terminal's final row is clipped.");
+  }
+  await terminal.focus();
+  await page.keyboard.insertText(process.platform === "win32"
+    ? '1..120 | ForEach-Object { Write-Host ("History {0:D3}  Terminal output" -f $_) }; Write-Host ("SCROLL_" + "LAST")'
+    : 'awk \'BEGIN { for (i = 1; i <= 120; i++) printf "History %03d  Terminal output\\n", i }\'; printf "SCROLL_%s\\n" LAST');
+  await page.keyboard.press("Enter");
+  const scrollLast = terminalRows.getByText("SCROLL_LAST", { exact: true });
+  await scrollLast.waitFor();
+  await verifyTerminalScrollSpace();
+  await terminalScreen.hover();
+  await page.mouse.wheel(0, -800);
+  await scrollLast.waitFor({ state: "hidden" });
+  const thumb = terminalTrack.and(terminalRegion.locator(".visible")).locator(".slider");
+  await thumb.waitFor();
+  const thumbBounds = await thumb.boundingBox();
+  const trackBounds = await terminalTrack.boundingBox();
+  assert.ok(thumbBounds && trackBounds);
+  const thumbX = thumbBounds.x + thumbBounds.width / 2;
+  await page.mouse.move(thumbX, thumbBounds.y + thumbBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thumbX, trackBounds.y + trackBounds.height - 2, { steps: 10 });
+  await page.mouse.up();
+  await scrollLast.waitFor();
+
   if (process.platform !== "win32") {
     await terminalRegion.waitFor();
     await terminal.focus();
@@ -517,6 +550,7 @@ try {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const widened = await ptySize(".pty-widened");
     assert.ok(Number(widened.split(" ")[1]) > Number(original.split(" ")[1]));
+    await verifyTerminalScrollSpace();
     await widthDivider.press("Enter");
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -527,6 +561,7 @@ try {
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.notEqual(await ptySize(".pty-resized"), original);
+    await verifyTerminalScrollSpace();
     await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), boundsBeforeReview);
     await page.locator("#workspace-tools[data-docked]").waitFor();
   }

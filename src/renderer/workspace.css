@@ -288,8 +288,22 @@
 .workspace-terminal-status[data-state="running"] { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); }
 .workspace-terminal-status[data-state="failed"], .workspace-terminal-issue { color: var(--fgColor-danger); }
 .workspace-terminal-issue { margin: 0; padding: 3px var(--workspace-inset, 16px); font-size: 12px; }
-.workspace-terminal-body { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; padding: 6px var(--workspace-inset, 16px) 2px; }
+.workspace-terminal-body {
+  /* FitAddon measures the mount's computed width and height without subtracting its padding. */
+  box-sizing: content-box;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 6px 2px var(--workspace-inset, 16px);
+}
 .workspace-terminal-body > .xterm { height: 100%; }
+.workspace-terminal-body .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  /* Keep xterm's full hit area for dragging. */
+  border-inline: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
 .workspace-terminal-search {
   display: flex;
   align-items: center;

@@ -87,7 +87,7 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       overviewRuler: { width: 8 },
       theme: {
         background, foreground: token("--fgColor-default"), cursor: accent, cursorAccent: background,
-        overviewRulerBorder: border, scrollbarSliderBackground: border,
+        overviewRulerBorder: "#0000", scrollbarSliderBackground: border,
         scrollbarSliderHoverBackground: token("--borderColor-emphasis"),
         scrollbarSliderActiveBackground: token("--fgColor-muted"),
         selectionBackground: token("--selection-bgColor"),
