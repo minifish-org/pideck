@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
-import { Search } from "lucide-react";
+import { ArrowLeft, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Project } from "../shared/api";
 import { Icon } from "./Icons";
@@ -9,7 +9,14 @@ import { connectTerminal, type TerminalStatus } from "./terminal-connection";
 import "@xterm/xterm/css/xterm.css";
 import "./workspace.css";
 
-type TerminalProps = { project: Project; visible: boolean; focusOnShow: boolean; onExit(projectId: string): void };
+type TerminalProps = {
+  project: Project;
+  visible: boolean;
+  overlay: boolean;
+  focusOnShow: boolean;
+  onClose: () => void;
+  onExit(projectId: string): void;
+};
 const opening: TerminalStatus = { type: "opening", message: "Starting shell…" };
 function announceNewShell(terminal: Terminal, notice: string) {
   const normal = terminal.buffer.normal;
@@ -30,14 +37,15 @@ export function TerminalPanel(props: TerminalProps) {
   return <ProjectTerminal key={props.project.id} {...props} />;
 }
 
-function ProjectTerminal({ project, visible, focusOnShow, onExit }: TerminalProps) {
+function ProjectTerminal(props: TerminalProps) {
+  const { project, visible } = props;
   const [activated, setActivated] = useState(false);
   useEffect(() => { if (visible) setActivated(true); }, [visible]);
 
   return <section className="workspace-terminal" id={visible ? "workspace-terminal" : undefined}
     aria-label="Project terminal" hidden={!visible}>
     {project.trusted && (visible || activated)
-      ? <TerminalInstance project={project} visible={visible} focusOnShow={focusOnShow} onExit={onExit} />
+      ? <TerminalInstance {...props} />
       : <>
         <header className="workspace-panel-header"><h2>Terminal</h2></header>
         <p className="workspace-empty">Trust this project to open a terminal.</p>
@@ -45,7 +53,7 @@ function ProjectTerminal({ project, visible, focusOnShow, onExit }: TerminalProp
   </section>;
 }
 
-function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalProps) {
+function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit }: TerminalProps) {
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon; searchOptions: ISearchOptions } | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -221,6 +229,8 @@ function TerminalInstance({ project, visible, focusOnShow, onExit }: TerminalPro
     }
   }}>
     <header className="workspace-panel-header">
+      {visible && overlay && <button type="button" className="workspace-icon-button workspace-back" onClick={onClose}
+        aria-label="Back to chat" title="Back to chat"><ArrowLeft size={17} aria-hidden="true" /></button>}
       <h2>Terminal</h2>
       <span className="workspace-terminal-status" data-state={host.disconnected || failed ? "failed" : status.type} role="status" title={statusMessage}>
         {statusMessage}

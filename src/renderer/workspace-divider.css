@@ -14,6 +14,15 @@
   cursor: col-resize;
 }
 
+.workspace-divider--tools {
+  position: absolute;
+  inset-block: calc(-1 * var(--titlebar-height)) 0;
+  inset-inline-end: calc(var(--tools-width) - 5px);
+  width: 9px;
+  z-index: 12;
+  margin: 0;
+}
+
 .workspace-divider--horizontal {
   margin-block: -4px -5px;
   cursor: row-resize;

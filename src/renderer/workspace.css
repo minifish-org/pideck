@@ -1,33 +1,28 @@
 .workspace-review {
   container: review / inline-size;
   display: flex;
-  flex: 0 0 var(--review-width, clamp(380px, 48%, 760px));
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
   background: var(--bgColor-default);
-  border-left: 1px solid var(--borderColor-muted);
-}
-
-.workspace-review[data-overlay] {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  border-left: 0;
 }
 
 .workspace-terminal {
   container: terminal / inline-size;
   display: flex;
-  flex: 0 0 var(--terminal-height, clamp(136px, 31%, 356px));
+  flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-top: 1px solid var(--borderColor-muted);
   background: var(--bgColor-inset);
 }
 
 .workspace-terminal[hidden] { display: none; }
+.workspace-tools[data-stacked] > .workspace-terminal {
+  flex: 0 0 var(--terminal-stack-height);
+  border-block-start: 1px solid var(--borderColor-muted);
+}
 
 .workspace-panel-header {
   display: flex;
@@ -39,6 +34,13 @@
   border-bottom: 1px solid var(--borderColor-muted);
   background: var(--bgColor-default);
 }
+
+.workspace-tools[data-docked] > .workspace-review > .workspace-panel-header,
+.workspace-tools[data-docked]:not([data-stacked]) > .workspace-terminal .workspace-panel-header {
+  min-height: var(--titlebar-height);
+  -webkit-app-region: drag;
+}
+.workspace-panel-header :is(button, input, select) { -webkit-app-region: no-drag; }
 
 .workspace-panel-header h2 {
   margin: 0;

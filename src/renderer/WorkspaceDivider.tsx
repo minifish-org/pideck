@@ -2,16 +2,17 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import './workspace-divider.css';
 
 const panes = {
-  review: { vertical: true, property: '--review-width', controls: 'review-panel', min: 340, reserve: 360 },
-  terminal: { vertical: false, property: '--terminal-height', controls: 'workspace-terminal', min: 136, reserve: 260 },
+  tools: { vertical: true, property: '--tools-width', controls: 'workspace-tools', label: 'Resize right sidebar', min: 340, reserve: 360 },
+  terminal: { vertical: false, property: '--terminal-height', controls: 'workspace-terminal', label: 'Resize terminal', min: 160, reserve: 220 },
 } as const;
 
-export function WorkspaceDivider({ workspace, pane, visible }: {
+export function WorkspaceDivider({ workspace, sizingTarget = workspace, pane, visible }: {
   workspace: RefObject<HTMLElement | null>;
+  sizingTarget?: RefObject<HTMLElement | null>;
   pane: keyof typeof panes;
   visible: boolean;
 }) {
-  const { vertical, property, controls, min, reserve } = panes[pane];
+  const { vertical, property, controls, label, min, reserve } = panes[pane];
   const [available, setAvailable] = useState(0);
   const [preferred, setPreferred] = useState<number>();
   const [dragging, setDragging] = useState(false);
@@ -19,8 +20,8 @@ export function WorkspaceDivider({ workspace, pane, visible }: {
   const max = Math.max(min, available - reserve);
   // Match the layout's CSS defaults before the first manual adjustment.
   const automatic = vertical
-    ? Math.max(380, Math.min(760, Math.round(available * .48)))
-    : Math.max(136, Math.min(356, Math.round(available * .31)));
+    ? Math.max(380, Math.min(760, Math.round(available * .46)))
+    : Math.max(160, Math.min(400, Math.round(available * .40)));
   const clamp = (size: number) => Math.min(max, Math.max(min, size));
   const size = clamp(preferred ?? automatic);
 
@@ -35,11 +36,11 @@ export function WorkspaceDivider({ workspace, pane, visible }: {
   }, [workspace, vertical, visible]);
 
   useLayoutEffect(() => {
-    const element = workspace.current;
+    const element = sizingTarget.current;
     if (!element || !visible || preferred === undefined) return;
     element.style.setProperty(property, `${size}px`);
     return () => { element.style.removeProperty(property); };
-  }, [workspace, preferred, property, size, visible]);
+  }, [sizingTarget, preferred, property, size, visible]);
 
   function resize(next: number) {
     const bounded = clamp(next);
@@ -47,8 +48,8 @@ export function WorkspaceDivider({ workspace, pane, visible }: {
   }
 
   return <div
-    className={`workspace-divider workspace-divider--${vertical ? 'vertical' : 'horizontal'}`}
-    role="separator" tabIndex={0} hidden={!visible} aria-label={`Resize ${pane}`}
+    className={`workspace-divider ${vertical ? 'workspace-divider--vertical workspace-divider--tools' : 'workspace-divider--horizontal'}`}
+    role="separator" tabIndex={0} hidden={!visible} aria-label={label}
     aria-controls={controls} aria-orientation={vertical ? 'vertical' : 'horizontal'}
     aria-valuemin={min} aria-valuemax={max} aria-valuenow={size} aria-valuetext={`${size} pixels`}
     data-dragging={dragging || undefined} title="Drag or use arrow keys to resize. Double-click or press Enter to reset."

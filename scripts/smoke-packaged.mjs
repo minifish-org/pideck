@@ -342,6 +342,21 @@ try {
   if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
   const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
   const review = page.getByRole("complementary", { name: "Review changes" });
+  assert.ok(await page.evaluate(() => {
+    const bounds = selector => document.querySelector(selector).getBoundingClientRect();
+    const sameEdge = (first, second) => Math.abs(first - second) <= 1;
+    const right = bounds("#workspace-tools[data-docked]");
+    const titlebar = bounds(".titlebar");
+    const middleHeader = bounds(".titlebar-content");
+    const changes = bounds("#review-panel");
+    const shell = bounds("#workspace-terminal");
+    return sameEdge(bounds(".workspace-conversation").right, right.left)
+      && sameEdge(middleHeader.right, right.left) && bounds("#toggle-terminal").right < right.left
+      && sameEdge(changes.top, titlebar.top)
+      && sameEdge(bounds("#review-panel .workspace-panel-header").bottom, titlebar.bottom)
+      && sameEdge(changes.bottom, shell.top) && sameEdge(changes.left, shell.left)
+      && sameEdge(changes.right, shell.right) && sameEdge(shell.bottom, right.bottom);
+  }), "The packaged app must stack Changes and Terminal in a single right sidebar.");
   const externalPath = join(project, "outside-edit.ts");
   const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
   assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
@@ -398,6 +413,7 @@ try {
   await retainedSearch.press("Escape");
 
   const boundsBeforeReview = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
+  const activePty = await page.evaluate(() => document.documentElement.dataset.ptyId);
   await terminal.focus();
   await page.keyboard.insertText(process.platform === "win32"
     ? 'Start-Sleep -Seconds 1; Write-Host ("REVIEW_" + "PTY_OK")'
@@ -405,11 +421,13 @@ try {
   await page.keyboard.press("Enter");
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
   await review.getByRole("button", { name: "Back to chat" }).waitFor();
-  await page.getByRole("button", { name: "Changes", exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Changes", exact: true }).waitFor();
   await terminalRegion.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await review.waitFor({ state: "detached" });
-  await page.locator(".xterm-rows").getByText("REVIEW_PTY_OK", { exact: true }).waitFor();
+  await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();
+  await terminalRows.getByText("REVIEW_PTY_OK", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), activePty);
   await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), boundsBeforeReview);
   await projectRow.waitFor();
 
@@ -438,6 +456,9 @@ try {
   await sideProject.waitFor({ state: "detached" });
 
   if (process.platform !== "win32") {
+    await clickNativeMenu(app, "toggle-review");
+    await review.waitFor();
+    await terminalRegion.waitFor();
     await terminal.focus();
     async function ptySize(filename) {
       await page.keyboard.insertText(`stty size > ${filename}`);
@@ -462,10 +483,26 @@ try {
     await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await ptySize(".pty-reset"), original);
+    const widthDivider = page.getByRole("separator", { name: "Resize right sidebar" });
+    await widthDivider.press("Shift+ArrowLeft");
+    await terminal.focus();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const widened = await ptySize(".pty-widened");
+    assert.ok(Number(widened.split(" ")[1]) > Number(original.split(" ")[1]));
+    await widthDivider.press("Enter");
+    await terminal.focus();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await ptySize(".pty-width-reset"), original);
+    await clickNativeMenu(app, "toggle-review");
+    await review.waitFor({ state: "detached" });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 740));
     await page.waitForFunction(() => window.innerWidth <= 1000);
+    await terminalRegion.getByRole("button", { name: "Back to chat" }).waitFor();
+    await terminal.focus();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.notEqual(await ptySize(".pty-resized"), original);
+    await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), boundsBeforeReview);
+    await page.locator("#workspace-tools[data-docked]").waitFor();
   }
 
   await page.evaluate(() => {

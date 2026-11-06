@@ -508,6 +508,10 @@ async page => {
     "border-top-color": "rgba(0, 0, 0, 0)",
   };
   const terminal = page.getByRole("region", { name: "Project terminal" });
+  const tools = page.locator("#workspace-tools");
+  const screen = terminal.locator(".xterm-helper-textarea");
+  const divider = page.getByRole("separator", { name: "Resize right sidebar" });
+  const terminalDivider = page.getByRole("separator", { name: "Resize terminal" });
   await page.evaluate(() => sessionStorage.setItem("pideck-review-list-failure", "1"));
   await changes.click();
   const review = page.getByRole("complementary", { name: "Review changes" });
@@ -534,12 +538,12 @@ async page => {
   });
   await singleDiff.getByText("updated", { exact: false }).waitFor();
   await page.evaluate(() => sessionStorage.removeItem("pideck-review-edit"));
-  const divider = page.getByRole("separator", { name: "Resize review" });
-  const reviewWidthBefore = (await review.boundingBox()).width;
+  await tools.locator(".workspace-review").waitFor();
+  const toolsWidthBefore = (await tools.boundingBox()).width;
   await divider.press("Shift+ArrowLeft");
-  await page.waitForFunction(width => document.getElementById("review-panel").getBoundingClientRect().width > width + 20, reviewWidthBefore);
+  await page.waitForFunction(width => document.getElementById("workspace-tools").getBoundingClientRect().width > width + 20, toolsWidthBefore);
   await divider.press("Enter");
-  await page.waitForFunction(width => Math.abs(document.getElementById("review-panel").getBoundingClientRect().width - width) < 2, reviewWidthBefore);
+  await page.waitForFunction(width => Math.abs(document.getElementById("workspace-tools").getBoundingClientRect().width - width) < 2, toolsWidthBefore);
   if (await layout.inputValue() !== "auto") throw new Error("Diff layout does not start in Auto.");
   await layout.selectOption("split");
   await splitDiff.waitFor();
@@ -547,15 +551,42 @@ async page => {
   await singleDiff.waitFor();
   if (await review.getByRole("button", { name: "Back to chat" }).count()) throw new Error("Wide review has a duplicate close action.");
   const viewport = page.viewportSize();
-  const aligned = await page.evaluate(() => {
-    const bounds = selector => document.querySelector(selector).getBoundingClientRect();
-    const centerX = selector => { const rect = bounds(selector); return rect.left + rect.width / 2; };
-    const sidebarEdge = bounds(".navigation").right;
-    return Math.abs(bounds(".titlebar-leading").right - sidebarEdge) <= 1
-      && Math.abs(centerX("#toggle-navigation") - centerX("#nav-open-project")) <= 1
-      && Math.abs(bounds(".chat-thread").left - bounds(".composer").left) <= 1;
-  });
-  if (!aligned) throw new Error("The titlebar, sidebar toggle, or conversation layout does not align.");
+  const expectDockedTools = async (reviewOpen, terminalOpen) => {
+    const aligned = await page.evaluate(({ reviewOpen, terminalOpen }) => {
+      const bounds = selector => document.querySelector(selector).getBoundingClientRect();
+      const centerX = selector => { const rect = bounds(selector); return rect.left + rect.width / 2; };
+      const sameEdge = (first, second) => Math.abs(first - second) <= 1;
+      const sidebarEdge = bounds(".navigation").right;
+      const titlebar = bounds(".titlebar");
+      const middleHeader = bounds(".titlebar-content");
+      const right = bounds("#workspace-tools[data-docked]");
+      const conversation = bounds(".workspace-conversation");
+      const terminalToggle = bounds("#toggle-terminal");
+      const reviewToggle = bounds("#toggle-review");
+      const top = reviewOpen ? "#review-panel" : "#workspace-terminal";
+      const bottom = terminalOpen ? "#workspace-terminal" : "#review-panel";
+      const topPane = bounds(top);
+      const bottomPane = bounds(bottom);
+      const topHeader = bounds(top + " .workspace-panel-header");
+      return sameEdge(bounds(".titlebar-leading").right, sidebarEdge)
+        && sameEdge(centerX("#toggle-navigation"), centerX("#nav-open-project"))
+        && sameEdge(conversation.left, sidebarEdge)
+        && sameEdge(conversation.right, right.left)
+        && sameEdge(bounds(".chat-thread").left, bounds(".composer").left)
+        && sameEdge(middleHeader.left, sidebarEdge)
+        && sameEdge(middleHeader.right, right.left)
+        && reviewToggle.left > middleHeader.left && terminalToggle.left >= reviewToggle.right
+        && terminalToggle.right <= middleHeader.right && middleHeader.right - terminalToggle.right <= 24
+        && sameEdge(topPane.top, titlebar.top) && sameEdge(topHeader.bottom, titlebar.bottom)
+        && sameEdge(topPane.left, right.left) && sameEdge(topPane.right, right.right)
+        && sameEdge(bottomPane.left, right.left) && sameEdge(bottomPane.right, right.right)
+        && sameEdge(bottomPane.bottom, right.bottom)
+        && (!reviewOpen || !terminalOpen || sameEdge(topPane.bottom, bottomPane.top));
+    }, { reviewOpen, terminalOpen });
+    if (!aligned) throw new Error("The project sidebar, middle toolbar, and right tool panels do not align.");
+  };
+  await expectDockedTools(true, false);
+  await terminalDivider.waitFor({ state: "hidden" });
   for (const surface of [page.locator(".titlebar"), nav, review]) await expectColors(surface, { "background-color": canvas });
   await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(33, 40, 48)" });
   await expectColors(sidebar, selectedToggleColors);
@@ -568,6 +599,25 @@ async page => {
   });
   await divider.blur();
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
+  await terminalToggle.click();
+  await terminal.getByText("Shell running").waitFor();
+  await expectDockedTools(true, true);
+  await expectColors(terminalToggle, selectedToggleColors);
+  const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
+  await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
+  const terminalHeightBefore = (await terminal.boundingBox()).height;
+  await terminalDivider.press("Shift+ArrowUp");
+  await page.waitForFunction(height => document.getElementById("workspace-terminal").getBoundingClientRect().height > height + 20, terminalHeightBefore);
+  await terminalDivider.press("Enter");
+  await page.waitForFunction(height => Math.abs(document.getElementById("workspace-terminal").getBoundingClientRect().height - height) < 2, terminalHeightBefore);
+  await terminalDivider.blur();
+  await page.screenshot({ path: "output/playwright/pideck-ui-right-sidebar.png" });
+  await changes.click();
+  await review.waitFor({ state: "detached" });
+  await terminalDivider.waitFor({ state: "hidden" });
+  await expectDockedTools(false, true);
+  await changes.click();
+  await review.waitFor();
   await page.setViewportSize({ width: 1920, height: 960 });
   await splitDiff.waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-wide.png" });
@@ -583,7 +633,11 @@ async page => {
     && document.querySelector("#review-panel").contains(document.activeElement));
   await back.waitFor();
   await nav.waitFor({ state: "detached" });
-  await changes.waitFor({ state: "hidden" });
+  await changes.waitFor();
+  await terminalToggle.waitFor();
+  await terminal.waitFor({ state: "hidden" });
+  await divider.waitFor({ state: "hidden" });
+  await terminalDivider.waitFor({ state: "hidden" });
   const reviewWidth = await review.evaluate(panel => panel.getBoundingClientRect().width);
   if (reviewWidth < 755) throw new Error("The compact review does not use the full window.");
   await page.screenshot({ path: "output/playwright/pideck-ui-narrow.png" });
@@ -623,13 +677,16 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   if (await terminalToggle.getAttribute("aria-pressed") !== "true") throw new Error("The active terminal toggle is not pressed.");
   await expectColors(terminalToggle, selectedToggleColors);
-  const screen = terminal.locator(".xterm-helper-textarea");
   await screen.waitFor();
+  const terminalBack = terminal.getByRole("button", { name: "Back to chat" });
+  await terminalBack.waitFor();
+  if ((await terminal.boundingBox()).width < 755 || await tools.getAttribute("data-docked") !== null) {
+    throw new Error("The compact terminal does not use the full workspace.");
+  }
   await expectColors(terminal.locator(".workspace-panel-header"), { "background-color": canvas });
   await expectColors(terminal.locator(".xterm-scrollable-element"), { "background-color": "rgb(1, 4, 9)" });
-  const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
-  await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
   await changes.click();
+  await back.waitFor();
   await terminal.waitFor({ state: "hidden" });
   await terminalToggle.click();
   await terminal.waitFor();
@@ -637,7 +694,10 @@ async page => {
   if (await screen.getAttribute("data-workspace-fixture") !== "same"
     || await page.evaluate(() => document.body.dataset.terminalId) !== liveShell) throw new Error("Returning from review replaced the live terminal.");
   await page.screenshot({ path: "output/playwright/pideck-ui-terminal.png" });
-  await terminalToggle.click();
+  await terminalBack.click();
+  await terminal.waitFor({ state: "hidden" });
+  await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
+    && document.activeElement?.id === "toggle-terminal");
   await page.setViewportSize(viewport);
   const largeDiff = page.getByRole("button", { name: "Open in Changes", exact: true });
   const chatPatch = review.getByTitle("Patch from chat for second.ts");

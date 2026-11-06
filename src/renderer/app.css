@@ -39,6 +39,8 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 
 .app {
   --nav-width: clamp(208px, 19vw, 240px);
+  --docked-width: 0px;
+  --tools-width: clamp(380px, calc((100vw - var(--docked-width)) * .46), 760px);
   --drawer-width: min(276px, calc(100% - 100px));
   --titlebar-height: 56px;
   --workspace-inset: 16px;
@@ -48,6 +50,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   flex-direction: column;
   overflow: hidden;
 }
+.app--nav { --docked-width: var(--nav-width); }
 .titlebar {
   flex: 0 0 var(--titlebar-height);
   display: flex;
@@ -57,6 +60,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background: var(--bgColor-default);
   -webkit-app-region: drag;
 }
+.app--tools .titlebar { padding-inline-end: var(--tools-width); }
 .titlebar-leading {
   display: flex;
   align-items: center;
@@ -177,14 +181,35 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-footer { flex: none; margin-top: auto; padding: 8px 12px; border-top: 1px solid var(--borderColor-muted); }
 
 .workspace {
-  --review-width: clamp(380px, 48%, 760px);
   min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative;
 }
+.workspace--tools-docked { padding-inline-end: var(--tools-width); }
+.workspace-tools {
+  --terminal-stack-height: var(--terminal-height, clamp(160px, 40%, 400px));
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bgColor-default);
+}
+.workspace-tools[hidden] { display: none; }
+.workspace-tools[data-docked] {
+  inset-block-start: calc(-1 * var(--titlebar-height));
+  inset-inline-start: auto;
+  width: var(--tools-width);
+  z-index: 11;
+  border-inline-start: 1px solid var(--borderColor-muted);
+}
 .panel-loading { padding: 8px 10px; color: var(--fgColor-muted); font-size: 12px; }
-.panel-loading--review { flex: 0 0 var(--review-width); border-left: 1px solid var(--borderColor-muted); }
-.workspace--review-overlay .panel-loading--review { position: absolute; inset: 0; z-index: 2; background: var(--bgColor-default); border: 0; }
-.panel-loading--terminal { flex: 0 0 var(--terminal-height, clamp(136px, 31%, 356px)); border-top: 1px solid var(--borderColor-default); }
-.workspace-middle { min-width: 0; min-height: 0; flex: 1; display: flex; overflow: hidden; position: relative; }
+.panel-loading--review, .panel-loading--terminal { flex: 1 1 auto; min-height: 0; }
+.workspace-tools[data-stacked] > .panel-loading--terminal {
+  flex: 0 0 var(--terminal-stack-height);
+  border-block-start: 1px solid var(--borderColor-muted);
+}
+.workspace-main { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.workspace--tools-overlay .workspace-main { position: relative; }
 .workspace-conversation { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .workspace-loading { display: grid; flex: 1; place-items: center; color: var(--fgColor-muted); font-size: 13px; }
 .empty-scene { flex: 1; min-width: 0; display: grid; place-items: center; padding: 24px; overflow: auto; }
