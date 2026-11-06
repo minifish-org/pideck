@@ -13,6 +13,8 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
 }) {
   const api = window.pideck;
   const dialog = useRef<HTMLDialogElement>(null);
+  const providerSelect = useRef<HTMLSelectElement>(null);
+  const opener = useRef<Element | null>(null);
   const flowId = useRef<string | undefined>(undefined);
   const mounted = useRef(false);
   const providerRead = useRef(0);
@@ -32,14 +34,24 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
   const [working, setWorking] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
-  const provider = providers?.find(({ id }) => id === selected) ?? providers?.find(({ configured }) => configured) ?? providers?.[0];
+  const provider = selected ? providers?.find(({ id }) => id === selected)
+    : providers?.find(({ configured }) => configured) ?? (providers?.length === 1 ? providers[0] : undefined);
   const method = provider?.methods.find(({ type }) => type === preferredMethod)
     ?? provider?.methods.find(({ type }) => type === provider.credential) ?? provider?.methods[0];
   const busy = working || Boolean(flow);
 
   useLayoutEffect(() => {
-    if (!dialog.current?.open) dialog.current?.showModal();
+    if (dialog.current && !dialog.current.open) {
+      opener.current = document.activeElement;
+      dialog.current.showModal();
+    }
   }, []);
+
+  useLayoutEffect(() => {
+    if (providers?.length && document.activeElement === dialog.current?.querySelector('.dialog-heading button')) {
+      providerSelect.current?.focus();
+    }
+  }, [providers]);
 
   useLayoutEffect(() => {
     if (prompt) promptForm.current?.querySelector<HTMLElement>('input, select')?.focus();
@@ -199,19 +211,25 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
     }}>Open {link.domain} <span aria-hidden="true">↗</span></button>;
   }
 
+  function close() {
+    dialog.current?.close();
+    if (!opener.current?.isConnected) document.getElementById('prompt')?.focus();
+    onClose();
+  }
+
   return <dialog className="settings-dialog provider-dialog" ref={dialog} aria-labelledby="settings-title"
-    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    onCancel={(event) => { event.preventDefault(); close(); }}>
     <div className="dialog-heading">
       <h2 id="settings-title">Model providers</h2>
-      <button className="icon-button" type="button" aria-label="Close settings" onClick={onClose}><Icon name="close" /></button>
+      <button className="icon-button" type="button" aria-label="Close settings" onClick={close}><Icon name="close" /></button>
     </div>
-    <p className="dialog-copy">Connect a provider using its supported sign-in method.</p>
+    <p className="dialog-copy">Sign in to use a provider’s models in your workspace.</p>
     <div className="settings-fields">
       <label>Provider
-        <select value={provider?.id ?? ''} disabled={busy || !providers?.length} onChange={(event) => {
+        <select ref={providerSelect} value={provider?.id ?? ''} disabled={busy || !providers?.length} onChange={(event) => {
           setSelected(event.target.value); setPreferredMethod(undefined); setError(undefined); setStatus(undefined); setConfirmDisconnect(false);
         }}>
-          {!providers?.length && <option value="">{loading ? 'Loading providers…' : 'No providers available'}</option>}
+          <option value="" disabled>{loading ? 'Loading providers…' : providers?.length ? 'Choose a provider…' : 'No providers available'}</option>
           {providers?.map((item) => <option key={item.id} value={item.id}>{item.name}{item.configured ? ' · Connected' : ''}</option>)}
         </select>
       </label>
@@ -258,15 +276,19 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
     {!loading && !providers && <button type="button" className="button" onClick={() => { setError(undefined); void readProviders(); }}>Retry loading providers</button>}
     <div className="dialog-actions provider-actions">
       {flow ? <button type="button" className="button" onClick={cancel}>Cancel sign-in</button> : <>
-        <span className="key-status">{provider?.configured ? 'Connected' : provider ? 'Disconnected' : ''}</span>
-        {provider?.configured && <button type="button" className="button" disabled={busy}
+        {provider && <span className="key-status" data-connected={provider.configured}>
+          <span aria-hidden="true" />{provider.configured ? 'Connected' : 'Not connected'}
+        </span>}
+        {provider?.configured && provider.dynamic && <button type="button" className="button provider-quiet" disabled={busy}
           onClick={refresh}>Refresh models</button>}
-        {provider?.credential && <button type="button" className="button" disabled={busy}
+        {provider?.credential && <button type="button" className={`button provider-quiet ${confirmDisconnect ? 'provider-danger' : ''}`} disabled={busy}
           onClick={() => confirmDisconnect ? void disconnect() : setConfirmDisconnect(true)}>
           {confirmDisconnect ? 'Confirm disconnect' : 'Disconnect'}
         </button>}
-        {method && <button type="button" className="button button--primary" disabled={busy || loading} onClick={login}>
-          <Icon name="key" /> {provider?.credential ? 'Reconnect' : method.name}
+        {method && <button type="button" className={`button ${provider?.configured ? 'provider-quiet' : 'button--primary'}`}
+          disabled={busy || loading} onClick={login}>
+          {!provider?.configured && <Icon name="key" />}
+          {provider?.credential ? 'Reconnect' : method.name}
         </button>}
       </>}
     </div>

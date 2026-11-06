@@ -46,7 +46,7 @@ function openWindow() {
     height: 930,
     minWidth: 760,
     minHeight: 560,
-    backgroundColor: "#141615",
+    backgroundColor: "#191b1b",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     show: false,
     webPreferences: {

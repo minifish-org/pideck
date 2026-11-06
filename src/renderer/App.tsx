@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ModelOption, Project, Selection, Session } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
@@ -13,15 +14,38 @@ const TerminalPanel = lazy(() => import('./TerminalPanel').then(({ TerminalPanel
 type Removal = { projectId: string; sessionId?: string };
 type RemovalCheck = { target: Removal; trigger: HTMLButtonElement; error: string };
 
-function RemoveRowButton({ label, disabled, onClick }: {
+function RemoveRowButton({ label, current, disabled, onClick }: {
   label: string;
+  current: boolean;
   disabled: boolean;
   onClick: (button: HTMLButtonElement) => void;
 }) {
   return <button className="icon-button nav-remove" type="button" aria-label={label} title={label}
-    aria-disabled={disabled || undefined} onClick={(event) => { if (!disabled) onClick(event.currentTarget); }}>
+    tabIndex={current ? 0 : -1} aria-disabled={disabled || undefined}
+    onClick={(event) => { if (!disabled) onClick(event.currentTarget); }}>
     <Icon name="trash" width={14} height={14} />
   </button>;
+}
+
+function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
+  if (!(event.target instanceof HTMLButtonElement) || !event.target.classList.contains('nav-row')) return;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const remove = event.target.nextElementSibling;
+    if (remove instanceof HTMLButtonElement && remove.getAttribute('aria-disabled') !== 'true') {
+      event.preventDefault();
+      remove.focus();
+      remove.click();
+    }
+    return;
+  }
+  const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.nav-row')];
+  const index = rows.indexOf(event.target);
+  const positions: Record<string, number> = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: rows.length - 1 };
+  const next = Object.hasOwn(positions, event.key) ? positions[event.key] : undefined;
+  if (next === undefined) return;
+  event.preventDefault();
+  rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus();
 }
 
 function Desktop() {
@@ -36,6 +60,7 @@ function Desktop() {
   const [drafts, setDrafts] = useState<Record<string, Record<string, Draft>>>({});
   const [sessionList, setSessionList] = useState<{ projectId: string; items: Session[] }>();
   const [focusedSession, setFocusedSession] = useState<Selection>();
+  const [focusWorkspace, setFocusWorkspace] = useState<string>();
   const [removing, setRemoving] = useState<Removal>();
   const removalInProgress = useRef<Removal | undefined>(undefined);
   const removalChecks = useRef(new Set<RemovalCheck>());
@@ -47,7 +72,10 @@ function Desktop() {
   const [modelsReady, setModelsReady] = useState(false);
   const [reviewVersion, setReviewVersion] = useState(0);
   const [review, setReview] = useState<{ projectId: string; sessionId?: string; path?: string; patch?: string; selection?: number }>();
-  const [terminal, setTerminal] = useState<{ projectId: string; visible: boolean }>();
+  const [terminals, setTerminals] = useState<Record<string, boolean>>({});
+  const [focusTerminal, setFocusTerminal] = useState<string>();
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 960px)').matches);
+  const reviewOpener = useRef<HTMLElement | null>(null);
   const [settings, setSettings] = useState<{ provider?: string }>();
   const [error, setError] = useState<string>();
   const [workspaceEpoch, refreshWorkspace] = useState(0);
@@ -60,6 +88,7 @@ function Desktop() {
   const { navigation } = preferences;
   const project = projects?.find(({ id }) => id === preferences.projectId) ?? projects?.[0];
   const projectId = project?.id;
+  const showNavigation = navigation && Boolean(project);
   const sessions = sessionList && sessionList.projectId === projectId ? sessionList.items : undefined;
   const session = projectId ? sessions?.find(({ id }) => id === preferences.sessions[projectId]) ?? sessions?.[0] : undefined;
   const sessionId = session?.id;
@@ -67,9 +96,17 @@ function Desktop() {
   const removingProject = removing && removing.projectId === projectId && !removing.sessionId;
   const sessionsIssue = sessionsError?.projectId === projectId ? sessionsError?.message : undefined;
   const activeReview = review?.projectId === projectId ? review : undefined;
-  const activeTerminal = terminal?.projectId === projectId ? terminal : undefined;
+  const terminalVisible = Boolean(projectId && terminals[projectId]);
+  const reviewOverlaysChat = narrow && Boolean(project?.trusted && activeReview);
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
+
+  useEffect(() => {
+    const viewport = window.matchMedia('(max-width: 960px)');
+    function update() { setNarrow(viewport.matches); }
+    viewport.addEventListener('change', update);
+    return () => viewport.removeEventListener('change', update);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -142,10 +179,18 @@ function Desktop() {
   }, [focusedSession, projectId, sessionId]);
 
   useLayoutEffect(() => {
+    if (!project || focusWorkspace !== project.id) return;
+    const target = document.getElementById(!project.trusted ? 'workspace-trust' : session ? 'prompt' : 'workspace-new-session');
+    if (!target || (target instanceof HTMLButtonElement && target.disabled)) return;
+    target.focus();
+    setFocusWorkspace(undefined);
+  }, [focusWorkspace, project, session, trusting, opening]);
+
+  useLayoutEffect(() => {
     if (!removalFocus) return;
     const targetId = removalFocus === 'session'
-      ? sessionId ? `nav-session-${sessionId}` : 'nav-new-session'
-      : projectId ? `nav-project-${projectId}` : 'nav-open-project';
+      ? sessionId ? `nav-session-${sessionId}` : 'workspace-new-session'
+      : projectId ? `nav-project-${projectId}` : 'workspace-open-project';
     const target = document.getElementById(targetId);
     (target instanceof HTMLButtonElement && !target.disabled ? target : document.getElementById('toggle-navigation'))?.focus();
     setRemovalFocus(undefined);
@@ -158,20 +203,27 @@ function Desktop() {
   function selectProject(id: string) {
     if (projectId === id || removed.current.projects.has(id)) return;
     setPreferences((current) => ({ ...current, projectId: id }));
-    setTerminal(undefined);
+    setFocusWorkspace(undefined);
+    setFocusTerminal(undefined);
     setReview(undefined);
     setError(undefined);
   }
 
   const selectSession = useCallback((projectId: string, id: string) => {
+    if (removed.current.projects.has(projectId) || removed.current.sessions.has(id)) return;
     setPreferences((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(id) ? current
       : { ...current, sessions: { ...current.sessions, [projectId]: id } });
+    setReview((current) => current?.projectId === projectId && current.sessionId && current.sessionId !== id
+      ? { projectId } : current);
     setError(undefined);
   }, []);
 
   const openReview = useCallback(({ path, patch }: { path?: string; patch?: string }) => {
-    if (projectId && sessionId) setReview((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)
-      ? current : { projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 });
+    if (projectId && sessionId) {
+      reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setReview((current) => removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)
+        ? current : { projectId, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 });
+    }
   }, [projectId, sessionId]);
   const refreshReview = useCallback(() => setReviewVersion((current) => current + 1), []);
 
@@ -205,6 +257,7 @@ function Desktop() {
       if (result) {
         saveProject(result);
         selectProject(result.id);
+        setFocusWorkspace(result.id);
       }
     } catch (cause) {
       setError(readableError(cause));
@@ -220,6 +273,7 @@ function Desktop() {
       const trusted = await api.invoke('project:trust', { projectId: project.id });
       if (trusted && !removed.current.projects.has(trusted.id)) {
         saveProject(trusted);
+        setFocusWorkspace(trusted.id);
         setError(undefined);
       }
     } catch (cause) {
@@ -280,7 +334,8 @@ function Desktop() {
       removed.current.projects.add(projectId);
       setProjects((current) => current?.filter(({ id }) => id !== projectId));
       setSessionsError((current) => current?.projectId === projectId ? undefined : current);
-      setTerminal((current) => current?.projectId === projectId ? undefined : current);
+      setTerminals((current) => without(current, projectId));
+      setFocusTerminal((current) => current === projectId ? undefined : current);
     }
     setSessionList((current) => {
       if (current?.projectId !== projectId) return current;
@@ -357,11 +412,30 @@ function Desktop() {
   }
 
   function toggleTerminal() {
-    if (project?.trusted && !removingProject) setTerminal({ projectId: project.id, visible: !activeTerminal?.visible });
+    if (!project?.trusted || removingProject) return;
+    if (terminalVisible && document.activeElement?.closest('.workspace-terminal')) {
+      requestAnimationFrame(() => document.getElementById('toggle-terminal')?.focus());
+    }
+    setFocusTerminal(terminalVisible ? undefined : project.id);
+    setTerminals((current) => ({ ...current, [project.id]: !current[project.id] }));
   }
 
   function toggleReview() {
-    if (project?.trusted && !removingProject) setReview(activeReview ? undefined : { projectId: project.id });
+    if (!project?.trusted || removingProject) return;
+    if (activeReview) closeReview();
+    else {
+      reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setReview({ projectId: project.id });
+    }
+  }
+
+  function closeReview() {
+    setReview(undefined);
+    requestAnimationFrame(() => {
+      const opener = reviewOpener.current;
+      if (opener?.isConnected && opener !== document.body) opener.focus();
+      else document.getElementById('toggle-review')?.focus();
+    });
   }
 
   function focusComposer() {
@@ -392,40 +466,46 @@ function Desktop() {
     return () => window.removeEventListener('keydown', handleShortcut, true);
   });
 
-  const openButton = <button className="button button--primary" type="button" disabled={opening} onClick={openProject}>
-    <Icon name="folderPlus" /> Open folder <kbd>{modifier}O</kbd>
-  </button>;
-
   return (
-    <div className={`app ${isMac ? 'app--mac' : ''}`}>
+    <div className={`app${isMac ? ' app--mac' : ''}${showNavigation ? ' app--nav' : ''}`}>
       <header className="titlebar">
-        <div className="wordmark"><Icon name="mark" /> Pideck</div>
-        <button className="icon-button" id="toggle-navigation" type="button" aria-label="Toggle navigation"
-          title={`Navigation (${modifier}${shift}B)`} aria-pressed={navigation} onClick={toggleNavigation}><Icon name="sidebar" /></button>
-        <div className="title-divider" />
-        <div className="breadcrumb">
-          {project && <><Icon name="folder" width={13} height={13} /><span className={session ? 'breadcrumb-parent' : 'breadcrumb-current'}>{project.name}</span></>}
-          {project && session && <><Icon className="breadcrumb-parent" name="chevron" width={11} height={11} /><span className="breadcrumb-current">{session.title}</span></>}
-          {!project && <span>Workspace</span>}
+        <div className="titlebar-leading">
+          <div className="wordmark"><Icon name="mark" /> Pideck</div>
+          {project && <button className="icon-button" id="toggle-navigation" type="button" aria-label="Toggle navigation"
+            title={`Navigation (${modifier}${shift}B)`} aria-pressed={showNavigation} onClick={toggleNavigation}><Icon name="sidebar" /></button>}
         </div>
-        <div className="title-actions">
-          {!navigation && project?.trusted && <button className="icon-button" type="button"
-            aria-label="New session" title={`New session (${modifier}N)`} disabled={creating || !sessions || removingProject} onClick={createSession}><Icon name="plus" /></button>}
-          <button className="icon-button" type="button" aria-label="Toggle terminal"
-            title={`Terminal (${modifier}\`)`} aria-pressed={Boolean(activeTerminal?.visible)}
-            disabled={!project?.trusted || removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
-          <button className="icon-button" type="button" aria-label="Toggle review"
-            title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
-            disabled={!project?.trusted || removingProject} onClick={toggleReview}><Icon name="diff" /></button>
-          <button className="icon-button" type="button" aria-label="Model settings"
-            title={`Model settings (${modifier},)`} onClick={() => setSettings({})}><Icon name="settings" /></button>
+        <div className="titlebar-content">
+          <div className="title-context">
+            {project && <div className="breadcrumb" aria-label="Current workspace">
+              <span title={project.directory} className={session ? 'breadcrumb-parent' : 'breadcrumb-current'}>{project.name}</span>
+              {session && <><Icon className="breadcrumb-parent" name="chevron" width={12} height={12} />
+                <span className="breadcrumb-current" title={session.title}>{session.title}</span></>}
+            </div>}
+            <div id="session-actions-slot" inert={reviewOverlaysChat} />
+          </div>
+          <div className="title-actions">
+            {project && !showNavigation && <button className="icon-button" type="button" aria-label="Open a project folder"
+              title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}><Icon name="folderPlus" /></button>}
+            {!showNavigation && project?.trusted && session && <button className="icon-button" type="button"
+              aria-label="New session" title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}><Icon name="plus" /></button>}
+            {project?.trusted && <div className="title-panels" role="group" aria-label="Workspace panels">
+              <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Toggle review"
+                title={`Review changes (${modifier}${shift}D)`} aria-pressed={Boolean(activeReview)}
+                disabled={removingProject} onClick={toggleReview}><Icon name="diff" /><span>Changes</span></button>
+              <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Toggle terminal"
+                title={`Terminal (${modifier}\`)`} aria-pressed={terminalVisible}
+                disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /><span>Terminal</span></button>
+            </div>}
+            <button className="icon-button" type="button" aria-label="Model settings"
+              title={`Model settings (${modifier},)`} onClick={() => setSettings({})}><Icon name="settings" /></button>
+          </div>
         </div>
       </header>
       <div className="app-body">
-        {navigation && (
+        {showNavigation && (
           <aside className="navigation" aria-label="Workspace navigation">
             <div className="nav-scroll">
-              <section className="nav-group" aria-labelledby="projects-label">
+              <section className="nav-group" aria-labelledby="projects-label" onKeyDown={navigateRows}>
                 <div className="nav-heading">
                   <h2 id="projects-label">Projects</h2>
                   <button className="icon-button" id="nav-open-project" type="button" title="Open a project folder" aria-label="Open a project folder"
@@ -433,45 +513,39 @@ function Desktop() {
                 </div>
                 {projects?.map((item) => <div className="nav-item" key={item.id}>
                   <button className="nav-row" id={`nav-project-${item.id}`} type="button" title={item.directory}
-                    aria-current={item.id === projectId ? 'true' : undefined} onClick={() => selectProject(item.id)}>
+                    aria-current={item.id === projectId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace" onClick={() => selectProject(item.id)}>
                     <Icon name={item.trusted ? 'folder' : 'lock'} /><span>{item.name}</span>
                   </button>
-                  <RemoveRowButton label={`Remove project ${item.name}`} disabled={Boolean(removing)}
+                  <RemoveRowButton label={`Remove project ${item.name}`} current={item.id === projectId} disabled={Boolean(removing)}
                     onClick={(button) => void remove({ projectId: item.id }, button)} />
                 </div>)}
-                {projectsError && <p className="nav-empty" role="alert">Could not load projects. <button className="inline-action"
+                {projectsError && <p className="nav-empty" role="alert">Could not refresh projects. <button className="inline-action"
                   type="button" onClick={() => refreshWorkspace((current) => current + 1)}>Retry</button></p>}
-                {!projects?.length && !projectsError && <p className="nav-empty">{projects ? 'No folders open' : 'Loading folders…'}</p>}
               </section>
-              {project && <section className="nav-group" aria-labelledby="sessions-label">
+              {project?.trusted && Boolean(sessions?.length) && <section className="nav-group" aria-labelledby="sessions-label" onKeyDown={navigateRows}>
                 <div className="nav-heading">
                   <h2 id="sessions-label">Sessions</h2>
                   <button className="icon-button" id="nav-new-session" type="button" aria-label="New session"
-                    title={`New session (${modifier}N)`} disabled={creating || !project.trusted || !sessions || removingProject} onClick={createSession}><Icon name="plus" /></button>
+                    title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}><Icon name="plus" /></button>
                 </div>
                 {sessions?.map((item) => {
                   const draft = projectDrafts?.[item.id];
                   const hasDraft = Boolean(draft?.text || draft?.attachments.length);
                   return <div className="nav-item" key={item.id}>
                     <button className="nav-row" id={`nav-session-${item.id}`} type="button" title={item.title}
-                      aria-current={item.id === sessionId ? 'true' : undefined} aria-description={hasDraft ? 'Unsent draft' : undefined}
+                      aria-current={item.id === sessionId ? 'true' : undefined} aria-keyshortcuts="Delete Backspace"
+                      aria-description={hasDraft ? 'Unsent draft' : undefined}
                       onClick={() => selectSession(project.id, item.id)}>
                       <Icon name="chat" /><span>{item.title}</span>
                       {hasDraft && <span className="nav-draft" title="Draft" aria-hidden="true" />}
                     </button>
-                    <RemoveRowButton label={`Remove session ${item.title}`} disabled={Boolean(removing)}
+                    <RemoveRowButton label={`Remove session ${item.title}`} current={item.id === sessionId} disabled={Boolean(removing)}
                       onClick={(button) => void remove({ projectId: project.id, sessionId: item.id }, button)} />
                   </div>;
                 })}
                 {sessionsIssue && <p className="nav-empty" role="alert">Could not load sessions. <button className="inline-action"
                   type="button" onClick={() => refreshSessions((current) => current + 1)}>Retry</button></p>}
-                {!sessions?.length && !sessionsIssue && <p className="nav-empty">{sessions ? 'No sessions yet' : 'Loading sessions…'}</p>}
               </section>}
-            </div>
-            <div className="nav-footer">
-              <button className="nav-row" type="button" onClick={openProject} disabled={opening}>
-                <Icon name="folderPlus" /><span>Open folder</span>
-              </button>
             </div>
           </aside>
         )}
@@ -480,60 +554,72 @@ function Desktop() {
             <button className="icon-button" type="button" aria-label="Dismiss message" onClick={() => setError(undefined)}><Icon name="close" /></button>
           </div>}
           <div className="workspace-middle">
-            {!project
-              ? <EmptyScene icon="folderPlus" eyebrow="Get started" title="Open a project folder">
-                  <p>Bring your local codebase into Pideck to inspect files, work with an agent, and review changes.</p>
-                  {openButton}
-                  {projectsError && <p role="alert">{projectsError} <button className="inline-action" type="button"
-                    onClick={() => refreshWorkspace((current) => current + 1)}>Retry loading projects</button></p>}
-                  {!projectsError && <p className="empty-secondary">After choosing a folder, you’ll review trust and start a session.</p>}
-                </EmptyScene>
-              : !project.trusted
-                ? <EmptyScene icon="lock" eyebrow={project.name} title="Trust this project to begin">
-                    <p>Trust lets Pideck run commands and edit files as your user.</p>
-                    <p className="empty-path">{project.directory}</p>
-                    <button className="button button--primary" type="button" onClick={trustProject} disabled={trusting || removingProject}>
-                      <Icon name="shield" /> Trust project
-                    </button>
-                  </EmptyScene>
-                : session
-                  ? <Chat key={session.id} project={project} session={session} models={models}
-                      modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
-                      draft={projectDrafts?.[session.id] ?? emptyDraft} updateDraft={updateActiveDraft}
-                      onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
-                      onRetryModels={() => refreshModels((current) => current + 1)}
-                      onSettings={(provider) => setSettings({ provider })}
-                      onReview={openReview} onWorkspaceChange={refreshReview}
-                      onSent={() => refreshSessions((current) => current + 1)} onFork={forkSession} />
-                  : <EmptyScene icon="chat" eyebrow={project.name} title="Start a coding session">
-                      {sessionsIssue
-                        ? <><p role="alert">{sessionsIssue}</p><button className="button" type="button"
-                          onClick={() => refreshSessions((current) => current + 1)}>Retry loading sessions</button></>
-                        : <><p>{sessions ? 'Start a conversation to explore this project or ask Pideck to make a change.' : 'Opening your workspace…'}</p>
-                          <button className="button button--primary" type="button" disabled={creating || !sessions || removingProject} onClick={createSession}>
-                            <Icon name="plus" /> New session <kbd>{modifier}N</kbd>
-                          </button></>}
-                    </EmptyScene>}
+            <div className="workspace-conversation" inert={reviewOverlaysChat}>
+              {!project
+                ? projectsError
+                  ? <EmptyScene icon="folderPlus" title="Couldn’t load projects">
+                      <p role="alert">{projectsError}</p>
+                      <button className="button button--primary" type="button"
+                        onClick={() => refreshWorkspace((current) => current + 1)}>Retry loading projects</button>
+                    </EmptyScene>
+                  : !projects
+                    ? <div className="workspace-loading" role="status">Opening workspace…</div>
+                    : <EmptyScene icon="folderPlus" title="Open a project folder">
+                        <p>Choose a local codebase to start working with Pideck.</p>
+                        <button className="button button--primary" id="workspace-open-project" type="button"
+                          title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}>
+                          <Icon name="folderPlus" /> {opening ? 'Opening…' : 'Open folder'}
+                        </button>
+                      </EmptyScene>
+                : !project.trusted
+                  ? <EmptyScene icon="lock" title="Trust this project">
+                      <p>Pideck needs your permission to edit files and run commands.</p>
+                      <p className="empty-path">{project.directory}</p>
+                      <button className="button button--primary" id="workspace-trust" type="button" onClick={trustProject}
+                        disabled={trusting || removingProject}><Icon name="shield" /> Trust project</button>
+                    </EmptyScene>
+                  : session
+                    ? <Chat key={session.id} project={project} session={session} models={models}
+                        modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
+                        draft={projectDrafts?.[session.id] ?? emptyDraft} updateDraft={updateActiveDraft}
+                        onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
+                        onRetryModels={() => refreshModels((current) => current + 1)}
+                        onSettings={(provider) => setSettings({ provider })}
+                        onReview={openReview} onWorkspaceChange={refreshReview}
+                        onSent={() => refreshSessions((current) => current + 1)} onFork={forkSession} />
+                    : sessionsIssue
+                      ? <EmptyScene icon="chat" title="Couldn’t load sessions">
+                          <p role="alert">{sessionsIssue}</p>
+                          <button className="button button--primary" type="button"
+                            onClick={() => refreshSessions((current) => current + 1)}>Retry loading sessions</button>
+                        </EmptyScene>
+                      : !sessions
+                        ? <div className="workspace-loading" role="status">Loading sessions…</div>
+                        : <EmptyScene icon="chat" title="Start a session">
+                            <p>Ask a question about the codebase or describe a change.</p>
+                            <button className="button button--primary" id="workspace-new-session" type="button"
+                              title={`New session (${modifier}N)`} disabled={creating || removingProject} onClick={createSession}>
+                              <Icon name="plus" /> New session
+                            </button>
+                          </EmptyScene>}
+            </div>
             {project?.trusted && activeReview && <Suspense fallback={<div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
               <ReviewPanel project={project} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
-                refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={() => setReview(undefined)} />
+                refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
             </Suspense>}
           </div>
-          {project?.trusted && activeTerminal && <Suspense fallback={activeTerminal.visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
-            <TerminalPanel key={project.id} project={project} visible={activeTerminal.visible}
-              onClose={() => setTerminal({ projectId: project.id, visible: false })} />
-          </Suspense>}
+          {projects?.filter((item) => item.trusted && Object.hasOwn(terminals, item.id)).map((item) => {
+            const visible = item.id === projectId && terminals[item.id];
+            return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
+              <TerminalPanel project={item} visible={visible} focusOnShow={focusTerminal === item.id}
+                onClose={() => {
+                  setTerminals((current) => ({ ...current, [item.id]: false }));
+                  setFocusTerminal((current) => current === item.id ? undefined : current);
+                }} />
+            </Suspense>;
+          })}
         </section>
       </div>
-      <footer className="statusbar">
-        {project && <><Icon name={project.trusted ? 'shield' : 'lock'} width={12} height={12} />
-          <span className="status-project" title={project.directory}>{project.directory}</span></>}
-        <span className="statusbar-spacer" />
-        <button className="status-models" type="button" onClick={() => setSettings({})}>
-          <Icon name="key" width={12} height={12} />
-          {models.some(({ configured }) => configured) ? 'Providers' : 'Set up a model'}
-        </button>
-      </footer>
       {settings && <SettingsDialog initialProvider={settings.provider} onClose={() => setSettings(undefined)}
         onModelsChanged={() => refreshModels((current) => current + 1)} />}
     </div>
@@ -543,7 +629,7 @@ function Desktop() {
 export function App() {
   if (!window.pideck) return (
     <div className="app">
-      <EmptyScene icon="mark" eyebrow="Pideck" title="Open the desktop app">
+      <EmptyScene icon="mark" title="Open the desktop app">
         <p>Launch Pideck to connect to your projects and conversations.</p>
       </EmptyScene>
     </div>

@@ -21,12 +21,13 @@ const path = await executable();
 const temporary = await mkdtemp(join(tmpdir(), "pideck-packaged-"));
 const data = join(temporary, "profile");
 const project = join(temporary, "smoke-project");
+const otherProject = join(temporary, "side-project");
 let app;
 let modelServer;
 const errors = [];
 
 try {
-  await mkdir(project);
+  await Promise.all([mkdir(project), mkdir(otherProject)]);
   modelServer = await openSmokeProvider();
   const git = (...args) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
   git("init");
@@ -134,7 +135,27 @@ try {
     throw new Error("Terminal search status was " + text.join(" "), { cause: error });
   });
   await page.getByRole("searchbox", { name: "Find in terminal output" }).press("Escape");
+
+  await terminal.focus();
+  const continueInBackground = process.platform === "win32"
+    ? 'Start-Sleep -Seconds 1; Write-Host ("PROJECT_" + "PTY_OK")'
+    : 'sleep 1; printf \'PROJECT_%s\\n\' PTY_OK';
+  await page.keyboard.insertText(continueInBackground);
+  await page.keyboard.press("Enter");
+  await app.evaluate(({ dialog }, directory) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
+  }, otherProject);
+  await page.getByRole("button", { name: "Open a project folder", exact: true }).click();
+  await page.getByRole("button", { name: "side-project", exact: true }).waitFor();
+  await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "smoke-project", exact: true }).click();
+  await page.locator(".xterm-rows").getByText("PROJECT_PTY_OK", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "smoke-project");
+  await page.getByRole("button", { name: "side-project", exact: true }).press("Backspace");
+  await page.getByRole("button", { name: "side-project", exact: true }).waitFor({ state: "detached" });
+
   if (process.platform !== "win32") {
+    await terminal.focus();
     async function ptySize(filename) {
       await page.keyboard.insertText(`stty size > ${filename}`);
       await page.keyboard.press("Enter");

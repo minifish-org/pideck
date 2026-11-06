@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, SendChat, Session, Thinking } from '../shared/api';
@@ -24,6 +25,9 @@ function ImageBlock({ image, alt }: { image: { mimeType: string; data: string };
 }
 
 const toolLabels: Record<string, string> = { read: 'Read', write: 'Write', edit: 'Edit', bash: 'Shell' };
+const thinkingLabels: Record<Thinking, string> = {
+  off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum',
+};
 
 function ToolCard({ block, onReview }: {
   block: Extract<ChatBlock, { type: 'tool' }>;
@@ -34,7 +38,8 @@ function ToolCard({ block, onReview }: {
   const path = block.path ?? (typeof argPath === 'string' ? argPath : undefined);
   const target = typeof command === 'string' ? command : path;
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
-  const status = { pending: 'Queued', running: 'Running', done: 'Done', error: 'Failed' }[block.status];
+  const status = { pending: 'Queued', running: 'Running', done: undefined, error: 'Failed' }[block.status];
+  const longCommand = typeof command === 'string' && (command.includes('\n') || command.length > 48);
   const [expanded, setExpanded] = useState<boolean>();
 
   return (
@@ -47,19 +52,19 @@ function ToolCard({ block, onReview }: {
         <Icon name={block.name === 'bash' ? 'terminal' : 'file'} />
         <span className="tool-label">{toolLabels[block.name] ?? block.name}</span>
         {target && <span className="tool-target">{target}</span>}
-        <span className={`tool-state ${block.status === 'error' ? 'tool-state--error' : ''}`}>{status}</span>
+        {status && <span className={`tool-state ${block.status === 'error' ? 'tool-state--error' : ''}`}>{status}</span>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
       </summary>
       <div className="tool-detail">
-        {typeof command === 'string' && <div className="tool-command">$ {command}</div>}
+        {longCommand && <div className="tool-command">$ {command}</div>}
         {block.patch
           ? <Suspense fallback={<div className="panel-loading" role="status">Loading diff…</div>}>
               <InlineDiff patch={block.patch} onOpen={() => onReview({ path, patch: block.patch })} />
             </Suspense>
           : <>
               {block.output && <pre className="tool-output">{block.output}</pre>}
-              {showReview && <button className="button tool-review" type="button"
-                onClick={() => onReview({ path, patch: block.patch })}><Icon name="diff" /> Open in review</button>}
+              {showReview && <button className="inline-action tool-review" type="button"
+                onClick={() => onReview({ path })}>Open in review <span aria-hidden="true">↗</span></button>}
             </>}
         {block.images?.map((image, index) => <ImageBlock key={index} image={image} alt={`Output from ${block.name}`} />)}
       </div>
@@ -101,16 +106,15 @@ const Message = memo(function Message({ message, onReview, onFork }: {
           }
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
-        {onFork && message.entryId !== undefined && <button type="button" className="message-fork inline-action"
-          title="Start a separate session from this point" onClick={() => onFork(message.entryId!)}><Icon name="fork" width={12} height={12} /> Fork here</button>}
       </div>
+      {onFork && message.entryId !== undefined && <button type="button" className="icon-button message-fork"
+        aria-label="Fork here" title="Fork from this message" onClick={() => onFork(message.entryId!)}><Icon name="fork" width={14} height={14} /></button>}
     </article>
   );
 });
 
-export function EmptyScene({ icon, eyebrow, title, children }: {
+export function EmptyScene({ icon, title, children }: {
   icon: 'mark' | 'folderPlus' | 'lock' | 'chat';
-  eyebrow: string;
   title: string;
   children?: ReactNode;
 }) {
@@ -118,7 +122,6 @@ export function EmptyScene({ icon, eyebrow, title, children }: {
     <div className="empty-scene">
       <section className="empty-card">
         <div className="hero-mark"><Icon name={icon} /></div>
-        <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
         {children}
       </section>
@@ -152,7 +155,10 @@ function SessionActions({ busy, available, onCompact, onFork }: {
 }) {
   const disclosure = useRef<HTMLDetailsElement>(null);
   function choose(action: () => void) {
-    if (disclosure.current) disclosure.current.open = false;
+    if (disclosure.current) {
+      disclosure.current.open = false;
+      disclosure.current.querySelector('summary')?.focus();
+    }
     action();
   }
   return <div className="session-tools">
@@ -166,7 +172,7 @@ function SessionActions({ busy, available, onCompact, onFork }: {
           event.currentTarget.querySelector('summary')?.focus();
         }
       }}>
-      <summary title="Session actions" aria-label="Session actions"><Icon name="more" /></summary>
+      <summary className="icon-button" title="Session actions" aria-label="Session actions"><Icon name="more" /></summary>
       <div className="session-actions-list">
         <button type="button" disabled={!available || !onFork} onClick={() => onFork && choose(onFork)}>
           <Icon name="fork" /> Fork from latest turn
@@ -184,28 +190,35 @@ function CompactDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm:
   const [instructions, setInstructions] = useState('');
   useLayoutEffect(() => {
     if (!dialog.current?.open) dialog.current?.showModal();
+    dialog.current?.querySelector('textarea')?.focus();
   }, []);
 
+  function close() {
+    dialog.current?.close();
+    onClose();
+  }
+
   return <dialog className="settings-dialog" ref={dialog} aria-labelledby="compact-title"
-    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    onCancel={(event) => { event.preventDefault(); close(); }}>
     <div className="dialog-heading"><h2 id="compact-title">Compact context</h2>
-      <button type="button" className="icon-button" aria-label="Close compaction" onClick={onClose}><Icon name="close" /></button>
+      <button type="button" className="icon-button" aria-label="Close compaction" onClick={close}><Icon name="close" /></button>
     </div>
     <p className="dialog-copy">Summarize earlier turns to make room in the model’s context. The conversation history stays available.</p>
-    <form onSubmit={(event) => { event.preventDefault(); onConfirm(instructions.trim()); }}>
+    <form onSubmit={(event) => {
+      event.preventDefault();
+      dialog.current?.close();
+      onConfirm(instructions.trim());
+    }}>
       <div className="settings-fields"><label>What should the summary preserve? (optional)
         <textarea rows={3} maxLength={4000} value={instructions} onChange={(event) => setInstructions(event.target.value)} />
       </label></div>
-      <div className="dialog-actions"><button type="button" className="button" onClick={onClose}>Cancel</button>
+      <div className="dialog-actions"><button type="button" className="button" onClick={close}>Cancel</button>
         <button type="submit" className="button button--primary"><Icon name="layers" /> Compact context</button></div>
     </form>
   </dialog>;
 }
 
-const starters = [
-  { label: 'Explore this project', text: 'Inspect this project and explain its structure, entry points, and how to run the tests.' },
-  { label: 'Review current changes', text: 'Review the current Git changes for bugs and missing verification. Keep the review grounded in the diff.' },
-];
+const starter = 'Inspect this project and explain its structure, entry points, and how to run the tests.';
 
 type HistoryAnchor = { id?: string; top: number; view: ChatView; gap?: ChatGap };
 
@@ -247,6 +260,7 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const selection = { projectId: project.id, sessionId: session.id };
   const { view, connected, error: connectionError, retry, loadEarlier } = useConversation(selection);
   const [picker, setPicker] = useState(false);
+  const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
   const [compactDialog, setCompactDialog] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [notice, setNotice] = useState<string>();
@@ -271,10 +285,13 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
   const busy = view?.status === 'running' || view?.status === 'cancelling';
   const agentCompacting = compacting || view?.activity?.kind === 'compacting';
   const activeKey = view?.model && modelKey(view.model);
-  const desiredModel = draft.model || activeKey || defaultModel;
-  const chosen = models.find((option) => modelKey(option) === desiredModel && (option.configured || Boolean(draft.model)))
-    ?? models.find((option) => option.configured);
-  const model = busy ? models.find((option) => modelKey(option) === activeKey) : chosen;
+  const desiredModel = busy ? activeKey : draft.model || activeKey || defaultModel;
+  const model = desiredModel
+    ? models.find((option) => modelKey(option) === desiredModel)
+    : models.find((option) => option.configured);
+  const desiredProvider = model?.provider ?? desiredModel?.split('/')[0];
+  const modelName = model?.name ?? (desiredModel ? desiredModel.slice(desiredModel.indexOf('/') + 1) : undefined);
+  const setupRequired = !busy && modelsReady && !models.some((option) => option.configured);
   const desiredThinking = busy ? view?.thinking : draft.thinking ?? (model && modelKey(model) === activeKey ? view?.thinking : undefined);
   const thinking = desiredThinking && model?.thinking.includes(desiredThinking) ? desiredThinking
     : model?.thinking.includes('off') ? 'off' : model?.thinking[0] ?? 'off';
@@ -283,6 +300,10 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     && Boolean(text.trim() || attachments.length) && (!attachments.length || Boolean(model?.supportsImages));
   const latestFork = view?.messages.findLast(({ entryId }) => entryId !== undefined)?.entryId;
   const gaps = view?.gaps ?? [];
+
+  useLayoutEffect(() => {
+    setActionsSlot(document.getElementById('session-actions-slot'));
+  }, []);
 
   useEffect(() => {
     if (!connected || (!busy && !agentCompacting)) setStopping(false);
@@ -354,7 +375,9 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     if (!canSend || !model) {
       if (text.trim() || attachments.length) {
         if (!connected) update({ error: 'Reconnect before sending. Your draft is still here.' });
-        else if (modelsReady && !model?.configured) update({ error: 'Connect a model provider to send this draft.' });
+        else if (modelsReady && !model?.configured) update({ error: modelName
+          ? 'The selected model is unavailable. Check its provider or choose another model.'
+          : 'Connect a model provider to send this draft.' });
         else if (attachments.length && !model?.supportsImages) update({ error: 'Choose a model that accepts images or remove the attachments.' });
       }
       return;
@@ -483,19 +506,23 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
     : view?.activity?.kind === 'retrying' ? retryTime ? `Model retry scheduled for ${retryTime}` : 'Retrying the model…'
     : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
     : busy ? 'Pideck is working' : undefined;
-  const sendHint = !connected ? 'Your draft stays here while the session reconnects'
-    : modelsError ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry loading models</button>
-    : !model?.configured && modelsReady
-      ? <button className="inline-action" type="button" onClick={() => onSettings(model?.provider)}>Connect {model ? providerLabel(model.provider) : 'a model provider'} to send</button>
-      : attachments.length > 0 && !model?.supportsImages ? 'Choose a model that accepts images'
-        : agentCompacting ? 'You can draft a message while context is compacting'
-          : busy ? (delivery === 'steer' ? 'Enter to steer the current run' : 'Enter to queue a follow-up')
-          : 'Enter to send · Shift+Enter for a new line';
+  const composerStatus = draft.sending ? 'Sending…'
+    : draft.reading ? 'Attaching images…'
+    : attachments.length > 0 && model && !model.supportsImages ? 'Choose a model that accepts images.'
+    : setupRequired && modelName ? `${modelName} is unavailable.`
+    : !busy && modelsReady && !setupRequired && modelName && !model?.configured
+      ? <><span>Selected model unavailable</span><button className="inline-action" type="button"
+        onClick={() => onSettings(desiredProvider)}>Provider settings</button></>
+      : busy && !agentCompacting && delivery === 'steer' ? 'Steer sends guidance to the current run.' : undefined;
+  const submitLabel = busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send';
 
   return (
     <main className="chat" aria-label="Conversation">
-      <SessionActions busy={busy || agentCompacting} available={connected && hasMessages && !forking}
-        onCompact={() => setCompactDialog(true)} onFork={latestFork !== undefined ? () => void fork(latestFork) : undefined} />
+      {actionsSlot && hasMessages && createPortal(
+        <SessionActions busy={busy || agentCompacting} available={connected && !forking}
+          onCompact={() => setCompactDialog(true)} onFork={latestFork !== undefined ? () => void fork(latestFork) : undefined} />,
+        actionsSlot,
+      )}
       {!connected && (
         <div className={`notice ${connectionError ? '' : 'notice--info'}`} role={connectionError ? 'alert' : 'status'}>
           <Icon name={connectionError ? 'alert' : 'chat'} />
@@ -531,18 +558,17 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
             {view?.error && <div className="notice" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
           </div>
         ) : (
-          <EmptyScene icon="mark" eyebrow={project.name} title="What are we building?">
-            {!model?.configured && modelsReady
-              ? <><p>Connect a model provider to use Pideck in this project. You can start drafting while you set it up.</p>
-                <button className="button button--primary" type="button" onClick={() => onSettings(model?.provider)}>
-                  <Icon name="key" /> Connect a provider
-                </button></>
-              : <p>Ask Pideck to explore the codebase, make a change, or verify a fix.</p>}
-            <div className="starter-prompts">
-              {starters.map((starter) => <button type="button" className="button" key={starter.label} disabled={Boolean(text.trim())}
-                onClick={() => { update({ text: starter.text, error: undefined }); textarea.current?.focus(); }}>{starter.label}</button>)}
+          <div className="chat-welcome">
+            <div className="chat-welcome-content">
+              <Icon className="chat-welcome-mark" name="mark" width={26} height={26} />
+              <h1>What are we building?</h1>
+              <p>{setupRequired ? 'Connect a model provider to start working in this project.' : 'Ask about the codebase or describe a change.'}</p>
+              {model?.configured && <button type="button" className="button chat-starter" disabled={Boolean(text.trim())}
+                onClick={() => { update({ text: starter, error: undefined }); textarea.current?.focus(); }}>
+                <Icon name="code" width={14} height={14} /> Explore this project
+              </button>}
             </div>
-          </EmptyScene>
+          </div>
         )}
       </div>
       {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" onClick={jumpToLatest}><Icon name="arrowDown" /> Latest</button></div>}
@@ -553,9 +579,11 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
         {(draft.error || modelsError || notice) && <div className={`notice composer-notice ${draft.error || modelsError ? '' : 'notice--info'}`}
           role={draft.error || modelsError ? 'alert' : 'status'}>
           <Icon name={draft.error || modelsError ? 'alert' : 'check'} /><span>{draft.error ?? modelsError ?? notice}</span>
-          {!modelsError && <button className="icon-button" type="button" aria-label="Dismiss chat notice" onClick={() => {
-            update({ error: undefined }); setNotice(undefined);
-          }}><Icon name="close" /></button>}
+          {modelsError && !draft.error
+            ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry models</button>
+            : <button className="icon-button" type="button" aria-label="Dismiss chat notice" onClick={() => {
+              update({ error: undefined }); setNotice(undefined);
+            }}><Icon name="close" /></button>}
         </div>}
         <form className="composer" ref={form} onSubmit={send}>
           {attachments.length > 0 && <div className="attachments">
@@ -589,45 +617,51 @@ export function Chat({ project, session, models, modelsReady, modelsError, defau
               }
             }} />
           <div className="composer-controls">
-            <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
-              disabled={!models.length || busy} title={model ? `${providerLabel(model.provider)} · ${model.name}` : 'Choose a model'}
-              onClick={() => setPicker(true)}>
-              <Icon name="layers" width={14} height={14} />
-              <span>{model?.name ?? (modelsReady ? 'Choose model' : 'Loading models…')}</span>
-              <Icon name="down" width={12} height={12} />
-            </button>
-            {model && model.thinking.length > 1 && <div className="select-shell">
-              <select aria-label="Thinking level" value={thinking} disabled={busy}
-                onChange={(event) => update({ thinking: event.target.value as Thinking })}>
-                {model.thinking.map((level) => <option key={level} value={level}>{level === 'off' ? 'Thinking off' : `Thinking · ${level}`}</option>)}
-              </select>
-              <Icon name="down" width={13} height={13} />
-            </div>}
-            <div className="composer-spacer" />
-            {model?.supportsImages && <>
-              <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
-                onChange={(event) => {
-                  const files = [...(event.target.files ?? [])];
-                  event.target.value = '';
-                  void addFiles(files);
-                }} />
-              <button className="icon-button" type="button" title="Attach images" aria-label="Attach images"
-                disabled={draft.reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
-            </>}
-            {(busy || agentCompacting) && <button className="button send-button stop-button" type="button" onClick={cancel}
-              title={agentCompacting ? 'Stop compaction' : 'Stop the run'} aria-label={agentCompacting ? 'Stop compaction' : 'Stop the run'} disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>}
-            {busy && !agentCompacting && <div className="select-shell delivery-select">
-              <select aria-label="Message delivery" value={delivery} onChange={(event) => setDelivery(event.target.value as Delivery)}>
-                <option value="follow-up">Follow-up</option><option value="steer">Steer</option>
-              </select><Icon name="down" width={13} height={13} />
-            </div>}
-            <button className="button button--primary send-button" type="submit"
-              title={busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send'}
-              aria-label={busy && !agentCompacting ? delivery === 'steer' ? 'Steer the run' : 'Queue follow-up' : 'Send'}
-              disabled={!canSend}><Icon name="arrowUp" /></button>
+            <div className="composer-models">
+              {setupRequired
+                ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
+                    <Icon name="key" width={14} height={14} /> Connect a provider
+                  </button>
+                : <button className="model-trigger" type="button" aria-label="Model" aria-haspopup="dialog"
+                    disabled={!models.length || busy}
+                    title={modelName ? `${desiredProvider ? providerLabel(desiredProvider) + ' · ' : ''}${modelName}` : 'Choose a model'}
+                    onClick={() => setPicker(true)}>
+                    <span>{modelName ?? (modelsReady ? 'Choose model' : 'Loading models…')}</span>
+                    {!busy && <Icon name="down" width={12} height={12} />}
+                  </button>}
+              {model && model.thinking.length > 1 && !busy && <div className="select-shell thinking-select">
+                <select aria-label="Thinking level" title="Thinking level" value={thinking}
+                  onChange={(event) => update({ thinking: event.target.value as Thinking })}>
+                  {model.thinking.map((level) => <option key={level} value={level}>Thinking · {thinkingLabels[level]}</option>)}
+                </select>
+                <Icon name="down" width={12} height={12} />
+              </div>}
+            </div>
+            <div className="composer-actions">
+              {busy && !agentCompacting && <div className="select-shell delivery-select">
+                <select aria-label="Message delivery" value={delivery} onChange={(event) => setDelivery(event.target.value as Delivery)}>
+                  <option value="follow-up">Follow-up</option><option value="steer">Steer</option>
+                </select><Icon name="down" width={12} height={12} />
+              </div>}
+              {model?.supportsImages && <>
+                <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
+                  onChange={(event) => {
+                    const files = [...(event.target.files ?? [])];
+                    event.target.value = '';
+                    void addFiles(files);
+                  }} />
+                <button className="icon-button" type="button" title="Attach images" aria-label="Attach images"
+                  disabled={draft.reading || attachments.length >= 4} onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
+              </>}
+              {(busy || agentCompacting) && <button className="button send-button stop-button" type="button" onClick={cancel}
+                title={agentCompacting ? 'Stop compaction' : 'Stop the run'} aria-label={agentCompacting ? 'Stop compaction' : 'Stop the run'}
+                disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>}
+              <button className="button button--primary send-button" type="submit" title={`${submitLabel} (Enter)`} aria-label={submitLabel}
+                disabled={!canSend}><Icon name="arrowUp" /></button>
+            </div>
           </div>
         </form>
-        <div className="composer-hints"><span>{sendHint}</span><span>{draft.sending ? 'Sending…' : draft.reading ? 'Attaching images…' : session.title}</span></div>
+        {composerStatus && <div className="composer-status" role="status">{composerStatus}</div>}
       </div>
       {picker && <ModelPicker models={models} selected={model} onClose={() => setPicker(false)} onChoose={(option) => {
         const key = modelKey(option);

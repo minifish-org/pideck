@@ -17,7 +17,7 @@ During a run, **Steer** sends an instruction at Durable’s next turn boundary. 
 
 **Remove** is available beside each project and session. Session removal clears its conversation, tool output, and draft. Remove any branches before removing their parent session. Project removal stops its terminal and clears all its sessions and local workspace settings. Files in the project folder are kept. Reopening a removed folder starts a new workspace and asks for trust again. Finish or stop work in other sessions before removing stored conversation data.
 
-Small tool edits expand in chat. Open larger patches in **Changes** for file navigation, syntax highlighting, line selection, and unified or split layout. The terminal starts in the project folder. Its search covers the retained scrollback, which stays visible if the workspace process restarts and starts a new shell.
+Small tool edits expand in chat. Open larger patches in **Changes** for file navigation, syntax highlighting, line selection, and unified or split layout. The terminal starts in the project folder and keeps running while you switch projects. Its search covers the retained scrollback, which stays visible if the workspace process restarts and starts a new shell.
 
 Provider credentials are encrypted through the operating system’s credential store. Supported provider environment variables are available to pi-ai in the trusted workspace process. Pideck excludes them from tool, review, and terminal subprocess environments. On Linux, saving credentials requires a system secret store. Trusted projects let Pideck run commands with your user account’s permissions. Only trust folders whose contents you trust.
 
@@ -30,7 +30,9 @@ Provider credentials are encrypted through the operating system’s credential s
 | Toggle review | ⌘/Ctrl+Shift+D |
 | Toggle terminal | ⌘/Ctrl+` |
 | Focus prompt | ⌘/Ctrl+L |
-| Find in terminal | ⌘/Ctrl+F while terminal has focus |
+| Find in terminal | ⌘F on macOS, Ctrl+Shift+F elsewhere |
+| Navigate sidebar rows | ↑/↓, then Enter to select |
+| Request removal of a sidebar row | Delete while the row has focus |
 
 ## Verify and package
 

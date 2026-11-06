@@ -10,6 +10,7 @@ import { fauxRuntime, toolResponse, waitForView } from "../test/support/faux-run
 const name = `pideck-${randomUUID().slice(0, 12)}`;
 const output = "output/playwright";
 const screenshot = `${output}/${name}.png`;
+const workspaceScreens = ["welcome", "workspace", "narrow"].map(stage => `${output}/pideck-ui-${stage}.png`);
 const log = `${output}/${name}.log`;
 const data = await mkdtemp(join(tmpdir(), "pideck-frontend-"));
 const fixture = fauxRuntime(data);
@@ -58,7 +59,7 @@ try {
   const finishedText = "Browser verification finished.";
   fixture.faux.setResponses([
     toolResponse("bash", { command, timeout: 120 }),
-    toolResponse("read", { path: resolve(screenshot) }),
+    ...workspaceScreens.map(path => toolResponse("read", { path: resolve(path) })),
     fauxAssistantMessage(finishedText),
   ]);
   const finished = waitForView(runtime, selection, view => view.status === "idle" && view.messages.some(
@@ -68,10 +69,11 @@ try {
   const result = await finished;
   const blocks = result.messages.flatMap(message => message.blocks);
   const shell = blocks.find(block => block.type === "tool" && block.name === "bash");
-  const image = blocks.find(block => block.type === "tool" && block.name === "read");
+  const images = blocks.filter(block => block.type === "tool" && block.name === "read");
   assert.ok(shell?.type === "tool" && shell.status === "done" && shell.output?.includes("Renderer flow passed."), shell?.type === "tool" ? shell.output : "Bash did not run.");
-  assert.ok(image?.type === "tool" && image.status === "done" && image.images?.length === 1, "Durable did not return the screenshot as image input.");
-  console.log(`Durable Bash and Playwright verified the renderer. Screenshot: ${screenshot}`);
+  assert.ok(images.length === workspaceScreens.length && images.every(image =>
+    image.type === "tool" && image.status === "done" && image.images?.length === 1), "Durable did not return the screenshots as image input.");
+  console.log(`Durable Bash and Playwright verified the renderer. Screenshots: ${workspaceScreens.join(", ")}`);
 } finally {
   await runtime.close();
   await rm(data, { recursive: true, force: true });

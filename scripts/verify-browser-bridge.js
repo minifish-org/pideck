@@ -130,6 +130,9 @@ async page => {
           case "model:providers": return [{
             id: model.provider, name: "Fixture provider", configured: state.configured, credential: state.configured ? "oauth" : undefined,
             dynamic: true, methods: [{ type: "api_key", name: "API key" }, { type: "oauth", name: "Sign in with browser" }],
+          }, {
+            id: "other", name: "Another provider", configured: false, dynamic: false,
+            methods: [{ type: "api_key", name: "API key" }],
           }];
           case "model:login":
             return new Promise((resolve, reject) => {

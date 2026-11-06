@@ -41,7 +41,7 @@ export class Terminals {
 
   open(owner: number, projectId: string, cwd: string, cols: number, rows: number): TerminalOpen {
     if ([...this.terminals.values()].filter(terminal => terminal.owner === owner).length >= 4) {
-      throw new Error("Close a terminal before opening another.");
+      throw new Error("This window has four running shells. Stop one before starting another.");
     }
     const configuredShell = process.env.SHELL || userInfo().shell;
     const shell = process.platform === "win32" ? "powershell.exe"
