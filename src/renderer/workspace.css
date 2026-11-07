@@ -1,11 +1,12 @@
 .workspace-review {
+  --diff-surface: var(--control-bgColor-rest);
   container: review / inline-size;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  background: var(--bgColor-default);
+  background: var(--diff-surface);
 }
 
 .workspace-review[hidden] { display: none; }
@@ -29,7 +30,7 @@
   min-height: 40px;
   gap: 8px;
   padding-inline: var(--workspace-inset, 16px);
-  background: var(--bgColor-default);
+  background: var(--control-bgColor-rest);
 }
 
 .workspace-tools[data-docked] > .workspace-review > .workspace-panel-header,
@@ -148,7 +149,7 @@
 .workspace-file-list button:hover { color: var(--fgColor-default); background: var(--control-transparent-bgColor-hover); }
 .workspace-file-list button[aria-current="true"] {
   color: var(--fgColor-default);
-  background: var(--sideNav-bgColor-selected);
+  background: var(--bgColor-emphasis);
 }
 
 .workspace-file-icon { flex: none; color: var(--fgColor-muted); }
@@ -234,12 +235,12 @@
 .workspace-layout select::picker-icon { display: none; }
 .workspace-layout svg { position: absolute; inset-inline-end: 8px; inset-block-start: 10px; color: var(--fgColor-muted); pointer-events: none; }
 
-.workspace-review-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--bgColor-default); }
+.workspace-review-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--diff-surface); }
 
 .workspace-diff {
   display: block;
-  --diffs-bg-context-override: var(--bgColor-default);
-  --diffs-bg-context-gutter-override: var(--bgColor-default);
+  --diffs-bg-context-override: var(--diff-surface, var(--bgColor-default));
+  --diffs-bg-context-gutter-override: var(--diff-surface, var(--bgColor-default));
   --diffs-bg-buffer-override: var(--diffBlob-emptyLine-bgColor);
   --diffs-bg-separator-override: var(--diffBlob-hunkLine-bgColor);
   --diffs-fg-number-override: var(--fgColor-muted);

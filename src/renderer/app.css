@@ -78,6 +78,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   padding-right: 10px;
   border-bottom: 0;
   border-right: 1px solid var(--borderColor-muted);
+  background: var(--control-bgColor-rest);
 }
 .titlebar-content {
   display: flex; min-width: 0; flex: 1; align-items: center; gap: 16px;
@@ -123,7 +124,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .app-body { display: flex; flex: 1; min-height: 0; position: relative; }
 .navigation {
   display: flex; flex-direction: column; flex: 0 0 var(--nav-width); min-width: 0;
-  position: relative; z-index: 5; border-right: 1px solid var(--borderColor-muted); background: var(--bgColor-default);
+  position: relative; z-index: 5; border-right: 1px solid var(--borderColor-muted); background: var(--control-bgColor-rest);
 }
 .app--drawer .navigation {
   position: absolute; inset: 0 auto 0 0; width: var(--drawer-width);
@@ -179,7 +180,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-item .nav-remove:hover:not([aria-disabled='true']), .nav-item .nav-remove:focus-visible { color: var(--fgColor-danger); }
 .nav-item .nav-remove[aria-disabled='true'] { color: var(--fgColor-disabled); cursor: default; }
 .nav-row:hover:not(:disabled) { background: var(--control-transparent-bgColor-hover); color: var(--fgColor-default); }
-.nav-row[aria-current='true'] { background: var(--sideNav-bgColor-selected); color: var(--fgColor-default); }
+.nav-row[aria-current='true'] { background: var(--bgColor-emphasis); color: var(--fgColor-default); }
 .nav-row svg { flex: none; }
 .nav-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
 .nav-footer { flex: none; margin-top: auto; padding: 8px 12px; }
@@ -195,7 +196,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bgColor-default);
+  background: var(--control-bgColor-rest);
 }
 .workspace-tools[hidden] { display: none; }
 .workspace-tools[data-docked] {

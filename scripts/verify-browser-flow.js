@@ -6,6 +6,8 @@ async page => {
   const nav = page.getByRole("complementary", { name: "Workspace navigation" });
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   const canvas = "rgb(13, 17, 23)";
+  const panel = "rgb(33, 40, 48)";
+  const inputSurface = "rgb(21, 27, 35)";
   const overlay = "rgb(1, 4, 9)";
   const foreground = "rgb(240, 246, 252)";
   const green = "rgb(35, 134, 54)";
@@ -127,7 +129,7 @@ async page => {
   if (await prompt.inputValue() !== "Update and verify the status." || await sessionCount() !== 0) {
     throw new Error("Cancelling a saved connection lost the unsent draft or started a session.");
   }
-  await expectColors(composer, { "background-color": canvas });
+  await expectColors(composer, { "background-color": inputSurface });
   await expectColors(prompt, { "color": foreground });
   await model.press("ArrowDown");
   await page.waitForFunction(() => document.body.dataset.savedModelCatalog === "available");
@@ -564,6 +566,7 @@ async page => {
     if (!aligned) throw new Error("User messages should sit on the right and assistant output should start on the left.");
   }
   await expectTranscriptLayout();
+  await expectColors(userMessage, { "background-color": "rgb(61, 68, 77)", "border-width": "0px" });
   await userMessage.hover();
   if (await page.getByRole("article", { name: "You", exact: true })
     .getByRole("button", { name: "Branch from here" }).count()) {
@@ -789,8 +792,12 @@ async page => {
   await expectDockedTool("#review-panel");
   const dockedTogglePositions = await togglePositions();
   if (await tools.locator("[role=separator]").count()) throw new Error("The right sidebar still splits tools vertically.");
-  for (const surface of [page.locator(".titlebar"), nav, review]) await expectColors(surface, { "background-color": canvas });
-  await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(33, 40, 48)" });
+  await expectColors(page.locator(".titlebar"), { "background-color": canvas });
+  for (const surface of [page.locator(".titlebar-leading"), nav, review,
+    review.locator(".workspace-panel-header"), review.locator(".workspace-review-scroll")]) {
+    await expectColors(surface, { "background-color": panel });
+  }
+  await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(61, 68, 77)" });
   await expectColors(sidebar, selectedToggleColors);
   await expectColors(changes, selectedToggleColors);
   await expectColors(singleDiff.locator('[data-line-type="change-addition"] [data-diff-span]').first(), {
@@ -910,7 +917,7 @@ async page => {
   if ((await terminal.boundingBox()).width < 755 || await tools.getAttribute("data-docked") !== null) {
     throw new Error("The compact terminal does not use the full workspace.");
   }
-  await expectColors(terminal.locator(".workspace-panel-header"), { "background-color": canvas });
+  await expectColors(terminal.locator(".workspace-panel-header"), { "background-color": panel });
   await expectColors(terminal.locator(".xterm-scrollable-element"), { "background-color": "rgb(1, 4, 9)" });
   await changes.click();
   await back.waitFor();

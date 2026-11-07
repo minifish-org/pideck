@@ -30,7 +30,7 @@
 .chat-entry--assistant { padding-block: 4px; padding-inline-end: 32px; }
 .chat-entry--user {
   align-self: flex-end; inline-size: fit-content; max-inline-size: 78%; padding: 8px var(--chat-inset);
-  border: 1px solid var(--borderColor-muted); border-radius: 9px; background: var(--bgColor-muted);
+  border: 0; border-radius: 9px; background: var(--bgColor-emphasis);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .icon-button.message-fork {
@@ -101,7 +101,7 @@
 @media (prefers-reduced-motion: reduce) { .run-state-dot { animation: none; } }
 
 .composer-wrap { align-self: center; flex: none; padding-block: 8px 16px; }
-.composer { background: var(--bgColor-default); border: 1px solid var(--control-borderColor-rest); border-radius: 11px; padding: 7px; }
+.composer { background: var(--bgColor-muted); border: 1px solid var(--control-borderColor-rest); border-radius: 11px; padding: 7px; }
 .composer:has(textarea:focus) { border-color: var(--focus-outline-color); }
 .composer textarea {
   display: block; width: 100%; min-height: 54px; max-height: min(180px, 25vh); resize: none; field-sizing: content;
