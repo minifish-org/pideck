@@ -986,7 +986,7 @@ function Desktop() {
                     </EmptyScene>
                   : !projects
                     ? <div className="workspace-loading" role="status">Opening workspace…</div>
-                    : <EmptyScene icon="folderPlus" title="Open a project folder">
+                    : <EmptyScene icon="mark" title="Open a project folder">
                         <p>Choose a local codebase to start working with Pideck.</p>
                         <button className="button button--primary" id="workspace-open-project" type="button"
                           title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}>
