@@ -273,13 +273,16 @@ async page => {
             const existing = state.sessions.find(({ id }) => id === payload.requestId);
             if (existing) return { ...existing };
             const session = addSession(payload.text.split("\n")[0].trim(), undefined, payload.requestId);
-            const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [{ type: "text", text: payload.text }] };
+            const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [
+              { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
+            ] };
             const first = payload.text === "Update and verify the status.";
+            const selectedModel = payload.model.id === fixedModel.id ? fixedModel : model;
             if (first && payload.thinking !== "high") throw new Error("Expected the selected thinking level.");
             const messages = first ? [prompt, { id: "reply", role: "assistant", blocks: [
               { type: "tool", name: "bash", id: "bash", status: "running", output: "Running the status check…", arguments: { command: "npm test" } },
             ] }] : [prompt];
-            change(session.id, { messages, status: first ? "running" : "idle", canSteerQueued: first, model, thinking: payload.thinking });
+            change(session.id, { messages, status: "running", canSteerQueued: first, model: selectedModel, thinking: payload.thinking });
             if (first) {
               window.addEventListener("pideck-fixture-write-result", () => {
                 const [user, reply] = state.views[session.id].messages;
@@ -294,6 +297,7 @@ async page => {
               setTimeout(() => emit({ type: "host:restart" }), 100);
               throw new Error("The fixture lost the first message acknowledgement.");
             }
+            window.addEventListener("pideck-fixture-finish-second-run", () => change(session.id, { status: "idle" }), { once: true });
             await new Promise(resolve => window.addEventListener("pideck-fixture-finish-start", resolve, { once: true }));
             return { ...session };
           }
@@ -306,7 +310,9 @@ async page => {
                 state.sessions.find(({ id }) => id === sessionId).title = payload.text.split("\n")[0].trim();
                 delete state.untitled[sessionId];
               }
-              const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [{ type: "text", text: payload.text }] };
+              const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [
+                { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
+              ] };
               // The host accepted the input but its IPC reply was lost. The next
               // watch supplies the Durable request ID and clears the matching draft.
               watches.clear();

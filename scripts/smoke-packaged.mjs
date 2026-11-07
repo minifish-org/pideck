@@ -286,12 +286,60 @@ try {
   await modelMenu.getByRole("button", { name: /\bAzure\b/i })
     .filter({ has: page.getByText(azure.name, { exact: true }) }).click();
   await modelPicker.getByText(azure.name, { exact: true }).waitFor();
-  await modelPicker.getByText("Off", { exact: true }).waitFor();
+  assert.equal(await modelPicker.locator(".model-summary-thinking").count(), 0);
   await modelMenu.waitFor({ state: "hidden" });
   assert.equal(await modelPicker.evaluate(button => button === document.activeElement), true);
+
+  const attachmentBounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
+  try {
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(760, 560));
+    await page.waitForFunction(() => innerWidth === 760);
+    await prompt.focus();
+    await page.evaluate(async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 320;
+      canvas.height = 180;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#238636";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([blob], "native-pasted-image.png", { type: "image/png" }));
+      document.getElementById("prompt").dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+    });
+    const attachment = page.locator(".attachment");
+    const previewImage = page.getByRole("button", { name: "Preview attached image 1", exact: true });
+    await previewImage.waitFor();
+    assert.ok(!(await attachment.innerText()).includes("native-pasted-image.png"));
+    await previewImage.click();
+    const imagePreview = page.getByRole("dialog", { name: "Image preview", exact: true });
+    await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
+    assert.ok(await imagePreview.evaluate(dialog => {
+      const rect = dialog.getBoundingClientRect();
+      return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+    }));
+    await page.keyboard.press("Escape");
+    await imagePreview.waitFor({ state: "hidden" });
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Preview attached image 1");
+    await previewImage.click();
+    await imagePreview.getByRole("button", { name: "Close image preview", exact: true }).click();
+    await imagePreview.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Remove attached image 1", exact: true }).click();
+    await attachment.waitFor({ state: "detached" });
+    assert.equal(await imagePreview.count(), 0);
+    assert.equal(await prompt.inputValue(), "Edit example.ts and verify it.");
+    assert.deepEqual(await command("session:list", { projectId }), []);
+    assert.equal(modelServer.requests.length, 0);
+  } finally {
+    await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), attachmentBounds);
+    await projectRow.waitFor();
+  }
+
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
+  assert.equal(await page.locator(".composer-models .model-summary-thinking").count(), 0);
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  assert.equal(await modelPicker.locator(".model-summary-thinking").count(), 0);
   const shellCard = page.locator(".tool-card").filter({ has: page.locator("summary").filter({ hasText: "cat example.ts" }) });
   assert.equal(await shellCard.locator("summary").getByText('test -z "$AZURE_OPENAI_API_KEY" && cat example.ts', { exact: true }).count(), 1);
   assert.equal(await shellCard.locator(".tool-detail").getByText(/cat example\.ts/).count(), 0);

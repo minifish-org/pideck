@@ -143,19 +143,79 @@ async page => {
   await picker.getByRole("button", { name: /Fixture fixed model/ }).waitFor();
   await modelSearch.press("Enter");
   await model.getByText(/^Fixture fixed model/).waitFor();
-  await model.getByText("Off", { exact: true }).waitFor();
+  if (await model.getByText("Off", { exact: true }).count()
+    || (await model.getAttribute("aria-description"))?.includes("Thinking")) {
+    throw new Error("A model without thinking still displays an Off level.");
+  }
   await picker.waitFor({ state: "hidden" });
   if (!await model.evaluate(button => button === document.activeElement)) {
     throw new Error("Choosing a fixed thinking level did not return focus to the model button.");
   }
   const fixedLevelFits = await model.evaluate(button => {
-    const level = button.querySelector(".model-summary-thinking");
+    const name = button.querySelector(".model-summary-name");
     const chevron = button.querySelector("svg");
     const bounds = button.getBoundingClientRect();
-    return level && chevron && level.getBoundingClientRect().right <= chevron.getBoundingClientRect().left
+    return !button.querySelector(".model-summary-thinking") && name && chevron
+      && name.getBoundingClientRect().right <= chevron.getBoundingClientRect().left
       && chevron.getBoundingClientRect().right < bounds.right;
   });
-  if (!fixedLevelFits) throw new Error("The long model name clipped its thinking level or menu chevron.");
+  if (!fixedLevelFits) throw new Error("The long model name clipped its menu chevron.");
+
+  const pasteImage = () => prompt.evaluate(async textarea => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#0d1117";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#161b22";
+    context.fillRect(28, 28, 584, 304);
+    context.fillStyle = "#f0f6fc";
+    context.font = "28px sans-serif";
+    context.fillText("Pideck image preview", 52, 90);
+    context.fillStyle = "#3fb950";
+    context.font = "21px monospace";
+    context.fillText("export const status = 'verified';", 52, 160);
+    const png = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    const clipboard = new DataTransfer();
+    clipboard.items.add(new File([png], "pasted-preview.png", { type: "image/png" }));
+    textarea.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  });
+  const attachmentPreview = composer.getByRole("button", { name: "Preview attached image 1", exact: true });
+  const removeAttachment = composer.getByRole("button", { name: "Remove attached image 1", exact: true });
+  const imagePreview = page.getByRole("dialog", { name: "Image preview", exact: true });
+  await pasteImage();
+  await attachmentPreview.waitFor();
+  await removeAttachment.waitFor();
+  if ((await composer.locator(".attachments").textContent()).includes("pasted-preview.png")) {
+    throw new Error("A pasted image still displays its filename in the composer.");
+  }
+  await composer.screenshot({ path: "output/playwright/pideck-ui-image-attachment.png" });
+  await attachmentPreview.focus();
+  await page.keyboard.press("Enter");
+  await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
+  if (await sessionCount() !== 0 || await page.locator("#prompt").inputValue() !== "Update and verify the status.") {
+    throw new Error("Previewing a pasted image submitted or changed the unsent message.");
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-image-preview.png" });
+  await page.keyboard.press("Escape");
+  await imagePreview.waitFor({ state: "hidden" });
+  if (!await attachmentPreview.evaluate(button => button === document.activeElement)) throw new Error("Closing the image preview did not restore focus.");
+  await attachmentPreview.click();
+  await imagePreview.getByRole("button", { name: "Close image preview", exact: true }).click();
+  await imagePreview.waitFor({ state: "hidden" });
+  await attachmentPreview.click();
+  const backdrop = await imagePreview.evaluate(dialog => {
+    const bounds = dialog.getBoundingClientRect();
+    return { x: Math.max(1, bounds.left - 2), y: Math.max(1, bounds.top - 2) };
+  });
+  await page.mouse.click(backdrop.x, backdrop.y);
+  await imagePreview.waitFor({ state: "hidden" });
+  await removeAttachment.click();
+  await attachmentPreview.waitFor({ state: "detached" });
+  if (await imagePreview.count()) throw new Error("Removing an image opened its preview.");
+  await pasteImage();
+  await attachmentPreview.waitFor();
   await model.press("ArrowDown");
   await modelSearch.waitFor();
   if (await thinkingLevel.count()) throw new Error("A fixed thinking level exposes a redundant control.");
@@ -190,6 +250,11 @@ async page => {
   if (await prompt.inputValue() !== "") throw new Error("Accepted draft was not reconciled on reconnect.");
   if (await sessionCount() !== 1) throw new Error("The first send did not create exactly one session.");
   await page.getByText("Running the status check…", { exact: true }).waitFor();
+  const sentImage = page.getByRole("article", { name: "You", exact: true }).getByRole("button", { name: "Preview attached image", exact: true });
+  await sentImage.click();
+  await imagePreview.getByRole("img", { name: "Attached image", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await imagePreview.waitFor({ state: "hidden" });
 
   await prompt.hover();
   await prompt.focus();
@@ -223,6 +288,10 @@ async page => {
   await resumeDraft.click();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Start a separate session.");
   if (await sessionCount() !== 1) throw new Error("Switching away from a draft created a session.");
+  await model.click();
+  await modelSearch.fill("fixture fixed");
+  await picker.getByRole("button", { name: /Fixture fixed model/ }).click();
+  await picker.waitFor({ state: "hidden" });
   await prompt.press("Enter");
   await runningSession.click();
   await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-start")));
@@ -230,6 +299,11 @@ async page => {
   await startedSession.waitFor();
   if (await runningSession.getAttribute("aria-current") !== "true") throw new Error("A late first-send reply changed the active session.");
   await startedSession.click();
+  await page.locator(".composer-current-model").getByText(/^Fixture fixed model/).waitFor();
+  if (await page.locator(".composer-current-model .model-summary-thinking").count()) {
+    throw new Error("A running model without thinking still displays a level.");
+  }
+  await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-second-run")));
   const currentRow = nav.locator(".nav-session-row[aria-current=true]");
   await currentRow.press("F2");
   const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });

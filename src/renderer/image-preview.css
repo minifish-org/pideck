@@ -1,0 +1,17 @@
+.image-preview {
+  width: max-content;
+  min-width: 160px;
+  max-width: min(1200px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 44px 12px 12px;
+  color: var(--fgColor-default);
+  background: var(--bgColor-default);
+  border: 1px solid var(--overlay-borderColor);
+  border-radius: 10px;
+  box-shadow: var(--shadow-floating-large);
+  overflow: hidden;
+}
+.image-preview::backdrop { background: var(--overlay-backdrop-bgColor); }
+.image-preview[open] { display: flex; align-items: center; justify-content: center; }
+.image-preview img { display: block; max-width: 100%; max-height: calc(100dvh - 90px); object-fit: contain; }
+.image-preview-close { position: absolute; top: 6px; right: 6px; }

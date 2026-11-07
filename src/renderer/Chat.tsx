@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
+import { ImagePreview } from './ImagePreview';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
@@ -23,9 +24,16 @@ function imageSource(image: { mimeType: string; data: string }) {
   return `data:${image.mimeType};base64,${image.data}`;
 }
 
-function ImageBlock({ image, alt }: { image: { mimeType: string; data: string }; alt: string }) {
+function ImageBlock({ image, alt, thumbnail = false }: { image: { mimeType: string; data: string }; alt: string; thumbnail?: boolean }) {
+  const [previewing, setPreviewing] = useState(false);
   const source = imageSource(image);
-  return source ? <img className="message-image" src={source} alt={alt} /> : null;
+  return source ? <>
+    <button type="button" className={thumbnail ? 'attachment-preview' : 'message-image-trigger'}
+      aria-label={`Preview ${alt.toLowerCase()}`} title="Preview image" onClick={() => setPreviewing(true)}>
+      <img className={thumbnail ? undefined : 'message-image'} src={source} alt={alt} />
+    </button>
+    {previewing && <ImagePreview source={source} alt={alt} onClose={() => setPreviewing(false)} />}
+  </> : null;
 }
 
 const toolLabels: Record<string, string> = { read: 'Read', write: 'Write', edit: 'Edit', bash: 'Shell' };
@@ -506,7 +514,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const submitLabel = queueing ? 'Queue next' : 'Send';
   const thinkingOptions = model?.configured && model.thinking.length > 1 ? { level: thinking, labels: thinkingLabels } : undefined;
   const displayedThinking = busy ? view?.thinking ?? (activeKey ? 'off' : undefined) : model?.configured ? thinking : undefined;
-  const thinkingLabel = displayedThinking && thinkingLabels[displayedThinking];
+  const hasThinking = model?.thinking.some(level => level !== 'off') ?? (view?.thinking !== undefined && view.thinking !== 'off');
+  const thinkingLabel = hasThinking && displayedThinking ? thinkingLabels[displayedThinking] : undefined;
   const modelLabel = <span className="model-summary">
     <span className="model-summary-name">{modelName ?? 'Choose a model'}</span>
     {thinkingLabel && <span className="model-summary-thinking">{thinkingLabel}</span>}
@@ -589,10 +598,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
         <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void send(); }}>
           {attachments.length > 0 && <div className="attachments">
             {attachments.map((attachment, index) => (
-              <div className="attachment" key={index} title={attachment.name}>
-                <img src={imageSource(attachment)} alt="" />
-                <span>{attachment.name}</span>
-                <button className="icon-button" type="button" aria-label={`Remove ${attachment.name}`}
+              <div className="attachment" key={index}>
+                <ImageBlock image={attachment} alt={`Attached image ${index + 1}`} thumbnail />
+                <button className="icon-button attachment-remove" type="button" aria-label={`Remove attached image ${index + 1}`}
+                  title="Remove image"
                   disabled={startingSession}
                   onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item !== attachment) }))}><Icon name="close" width={13} height={13} /></button>
               </div>
