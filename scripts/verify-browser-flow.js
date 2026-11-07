@@ -669,16 +669,28 @@ async page => {
   const review = page.getByRole("complementary", { name: "Review changes" });
   const expectToolbarEdge = async () => {
     const aligned = await page.evaluate(() => {
-      const header = document.querySelector(".titlebar-content");
+      const middleHeader = document.querySelector(".titlebar-content");
       const dockedTools = document.querySelector("#workspace-tools[data-docked]");
       const middleEdge = dockedTools?.getBoundingClientRect().left ?? window.innerWidth;
+      const panelHeader = [...document.querySelectorAll("#workspace-tools .workspace-panel-header")]
+        .find(header => !header.closest("[hidden]"));
+      const header = panelHeader ?? middleHeader;
+      const changesButton = document.getElementById("toggle-review");
+      const terminalButton = document.getElementById("toggle-terminal");
+      const changes = changesButton.getBoundingClientRect();
+      const terminal = terminalButton.getBoundingClientRect();
+      const edge = header.getBoundingClientRect();
       const inset = parseFloat(getComputedStyle(header).paddingInlineEnd);
-      const changes = document.getElementById("toggle-review").getBoundingClientRect();
-      const terminal = document.getElementById("toggle-terminal").getBoundingClientRect();
-      return Math.abs(header.getBoundingClientRect().right - middleEdge) <= 1
-        && changes.right <= terminal.left && Math.abs(terminal.right - (middleEdge - inset)) <= 1;
+      const otherControls = [...header.querySelectorAll("h2, button, input, select")]
+        .filter(control => !control.closest('[aria-label="Workspace panels"]') && control.getClientRects().length);
+      return document.querySelectorAll("#toggle-review").length === 1 && document.querySelectorAll("#toggle-terminal").length === 1
+        && header.contains(changesButton) && header.contains(terminalButton)
+        && Math.abs(middleHeader.getBoundingClientRect().right - middleEdge) <= 1
+        && changes.right <= terminal.left && Math.abs(terminal.right - (edge.right - inset)) <= 1
+        && Math.abs((terminal.top + terminal.bottom) / 2 - (edge.top + edge.bottom) / 2) <= 1
+        && otherControls.every(control => control.getBoundingClientRect().right <= changes.left + 1);
     });
-    if (!aligned) throw new Error("The workspace toggles do not align to the visible middle column's right edge.");
+    if (!aligned) throw new Error("The workspace toggles must appear once at the active panel header's right edge, without overlapping its other controls.");
   };
   const expectActiveTool = async (active) => {
     await review.waitFor({ state: active === "changes" ? "visible" : "hidden" });
@@ -756,7 +768,6 @@ async page => {
       const sessionTitle = bounds(".workspace-title");
       const right = bounds("#workspace-tools[data-docked]");
       const conversation = bounds(".workspace-conversation");
-      const reviewToggle = bounds("#toggle-review");
       const panel = bounds(pane);
       const panelHeader = bounds(pane + " .workspace-panel-header");
       return sameEdge(bounds(".titlebar-leading").right, sidebarEdge)
@@ -767,7 +778,7 @@ async page => {
         && sameEdge(middleHeader.left, sidebarEdge)
         && sameEdge(middleHeader.right, right.left)
         && sessionTitle.left - middleHeader.left <= 24 && sessionTitle.left > middleHeader.left
-        && sessionTitle.right <= reviewToggle.left
+        && sessionTitle.right <= middleHeader.right
         && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);

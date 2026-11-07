@@ -8,6 +8,7 @@ import { SessionName } from './SessionName';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
 import { WorkspaceDivider } from './WorkspaceDivider';
+import { WorkspacePanelButtons } from './WorkspacePanelButtons';
 import { acceptStartedDraft, emptyDraft, newSessionDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
 import type { Draft, ReadingPosition } from './preferences';
 
@@ -142,6 +143,7 @@ function Desktop() {
   const toolsOpen = reviewOpen || terminalVisible;
   const toolsDocked = canSplitWorkspace && toolsOpen;
   const toolsOverlay = !canSplitWorkspace && toolsOpen;
+  const panelButtonFocus = useRef<string | undefined>(undefined);
   const sessionActivity = useSessionActivity();
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
@@ -781,6 +783,11 @@ function Desktop() {
     });
   }, [api, opening, modalOpen, canCreateSession, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
+  const panelControls = project && <WorkspacePanelButtons reviewOpen={reviewOpen} terminalVisible={terminalVisible}
+    disabled={Boolean(removingProject)} reviewTitle={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`}
+    terminalTitle={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`}
+    onReview={toggleReview} onTerminal={toggleTerminal} focusMemory={panelButtonFocus} />;
+
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools-docked' : ''}`} ref={app}>
       <header className="titlebar" onKeyDown={(event) => {
@@ -811,16 +818,7 @@ function Desktop() {
             data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
             title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
             disabled={!canCreateSession} onClick={() => openSessionDraft()}>{hasNewDraft ? 'Draft' : <Icon name="plus" />}</button>}
-          {project && <div className="title-panels" role="group" aria-label="Workspace panels">
-            <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
-              title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
-              aria-controls={reviewOpen ? 'review-panel' : undefined}
-              disabled={removingProject} onClick={toggleReview}><Icon name="diff" /></button>
-            <button className="icon-button panel-toggle" id="toggle-terminal" type="button" aria-label="Terminal"
-              title={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`} aria-pressed={terminalVisible}
-              aria-controls={terminalVisible ? 'workspace-terminal' : undefined}
-              disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
-          </div>}
+          {!toolsOpen && panelControls}
         </div>
       </header>
       <div className="app-body">
@@ -1011,6 +1009,7 @@ function Desktop() {
             <div className="workspace-tools" id="workspace-tools" hidden={!toolsOpen} data-docked={toolsDocked || undefined}>
               {project && activeReview && <Suspense key={`review:${project.id}`} fallback={reviewOpen && <div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
                 <ReviewPanel project={project} visible={reviewOpen} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+                  panelControls={reviewOpen ? panelControls : undefined}
                   onSelectWorkingTreeFile={selectWorkingTreeFile}
                   rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                   refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
@@ -1019,6 +1018,7 @@ function Desktop() {
                 const visible = item.id === projectId && terminalVisible;
                 return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
                   <TerminalPanel project={item} visible={visible} overlay={visible && terminalOverlaysChat} focusOnShow={focusTerminal === item.id}
+                    panelControls={visible ? panelControls : undefined}
                     onClose={() => closeTerminal(item.id)} onExit={closeTerminal} />
                 </Suspense>;
               })}

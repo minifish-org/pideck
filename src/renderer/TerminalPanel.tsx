@@ -3,6 +3,7 @@ import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from 
 import { Terminal } from "@xterm/xterm";
 import { ArrowLeft, RotateCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { Project } from "../shared/api";
 import { Icon } from "./Icons";
 import { connectTerminal, type TerminalStatus } from "./terminal-connection";
@@ -14,6 +15,7 @@ type TerminalProps = {
   visible: boolean;
   overlay: boolean;
   focusOnShow: boolean;
+  panelControls?: ReactNode;
   onClose: () => void;
   onExit(projectId: string): void;
 };
@@ -48,7 +50,7 @@ function ProjectTerminal(props: TerminalProps) {
   </section>;
 }
 
-function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit }: TerminalProps) {
+function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit, panelControls }: TerminalProps) {
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon; searchOptions: ISearchOptions } | null>(null);
   const stopConnection = useRef<(() => void) | undefined>(undefined);
@@ -267,6 +269,7 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
           <RotateCw size={16} aria-hidden="true" />
         </button>
       </div>
+      {panelControls}
     </header>
     {issue && <p className="workspace-terminal-issue" role="alert">{issue}</p>}
     <div className="workspace-terminal-body" ref={element} />

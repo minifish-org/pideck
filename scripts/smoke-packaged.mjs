@@ -388,7 +388,9 @@ try {
       const headerRight = middleHeader.getBoundingClientRect().right;
       const buttonRight = terminalToggle.getBoundingClientRect().right;
       const inset = parseFloat(getComputedStyle(middleHeader).paddingInlineEnd);
-      return Math.abs(headerRight - window.innerWidth) <= 1 && Math.abs(buttonRight - (window.innerWidth - inset)) <= 1;
+      return document.querySelectorAll("#toggle-review").length === 1 && document.querySelectorAll("#toggle-terminal").length === 1
+        && middleHeader.contains(document.getElementById("toggle-review")) && middleHeader.contains(terminalToggle)
+        && Math.abs(headerRight - window.innerWidth) <= 1 && Math.abs(buttonRight - (window.innerWidth - inset)) <= 1;
     }), "The middle header and its tool buttons must extend to the window edge while the right sidebar is closed.");
   }
   async function verifyDockedToolLayout(panelSelector) {
@@ -399,19 +401,28 @@ try {
       const titlebar = bounds(".titlebar");
       const middleHeaderElement = document.querySelector(".titlebar-content");
       const middleHeader = middleHeaderElement.getBoundingClientRect();
-      const middleHeaderEnd = middleHeader.right - parseFloat(getComputedStyle(middleHeaderElement).paddingInlineEnd);
+      const panelHeaderElement = document.querySelector(selector + " .workspace-panel-header");
+      const panelHeader = panelHeaderElement.getBoundingClientRect();
+      const panelHeaderEnd = panelHeader.right - parseFloat(getComputedStyle(panelHeaderElement).paddingInlineEnd);
       const reviewToggle = bounds("#toggle-review");
       const terminalToggle = bounds("#toggle-terminal");
       const panel = bounds(selector);
-      return sameEdge(bounds(".workspace-conversation").right, right.left)
+      const otherControls = [...panelHeaderElement.querySelectorAll("h2, button, input, select")]
+        .filter(control => !control.closest('[aria-label="Workspace panels"]') && control.getClientRects().length);
+      return document.querySelectorAll("#toggle-review").length === 1 && document.querySelectorAll("#toggle-terminal").length === 1
+        && panelHeaderElement.contains(document.getElementById("toggle-review"))
+        && panelHeaderElement.contains(document.getElementById("toggle-terminal"))
+        && sameEdge(bounds(".workspace-conversation").right, right.left)
         && sameEdge(middleHeader.right, right.left)
-        && bounds(".workspace-title").right < reviewToggle.left
-        && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, middleHeaderEnd)
+        && bounds(".workspace-title").right <= middleHeader.right
+        && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, panelHeaderEnd)
+        && sameEdge((terminalToggle.top + terminalToggle.bottom) / 2, (panelHeader.top + panelHeader.bottom) / 2)
+        && otherControls.every(control => control.getBoundingClientRect().right <= reviewToggle.left + 1)
         && sameEdge(panel.top, titlebar.top)
-        && sameEdge(bounds(selector + " .workspace-panel-header").bottom, titlebar.bottom)
+        && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
-    }, panelSelector), "The active tool must fill the right sidebar and its buttons must align to the middle header's trailing edge.");
+    }, panelSelector), "The active tool must fill the right sidebar, with one pair of toggle buttons at its header's right edge without overlapping other controls.");
   }
   await verifyClosedToolLayout();
   await clickNativeMenu(app, "toggle-review");
