@@ -33,6 +33,8 @@
   background: var(--bgColor-default);
 }
 
+.workspace-review > .workspace-panel-header { border-bottom: 0; }
+
 .workspace-tools[data-docked] > .workspace-review > .workspace-panel-header,
 .workspace-tools[data-docked] > .workspace-terminal .workspace-panel-header {
   min-height: var(--titlebar-height);

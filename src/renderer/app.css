@@ -56,7 +56,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   display: flex;
   min-width: 0;
   z-index: 10;
-  border-bottom: 1px solid var(--borderColor-muted);
   background: var(--bgColor-default);
   -webkit-app-region: drag;
 }
@@ -67,6 +66,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   justify-content: flex-start;
   flex: none;
   padding: 0 8px 0 var(--workspace-inset);
+  border-bottom: 1px solid var(--borderColor-muted);
 }
 .app--mac { --titlebar-height: env(titlebar-area-height, 56px); }
 .app--mac .titlebar-leading { padding-left: calc(env(titlebar-area-x, 0px) + 8px); }
@@ -76,11 +76,13 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .app:is(.app--nav, .app--drawer) .titlebar-leading {
   justify-content: flex-end;
   padding-right: 10px;
+  border-bottom: 0;
   border-right: 1px solid var(--borderColor-muted);
 }
 .titlebar-content {
   display: flex; min-width: 0; flex: 1; align-items: center; gap: 16px;
   padding-inline: var(--workspace-inset);
+  border-bottom: 1px solid var(--borderColor-muted);
 }
 .app:not(.app--nav, .app--drawer) .titlebar-content { padding-left: 8px; }
 .titlebar button { -webkit-app-region: no-drag; }
@@ -180,7 +182,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-row[aria-current='true'] { background: var(--sideNav-bgColor-selected); color: var(--fgColor-default); }
 .nav-row svg { flex: none; }
 .nav-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
-.nav-footer { flex: none; margin-top: auto; padding: 8px 12px; border-top: 1px solid var(--borderColor-muted); }
+.nav-footer { flex: none; margin-top: auto; padding: 8px 12px; }
 
 .workspace {
   min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative;
