@@ -18,7 +18,7 @@ import type {
   ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat,
 } from "../shared/api.js";
-import type { ProjectFolder, RemovalPreview, RemovalTarget } from "../shared/transport.js";
+import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, inputEntryKind } from "./chat-view.js";
 import { PersistentCredentials } from "./credential-store.js";
@@ -170,7 +170,7 @@ export class Runtime {
             if (report.kind === "storage_failed") onStorageFailure?.();
           },
           env: ({ conversationId, cwd }) => {
-            const project = metadata.requireTrustedProject(metadata.projectOf(conversationId));
+            const project = metadata.requireProject(metadata.projectOf(conversationId));
             if (project.directory !== cwd) throw new Error("Conversation directory does not match its project.");
             return new ToolEnvironment(cwd, join(outputRoot, String(conversationId)));
           },
@@ -201,13 +201,11 @@ export class Runtime {
   }
 
   listProjects() { return this.metadata.listProjects(); }
-  inspectProject(directory: string) { return this.metadata.inspectProject(directory); }
-  addProject(directory: string, approval?: ProjectFolder) {
+  addProject(directory: string) {
     this.assertWritable();
-    return this.metadata.addProject(directory, approval);
+    return this.metadata.addProject(directory);
   }
-  trustProject(projectId: string) { this.assertWritable(); return this.metadata.trustProject(projectId); }
-  requireTrustedProject(projectId: string) { return this.metadata.requireTrustedProject(projectId); }
+  requireProject(projectId: string) { return this.metadata.requireProject(projectId); }
   listSessions(projectId: string) { return this.metadata.listSessions(projectId); }
   deviceId() { return this.metadata.deviceId(); }
 
@@ -222,7 +220,7 @@ export class Runtime {
 
   createSession(projectId: string, title?: string) {
     return this.admit(async () => {
-      const project = this.metadata.getProject(projectId);
+      const project = this.requireProject(projectId);
       const conversation = await this.harness.createConversation({
         ownership: { kind: "ownerless" },
         agent: { cwd: project.directory },
@@ -323,7 +321,7 @@ export class Runtime {
 
   start(input: StartChat): Promise<Session> {
     return this.admit(async () => {
-      const project = this.requireTrustedProject(input.projectId);
+      const project = this.requireProject(input.projectId);
       if (!input.text.trim() && !input.images?.length) throw new Error("Enter a message or attach an image.");
       const { requestId } = input;
       const existing = this.starting.get(requestId);
@@ -358,7 +356,7 @@ export class Runtime {
     // environment. Keep it hidden until Durable confirms the admission.
     await conversation.commit(async tx => {
       await conversation.submit(tx, chatSubmission(input));
-      this.requireTrustedProject(projectId);
+      this.requireProject(projectId);
       this.metadata.createSession(projectId, conversation.id, firstSessionTitle(input.text), false, requestId);
     }, context);
     return this.metadata.finishSessionStart(requestId);
@@ -366,7 +364,7 @@ export class Runtime {
 
   readQueuedInput(selection: QueuedInputRef): Promise<{ text: string; hasImages: boolean }> {
     return this.admit(async () => {
-      this.requireTrustedProject(selection.projectId);
+      this.requireProject(selection.projectId);
       const conversation = await this.conversation(selection);
       return conversation.commit(tx => readQueuedInput(tx, conversation.id, selection.id), context);
     });
@@ -374,7 +372,7 @@ export class Runtime {
 
   updateQueuedInput(input: QueuedInputRef & QueueUpdate): Promise<void> {
     return this.admit(async () => {
-      this.requireTrustedProject(input.projectId);
+      this.requireProject(input.projectId);
       const conversation = await this.conversation(input);
       return conversation.commit(tx => updateQueuedInput(tx, conversation.id, input.id, input), context);
     });
@@ -398,7 +396,7 @@ export class Runtime {
   }
 
   private async submitChat(input: SendChat): Promise<void> {
-    this.requireTrustedProject(input.projectId);
+    this.requireProject(input.projectId);
     const { autoTitlePending } = this.metadata.session(input.projectId, input.sessionId);
     const conversation = await this.conversation(input);
     const { requestId } = input;
@@ -440,7 +438,7 @@ export class Runtime {
   }
 
   private async forkSession(selection: Selection, entryId: number, title?: string) {
-    this.requireTrustedProject(selection.projectId);
+    this.requireProject(selection.projectId);
     const source = this.metadata.session(selection.projectId, selection.sessionId);
     const conversation = await this.conversation(selection);
     const at = entryId as EntryId;

@@ -13,7 +13,7 @@ function textIn(view: ChatView, text: string): boolean {
   return view.messages.some(message => message.blocks.some(block => block.type === "text" && block.text === text));
 }
 
-test("removing an active session stops Bash and purges its owned overflow log, then a removed workspace reopens untrusted", async () => {
+test("removing an active session stops Bash and purges its owned overflow log, then a removed workspace can reopen", async () => {
   const root = await mkdtemp(join(tmpdir(), "pideck-remove-runtime-"));
   const directory = join(root, "workspace");
   const data = join(root, "data");
@@ -22,7 +22,6 @@ test("removing an active session stops Bash and purges its owned overflow log, t
   let runtime = await fixture.open();
   try {
     const project = runtime.addProject(directory);
-    runtime.trustProject(project.id);
     const target = await runtime.createSession(project.id, "Remove me");
     const independent = await runtime.createSession(project.id, "Keep until workspace removal");
     const selection = { projectId: project.id, sessionId: target.id };
@@ -66,7 +65,7 @@ test("removing an active session stops Bash and purges its owned overflow log, t
     assert.equal(Number(await readFile(join(directory, "bash-pid"), "utf8")), pid);
     const readded = runtime.addProject(directory);
     assert.notEqual(readded.id, project.id);
-    assert.equal(readded.trusted, false);
+    assert.deepEqual(runtime.requireProject(readded.id), readded);
     assert.deepEqual(runtime.listSessions(readded.id), []);
   } finally {
     await runtime.close();
@@ -84,7 +83,6 @@ test("parent sessions require branch-first removal and an empty workspace can be
   const runtime = await fixture.open();
   try {
     const project = runtime.addProject(directory);
-    runtime.trustProject(project.id);
     const parent = await runtime.createSession(project.id, "Parent");
     const selection = { projectId: project.id, sessionId: parent.id };
     fixture.faux.setResponses([fauxAssistantMessage("Fork point.")]);

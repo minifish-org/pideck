@@ -37,8 +37,8 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-welcome.png" });
   await open.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
-  if (await workspace.getByRole("heading", { name: "Project permissions" }).count()) {
-    throw new Error("Opening an approved folder still requires a renderer permission step.");
+  if (await workspace.getByRole("button", { name: /Trust project/i }).count()) {
+    throw new Error("Opening a folder still requires a second permission step.");
   }
   const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const newSession = nav.getByRole("button", { name: "New session in Sample project", exact: true });
@@ -49,7 +49,7 @@ async page => {
     const [project] = await window.pideck.invoke("project:list");
     return (await window.pideck.invoke("session:list", { projectId: project.id })).length;
   });
-  if (await sessionCount() !== 0) throw new Error("Trust created a blank session.");
+  if (await sessionCount() !== 0) throw new Error("Opening the project created a blank session.");
   await page.screenshot({ path: "output/playwright/pideck-ui-first-draft.png" });
   const connect = page.getByRole("button", { name: "Connect a provider", exact: true });
   if (await connect.count() !== 1) throw new Error("The composer has duplicate provider setup actions.");

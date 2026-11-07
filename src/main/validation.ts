@@ -73,7 +73,6 @@ function chatInput(value: Record<string, unknown>): boolean {
 const validators = {
   "project:list": empty,
   "project:open": empty,
-  "project:trust": (value) => object(value) && project(value),
   "project:remove": (value) => object(value) && project(value),
   "session:list": (value) => object(value) && project(value),
   "session:watch-activity": (value) => object(value) && match(value.subscriptionId, id),

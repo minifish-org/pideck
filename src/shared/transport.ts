@@ -9,12 +9,9 @@ export const menuStateChannel = "pideck:menu-state";
 type Forwarded = Exclude<Command, "project:open" | "project:remove" | "session:remove">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
-export type ProjectFolder = { directory: string; device: string; inode: string };
-export type ProjectInspection = { folder: ProjectFolder; name: string; project?: Project };
 
 export type HostCommand =
   | Forwarded
-  | "project:inspect"
   | "project:add"
   | "removal:plan"
   | "removal:execute"
@@ -22,8 +19,7 @@ export type HostCommand =
 export type HostInput = {
   [C in Forwarded]: Commands[C][0];
 } & {
-  "project:inspect": { directory: string };
-  "project:add": { directory: string; approval: ProjectFolder };
+  "project:add": { directory: string };
   "removal:plan": RemovalTarget;
   "removal:execute": RemovalTarget & { scope: string };
   "owner:close": undefined;
@@ -33,7 +29,6 @@ export type HostResult = {
 } & {
   "model:auth-open": string;
   "model:auth-copy": string;
-  "project:inspect": ProjectInspection;
   "project:add": Project;
   "removal:plan": RemovalPreview;
   "removal:execute": RemovalResult;

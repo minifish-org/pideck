@@ -27,51 +27,41 @@ async function openFixture() {
   return { root, data, projectDir, faux, runtime, project, session, selection, input: input(selection, "Check this project."), open };
 }
 
-test("approving a project binds trust to the inspected folder without registering a preview", async () => {
-  const root = await mkdtemp(join(tmpdir(), "pideck-project-approval-"));
+test("opening a folder registers it immediately and a replacement must be reopened", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-project-open-"));
   const folder = join(root, "project");
   const { open } = fauxRuntime(join(root, "app"));
   const runtime = await open();
   try {
-    await mkdir(folder);
-    const first = runtime.inspectProject(folder);
-    assert.equal(first.project, undefined);
+    assert.throws(() => runtime.addProject(folder), /directory is unavailable/);
     assert.deepEqual(runtime.listProjects(), []);
+    assert.throws(() => runtime.requireProject(randomUUID()), /Project not found/);
+
+    await mkdir(folder);
+    const project = runtime.addProject(folder);
+    assert.deepEqual(runtime.requireProject(project.id), project);
+    assert.deepEqual(runtime.addProject(folder), project);
 
     await rename(folder, join(root, "original"));
     await mkdir(folder);
-    assert.throws(() => runtime.addProject(folder, first.folder), /folder changed/);
-    assert.deepEqual(runtime.listProjects(), []);
-
-    const second = runtime.inspectProject(folder);
-    const project = runtime.addProject(folder, second.folder);
-    assert.equal(project.trusted, true);
-    assert.deepEqual(runtime.inspectProject(folder).project, project);
-
-    await rename(folder, join(root, "approved"));
-    await mkdir(folder);
-    assert.equal(runtime.inspectProject(folder).project, undefined);
-    assert.throws(() => runtime.requireTrustedProject(project.id), /folder changed/);
-    const replacement = runtime.inspectProject(folder);
-    assert.deepEqual(runtime.addProject(folder, replacement.folder), project);
+    assert.throws(() => runtime.requireProject(project.id), /folder changed/);
+    assert.deepEqual(runtime.addProject(folder), project);
+    assert.deepEqual(runtime.requireProject(project.id), project);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("trust, ownership, built-in coding tools, watch reattachment, and durable reopen", async () => {
+test("project ownership, built-in coding tools, watch reattachment, and durable reopen", async () => {
   const fixture = await openFixture();
-  const { root, projectDir, project, session, selection, input, faux } = fixture;
+  const { root, data, projectDir, project, session, selection, input, faux } = fixture;
   let runtime = fixture.runtime;
   const secretVariable = "PIDECK_TEST_PROVIDER_SECRET";
   process.env[secretVariable] = "not-for-the-shell";
   try {
-    await assert.rejects(runtime.send(input), /Trust this project/);
-    assert.throws(() => runtime.requireTrustedProject(project.id), /Trust this project/);
     const otherProject = runtime.addProject(root);
     await assert.rejects(runtime.watch({ ...selection, projectId: otherProject.id }, () => {}), /Session not found/);
-    runtime.trustProject(project.id);
     const projectModels = await runtime.listModels();
     assert.ok(projectModels.some(model => model.configured && model.id === input.model.id));
 
@@ -108,18 +98,34 @@ test("trust, ownership, built-in coding tools, watch reattachment, and durable r
     const deviceId = runtime.deviceId();
     await runtime.close();
 
+    // A project persisted by an older build can have its trust flag unset.
+    {
+      using database = new DatabaseSync(join(data, "workspace.sqlite"));
+      database.prepare("UPDATE projects SET trusted = 0 WHERE id = ?").run(project.id);
+    }
     runtime = await fixture.open();
     assert.equal(runtime.deviceId(), deviceId);
     assert.equal(runtime.listSessions(project.id)[0].id, session.id);
-    assert.equal(runtime.listProjects().find(item => item.id === project.id)?.trusted, true);
     const reopened = await waitForView(runtime, selection, () => true);
     assert.deepEqual(reopened.messages, view.messages);
     assert.deepEqual(reopened.model, input.model);
 
+    faux.setResponses([
+      toolResponse("bash", { command: "printf legacy-ok > ../legacy-marker.txt" }),
+      fauxAssistantMessage("Legacy project verified."),
+    ]);
+    const legacyFinished = waitForView(runtime, selection, view => view.messages.some(message =>
+      message.blocks.some(block => block.type === "text" && block.text === "Legacy project verified."),
+    ));
+    await runtime.send({ ...input, text: "Check the reopened project." });
+    await legacyFinished;
+    assert.equal(await readFile(join(root, "legacy-marker.txt"), "utf8"), "legacy-ok");
+
     await rename(projectDir, join(root, "old-project"));
     await mkdir(projectDir);
-    assert.throws(() => runtime.requireTrustedProject(project.id), /folder changed/);
-    assert.equal(runtime.addProject(projectDir).trusted, false);
+    await assert.rejects(runtime.send(input), /folder changed/);
+    assert.deepEqual(runtime.addProject(projectDir), project);
+    assert.equal(runtime.listSessions(project.id)[0].id, session.id);
   } finally {
     delete process.env[secretVariable];
     await runtime.close();
@@ -164,8 +170,7 @@ test("first send creates one durable session and recovers interrupted admissions
       projectId: project.id, requestId: randomUUID(), text: "Verify the new session.",
       model: fixture.input.model, thinking: fixture.input.thinking,
     };
-    await assert.rejects(runtime.start(input), /Trust this project/);
-    runtime.trustProject(project.id);
+    await assert.rejects(runtime.start({ ...input, projectId: randomUUID() }), /Project not found/);
     await assert.rejects(runtime.start({ ...input, text: "  " }), /Enter a message/);
     const unavailable = { ...input, model: { ...input.model, id: "unavailable-model" } };
     await assert.rejects(runtime.start(unavailable), /model is unavailable/);
@@ -206,7 +211,6 @@ test("first send creates one durable session and recovers interrupted admissions
 test("concurrent native writes capture a before-image inside the file mutation queue", async () => {
   const { root, projectDir, runtime, project, selection, input, faux } = await openFixture();
   try {
-    runtime.trustProject(project.id);
     const path = join(projectDir, "same.txt");
     await writeFile(path, "original\n");
     faux.setResponses([
@@ -235,7 +239,6 @@ test("concurrent native writes capture a before-image inside the file mutation q
 test("cancelling a running bash call settles the watched run and stops the process", async () => {
   const { root, runtime, project, selection, input, faux, projectDir } = await openFixture();
   try {
-    runtime.trustProject(project.id);
     faux.setResponses([
       toolResponse("bash", { command: "echo started; sleep 20; touch completed" }),
     ]);
@@ -263,7 +266,6 @@ test("an unfinished generation resumes after closing and reopening the SQLite st
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   try {
-    runtime.trustProject(project.id);
     faux.setResponses([async () => {
       started.resolve();
       await release.promise;
@@ -296,7 +298,6 @@ function textIn(view: ChatView, text: string): boolean {
 test("native transcript retains watched entries, loads earlier history, and forks a selected entry", async () => {
   const { root, runtime, project, selection, input, faux } = await openFixture();
   try {
-    runtime.trustProject(project.id);
     let ongoing!: ChatView;
     const live = await runtime.watch(selection, view => { ongoing = view; });
     const turns = 55;
@@ -368,7 +369,6 @@ test("native automatic compaction preserves history and continues the waiting re
   const { root, runtime, project, selection, input, faux } = await openFixture();
   const release = Promise.withResolvers<void>();
   try {
-    runtime.trustProject(project.id);
     // Keep the first two requests below the faux model's background threshold.
     // The next input crosses its blocking threshold while an older turn can be cut.
     const earlier = "Earlier working context." + " .".repeat(60_000);
@@ -418,7 +418,6 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   try {
-    runtime.trustProject(project.id);
     faux.setResponses([
       async () => {
         started.resolve();
@@ -461,7 +460,6 @@ test("queued inputs can be steered, removed, edited with attachments, and reorde
     data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRckAAAAASUVORK5CYII=",
   };
   try {
-    runtime.trustProject(project.id);
     const otherSession = await runtime.createSession(project.id);
     faux.setResponses([
       async () => {
@@ -527,7 +525,6 @@ test("an idle conversation accepts a late follow-up but cannot steer retained in
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   try {
-    runtime.trustProject(project.id);
     faux.setResponses([
       async () => {
         started.resolve();
@@ -567,7 +564,6 @@ test("an abrupt host exit resumes a committed request without admitting a duplic
   const requestId = randomUUID();
   let child: ReturnType<typeof fork> | undefined;
   try {
-    runtime.trustProject(project.id);
     await runtime.close();
     child = fork(fileURLToPath(new URL("./support/crash-generation.ts", import.meta.url)), [
       data, selection.projectId, selection.sessionId, requestId,

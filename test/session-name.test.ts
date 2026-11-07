@@ -16,7 +16,6 @@ test("the first admitted prompt names an untitled session and is recovered befor
   try {
     const project = runtime.addProject(data);
     const other = runtime.addProject(otherDirectory);
-    runtime.trustProject(project.id);
     const session = await runtime.createSession(project.id);
     const named = await runtime.createSession(project.id, "Saved legacy name");
     const selection = { projectId: project.id, sessionId: session.id };

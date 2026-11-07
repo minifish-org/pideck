@@ -156,14 +156,14 @@ function runPhase(messages: ChatMessage[]): { label: string; detail?: string } {
 }
 
 export function EmptyScene({ icon, title, children }: {
-  icon: 'mark' | 'folderPlus' | 'lock' | 'chat';
+  icon: 'mark' | 'folderPlus' | 'chat';
   title: string;
   children?: ReactNode;
 }) {
   return (
     <div className="empty-scene">
       <section className="empty-card">
-        <div className="hero-mark" data-icon={icon}><Icon name={icon} /></div>
+        <div className="hero-mark"><Icon name={icon} /></div>
         <h1>{title}</h1>
         {children}
       </section>

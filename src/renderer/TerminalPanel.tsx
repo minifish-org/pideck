@@ -38,18 +38,13 @@ export function TerminalPanel(props: TerminalProps) {
 }
 
 function ProjectTerminal(props: TerminalProps) {
-  const { project, visible } = props;
+  const { visible } = props;
   const [activated, setActivated] = useState(false);
   useEffect(() => { if (visible) setActivated(true); }, [visible]);
 
   return <section className="workspace-terminal" id={visible ? "workspace-terminal" : undefined}
     aria-label="Project terminal" hidden={!visible}>
-    {project.trusted && (visible || activated)
-      ? <TerminalInstance {...props} />
-      : <>
-        <header className="workspace-panel-header"><h2>Terminal</h2></header>
-        <p className="workspace-empty">Trust this project to open a terminal.</p>
-      </>}
+    {(visible || activated) && <TerminalInstance {...props} />}
   </section>;
 }
 

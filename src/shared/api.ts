@@ -4,7 +4,6 @@ export type Project = {
   id: string;
   name: string;
   directory: string;
-  trusted: boolean;
   createdAt: number;
 };
 
@@ -128,7 +127,6 @@ type WatchRef = Selection & { subscriptionId: string };
 export type Commands = {
   "project:list": [undefined, Project[]];
   "project:open": [undefined, Project | null];
-  "project:trust": [{ projectId: string }, Project | null];
   "project:remove": [{ projectId: string }, RemovalResult | null];
   "session:list": [{ projectId: string }, Session[]];
   "session:watch-activity": [{ subscriptionId: string }, void];

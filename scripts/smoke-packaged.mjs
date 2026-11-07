@@ -29,20 +29,16 @@ async function clickNativeMenu(app, id) {
   }, id);
 }
 
-async function mockProjectPicker(app, directory, approve = false) {
-  await app.evaluate(({ dialog }, { directory, approve }) => {
-    globalThis.projectTrustApproved = approve;
-    globalThis.projectTrustPrompts = [];
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] });
+async function mockProjectPicker(app, directory) {
+  await app.evaluate(({ dialog }, directory) => {
+    dialog.showOpenDialog = async () => directory
+      ? { canceled: false, filePaths: [directory] }
+      : { canceled: true, filePaths: [] };
     dialog.showMessageBox = async (_window, options) => {
-      if (options.buttons?.[1] === "Trust Project") {
-        globalThis.projectTrustPrompts.push(options.message);
-        return { response: globalThis.projectTrustApproved ? 1 : 0, checkboxChecked: false };
-      }
       if (options.buttons?.[1] !== "Remove") throw new Error("Unexpected native confirmation.");
       return { response: 1, checkboxChecked: false };
     };
-  }, { directory, approve });
+  }, directory);
 }
 
 async function verifyNativeUpdateMenu(app) {
@@ -207,7 +203,7 @@ try {
   app = first.running;
   const page = first.window;
 
-  await mockProjectPicker(app, project);
+  await mockProjectPicker(app);
 
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
@@ -231,7 +227,7 @@ try {
   });
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("new-session").enabled), false);
   const command = (name, payload) => page.evaluate(([name, payload]) => window.pideck.invoke(name, payload), [name, payload]);
-  for (const name of ["project:add", "project:inspect"]) {
+  for (const name of ["project:open", "project:add", "project:inspect", "project:trust"]) {
     await assert.rejects(command(name, { directory: "/" }), /Invalid workspace request/);
   }
   await assert.rejects(command("model:auth-open", {
@@ -240,16 +236,13 @@ try {
 
   assert.equal(await command("project:open"), null);
   assert.deepEqual(await command("project:list"), []);
-  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?"]);
-  await app.evaluate(() => { globalThis.projectTrustApproved = true; });
+  await mockProjectPicker(app, project);
   await clickNativeMenu(app, "open-project");
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
   const [added] = await command("project:list");
   assert.equal(added.name, "smoke-project");
-  assert.equal(added.trusted, true);
   const projectId = added.id;
   assert.deepEqual(await command("project:open"), added);
-  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?", "Trust “smoke-project”?"]);
   assert.deepEqual(await command("session:list", { projectId }), []);
   await assert.rejects(command("chat:watch", { projectId, sessionId: crypto.randomUUID(), subscriptionId: crypto.randomUUID() }), /Session not found/);
 
@@ -491,8 +484,6 @@ try {
   const sideProject = navigation.getByRole("button", { name: "side-project", exact: true });
   await sideProject.waitFor();
   assert.equal(await sideProject.getAttribute("aria-current"), "true");
-  assert.equal((await command("project:list")).find(item => item.name === "side-project")?.trusted, true);
-  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts.slice(-1)), ["Trust “side-project”?"]);
   assert.equal(await navigation.getByRole("list", { name: "side-project sessions", exact: true }).count(), 0);
   await smokeSession.waitFor();
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "hidden" });
@@ -716,7 +707,7 @@ try {
   const cleaned = await launch();
   app = cleaned.running;
   assert.deepEqual(await cleaned.window.evaluate(() => window.pideck.invoke("project:list")), []);
-  await mockProjectPicker(app, project, true);
+  await mockProjectPicker(app, project);
   let restoredPage = cleaned.window;
   if (process.platform === "darwin") {
     await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
@@ -733,8 +724,6 @@ try {
     .getByRole("button", { name: "smoke-project", exact: true }).waitFor();
   const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
-  assert.equal(readded.trusted, true);
-  assert.deepEqual(await app.evaluate(() => globalThis.projectTrustPrompts), ["Trust “smoke-project”?"]);
   assert.deepEqual(await restoredPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);

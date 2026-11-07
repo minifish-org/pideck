@@ -55,7 +55,6 @@ try {
     `${cli} console error`,
   ].join("\n");
   const project = runtime.addProject(process.cwd());
-  runtime.trustProject(project.id);
   const session = await runtime.createSession(project.id, "Verify frontend");
   const selection = { projectId: project.id, sessionId: session.id };
   const finishedText = "Browser verification finished.";

@@ -190,7 +190,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   }, [refresh, visible]);
 
   useEffect(() => {
-    if (!visible || !project.trusted) return;
+    if (!visible) return;
     const api = window.pideck;
     const scope = { projectId: project.id, subscriptionId: crypto.randomUUID() };
     let active = true;
@@ -223,7 +223,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
       unsubscribe();
       void api.invoke("review:unwatch", scope).catch(() => {});
     };
-  }, [project.id, project.trusted, refresh, visible, watchAttempt]);
+  }, [project.id, refresh, visible, watchAttempt]);
 
   useEffect(() => {
     if (visible && (overlay || selectionVersion !== undefined) && !panel.current?.contains(document.activeElement)) {
@@ -232,14 +232,14 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   }, [overlay, selectionVersion, visible]);
 
   useEffect(() => {
-    if (!visible || !project.trusted || !watchReady.current) return;
+    if (!visible || !watchReady.current) return;
     let active = true;
     void window.pideck.invoke("review:list", { projectId: project.id }).then(
       next => { if (active) setList({ files: next, revision }); },
       cause => { if (active) setList(previous => ({ files: previous?.files ?? [], revision, error: message(cause) })); },
     );
     return () => { active = false; };
-  }, [project.id, project.trusted, revision, visible]);
+  }, [project.id, revision, visible]);
 
   useEffect(() => {
     if (!listReady || !list || list.error) return;
@@ -252,7 +252,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   }, [currentPath, list?.error, listReady, missingRequestedFile, onRememberPath, showMessagePatch]);
 
   useEffect(() => {
-    if (!visible || !project.trusted || !watchReady.current || !listReady || !currentPath || list?.error) return;
+    if (!visible || !watchReady.current || !listReady || !currentPath || list?.error) return;
     let active = true;
     const timer = window.setTimeout(() => {
       void window.pideck.invoke("review:patch", { projectId: project.id, path: currentPath }).then(
@@ -264,7 +264,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
       active = false;
       window.clearTimeout(timer);
     };
-  }, [project.id, project.trusted, currentPath, listReady, list?.error, revision, visible]);
+  }, [project.id, currentPath, listReady, list?.error, revision, visible]);
 
   const loading = !listReady || Boolean(currentPath && !list?.error
     && (result?.path !== currentPath || result.revision !== revision));
@@ -312,8 +312,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
       {files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
       {showSelectionInList && <><ChangeCount files={parsed} />{layoutControl}</>}
     </header>
-    {!project.trusted ? <p className="workspace-empty">Trust this project to review its changes.</p>
-      : !list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
+    {!list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
       : <>
         {(list?.error || (watchError && !currentResult?.error)) && <ReviewIssue
           message={list?.error ?? "Automatic updates are unavailable."} onRetry={retryReview} />}

@@ -136,11 +136,10 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-project-node + .nav-project-node { margin-top: 5px; }
 .nav-project-row > .nav-row { padding-left: 29px; font-weight: 620; }
 .nav-project-row[data-active='true'] > .nav-row { color: var(--fgColor-default); }
-.nav-project-row .nav-disclosure, .nav-project-lock {
+.nav-project-row .nav-disclosure {
   position: absolute; inset: 4px auto auto 1px; width: 25px; height: 28px;
   display: grid; place-items: center;
 }
-.nav-project-lock { color: var(--fgColor-muted); pointer-events: none; }
 .nav-disclosure[aria-expanded='true'] svg { rotate: 90deg; }
 .nav-children { margin: 2px 0 6px 13px; padding-left: 18px; border-left: 1px solid var(--borderColor-muted); }
 .nav-children:empty { display: none; }
@@ -162,7 +161,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-item { position: relative; }
 .nav-item + .nav-item { margin-top: 2px; }
 .nav-item .nav-row { padding-right: 34px; }
-.nav-project-row:has(.nav-new-session) > .nav-row { padding-right: 62px; }
+.nav-project-row > .nav-row { padding-right: 62px; }
 .nav-project-row:has(.nav-new-session[data-draft]) > .nav-row { padding-right: 70px; }
 .nav-item :is(.nav-remove, .nav-new-session) {
   position: absolute; top: 4px; right: 3px; width: 28px; height: 28px; opacity: 0;
@@ -224,11 +223,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background: var(--bgColor-accent-muted);
 }
 .hero-mark svg { width: 22px; height: 22px; }
-.hero-mark[data-icon='lock'] {
-  border-color: var(--borderColor-attention-muted);
-  background: var(--bgColor-attention-muted);
-  color: var(--fgColor-attention);
-}
 .empty-card h1 { margin: 0; font-size: clamp(22px, 2.6vw, 30px); line-height: 1.2; font-weight: 670; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .empty-card p { margin: 8px auto 0; max-width: 42ch; color: var(--fgColor-muted); }
 .empty-card .button { margin-top: 18px; min-height: 36px; padding-inline: 13px; }

@@ -10,7 +10,7 @@ const terminalId = randomUUID();
 
 test("IPC rejects unknown commands and malformed payloads", () => {
   assert.equal(isCommand("terminal:open"), true);
-  for (const command of ["__proto__", "constructor", "project:inspect", "project:add", "owner:close", null]) {
+  for (const command of ["__proto__", "constructor", "project:trust", "project:inspect", "project:add", "owner:close", null]) {
     assert.equal(isCommand(command), false);
   }
   assert.equal(validPayload("project:open", { directory: "/tmp" }), false);

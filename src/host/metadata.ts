@@ -5,13 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Project, Session } from "../shared/api.js";
-import type { ProjectFolder, ProjectInspection } from "../shared/transport.js";
 import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
-type ProjectRow = ProjectFolder & { id: string; name: string; trusted: number; createdAt: number };
+type DirectoryIdentity = { directory: string; device: string; inode: string };
+type ProjectRow = DirectoryIdentity & Project;
 type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; startPending: 0 | 1 };
 
-function inspectDirectory(path: string): ProjectFolder {
+function inspectDirectory(path: string): DirectoryIdentity {
   let directory: string;
   try {
     directory = realpathSync(path);
@@ -25,7 +25,7 @@ function inspectDirectory(path: string): ProjectFolder {
   throw new Error("The project directory is unavailable.");
 }
 
-function sameDirectory(row: ProjectFolder, current: ProjectFolder): boolean {
+function sameDirectory(row: DirectoryIdentity, current: DirectoryIdentity): boolean {
   return row.directory === current.directory && row.device === current.device && row.inode === current.inode;
 }
 
@@ -34,7 +34,6 @@ function presentProject(row: ProjectRow): Project {
     id: row.id,
     name: row.name,
     directory: row.directory,
-    trusted: row.trusted === 1,
     createdAt: row.createdAt,
   };
 }
@@ -106,34 +105,19 @@ export class Metadata {
     return rows.map(presentProject);
   }
 
-  inspectProject(path: string): ProjectInspection {
-    const folder = inspectDirectory(path);
-    const row = this.db.prepare("SELECT * FROM projects WHERE directory = ?").get(folder.directory) as ProjectRow | undefined;
-    return {
-      folder,
-      name: basename(folder.directory) || folder.directory,
-      project: row?.trusted && sameDirectory(row, folder) ? presentProject(row) : undefined,
-    };
-  }
-
-  addProject(path: string, approval?: ProjectFolder): Project {
+  addProject(path: string): Project {
     const current = inspectDirectory(path);
-    if (approval && !sameDirectory(approval, current)) {
-      throw new Error("The project folder changed. Open it again to review trust.");
-    }
+    // Keep the legacy column readable by older builds. Registration and
+    // directory identity are the authorization in the current build.
     const row = this.db.prepare(`
-      INSERT INTO projects (id, directory, name, device, inode, createdAt, trusted) VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, directory, name, device, inode, createdAt, trusted) VALUES (?, ?, ?, ?, ?, ?, 1)
       ON CONFLICT(directory) DO UPDATE SET
         device = excluded.device,
         inode = excluded.inode,
-        trusted = CASE
-          WHEN excluded.trusted = 1 THEN 1
-          WHEN projects.device = excluded.device AND projects.inode = excluded.inode THEN projects.trusted
-          ELSE 0
-        END
+        trusted = 1
       RETURNING *
     `).get(randomUUID(), current.directory, basename(current.directory) || current.directory,
-      current.device, current.inode, Date.now(), approval ? 1 : 0);
+      current.device, current.inode, Date.now());
     return presentProject(row as ProjectRow);
   }
 
@@ -147,20 +131,10 @@ export class Metadata {
     return presentProject(this.project(id));
   }
 
-  trustProject(id: string): Project {
+  requireProject(id: string): Project {
     const row = this.project(id);
     if (!sameDirectory(row, inspectDirectory(row.directory))) {
-      throw new Error("The project folder changed. Open it again to review trust.");
-    }
-    this.db.prepare("UPDATE projects SET trusted = 1 WHERE id = ?").run(id);
-    return presentProject({ ...row, trusted: 1 });
-  }
-
-  requireTrustedProject(id: string): Project {
-    const row = this.project(id);
-    if (!row.trusted) throw new Error("Trust this project before running tools or opening a terminal.");
-    if (!sameDirectory(row, inspectDirectory(row.directory))) {
-      throw new Error("The project folder changed. Open it again to review trust.");
+      throw new Error("The project folder changed. Open it again to continue.");
     }
     return presentProject(row);
   }

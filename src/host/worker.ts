@@ -69,7 +69,7 @@ function requireOpenWorkspace(projectId: string) {
 
 async function runReview<T>(runtime: Runtime, projectId: string, read: (cwd: string, signal: AbortSignal) => Promise<T>) {
   requireOpenWorkspace(projectId);
-  const project = runtime.requireTrustedProject(projectId);
+  const project = runtime.requireProject(projectId);
   const controller = new AbortController();
   const pending = read(project.directory, controller.signal);
   const jobs = reviews.get(projectId) ?? new Set();
@@ -132,12 +132,8 @@ async function handle(request: HostRequest): Promise<unknown> {
       return closeOwner(owner);
     case "project:list":
       return runtime.listProjects();
-    case "project:inspect":
-      return runtime.inspectProject(payload.directory);
     case "project:add":
-      return runtime.addProject(payload.directory, payload.approval);
-    case "project:trust":
-      return runtime.trustProject(payload.projectId);
+      return runtime.addProject(payload.directory);
     case "removal:plan": {
       if (removing) throw new Error("Another removal is already in progress.");
       const { scope, name, directory, sessionCount, blockingBranches } = runtime.removalPlan(payload);
@@ -247,7 +243,7 @@ async function handle(request: HostRequest): Promise<unknown> {
     case "review:watch": {
       const { projectId, subscriptionId } = payload;
       requireOpenWorkspace(projectId);
-      const project = runtime.requireTrustedProject(projectId);
+      const project = runtime.requireProject(projectId);
       closeReviewWatch(owner);
       const controller = new AbortController();
       const watch = { projectId, subscriptionId, controller };
@@ -275,7 +271,7 @@ async function handle(request: HostRequest): Promise<unknown> {
     }
     case "terminal:open": {
       requireOpenWorkspace(payload.projectId);
-      const project = runtime.requireTrustedProject(payload.projectId);
+      const project = runtime.requireProject(payload.projectId);
       return terminals.open(owner, project.id, project.directory, payload.cols, payload.rows);
     }
     case "terminal:input":

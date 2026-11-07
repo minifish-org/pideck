@@ -9,8 +9,8 @@ async page => {
     let activityWatch;
     let nextTaskId = 0;
     let nextQueueId = 2;
-    const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", trusted: false, createdAt: 1 };
-    const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", trusted: true, createdAt: 2 };
+    const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", createdAt: 1 };
+    const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", createdAt: 2 };
     const secondSession = { id: "0c1bd9dc-58bd-4918-92ee-bc30609f0dbd", projectId: secondProject.id, title: "Other task", createdAt: 2, updatedAt: 2 };
     const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
     const fixedModel = { ...model, id: "fixture-fixed", name: "Fixture fixed model with a long display name to exercise truncation", thinking: ["off"] };
@@ -22,7 +22,7 @@ async page => {
       ...Array.from({ length: 180 }, (_, index) => `+const next${index} = ${index};`), "",
     ].join("\n");
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
-      ?? { opened: false, trusted: false, configured: false, sessions: [], views: {}, parents: {} };
+      ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
     let savedConnectionsPending = Boolean(state.savedConnectionsPending);
     let unlockCancelled = false;
@@ -33,7 +33,6 @@ async page => {
     let captureSessionList = false;
     let releaseSessionList;
     if (state.projectId) project.id = state.projectId;
-    project.trusted = state.trusted;
     model.configured = state.configured;
 
     const emit = (event) => {
@@ -122,10 +121,8 @@ async page => {
             }
             if (!state.opened) project.id = state.projectId = crypto.randomUUID();
             state.opened = true;
-            project.trusted = state.trusted = true;
             persist();
             return { ...project };
-          case "project:trust": project.trusted = state.trusted = true; persist(); return { ...project };
           case "session:watch-activity": {
             activityWatch = payload.subscriptionId;
             queueMicrotask(publishActivity);
@@ -151,7 +148,7 @@ async page => {
               attemptedRemovals.add(project.id);
               return null;
             }
-            state.opened = state.trusted = project.trusted = false;
+            state.opened = false;
             delete state.projectId;
             deleteSessions(state.sessions.map(({ id }) => id));
             return loseRemovalReply();

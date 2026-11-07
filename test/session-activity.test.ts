@@ -19,7 +19,6 @@ test("Durable reports background session completion and failure without opening 
   const attention = Promise.withResolvers<SessionActivity>();
   try {
     const project = runtime.addProject(projectDir);
-    runtime.trustProject(project.id);
     const first = await runtime.createSession(project.id, "Work in another session");
     const second = await runtime.createSession(project.id, "Model failure");
     const selection = { projectId: project.id, sessionId: first.id };
