@@ -37,7 +37,6 @@
   position: absolute; inset-block-start: 0; inset-inline-end: 0;
   width: 28px; height: 28px; opacity: 0; pointer-events: none;
 }
-.chat-entry--user .message-fork { inset-inline-end: 100%; inset-block-start: 4px; }
 .chat-entry:is(:hover, :focus-within) .message-fork {
   opacity: 1; pointer-events: auto;
 }

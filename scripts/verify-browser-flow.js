@@ -565,10 +565,9 @@ async page => {
   }
   await expectTranscriptLayout();
   await userMessage.hover();
-  const userBranch = userMessage.getByRole("button", { name: "Branch from here" });
-  await userBranch.hover();
-  if (await userBranch.evaluate(button => getComputedStyle(button).opacity) !== "1") {
-    throw new Error("The user message branch action did not stay visible on hover.");
+  if (await page.getByRole("article", { name: "You", exact: true })
+    .getByRole("button", { name: "Branch from here" }).count()) {
+    throw new Error("User messages, including earlier history, should not expose a branch action.");
   }
   const branchMessage = assistantMessage.getByRole("button", { name: "Branch from here" });
   await page.mouse.move(0, 0);
