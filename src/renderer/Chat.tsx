@@ -7,7 +7,7 @@ import { MessageFooter } from './MessageFooter';
 import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
-import { QueuedMessages } from './QueuedMessages';
+import { DraftRecoveryPicker, QueuedMessages } from './QueuedMessages';
 import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, QueuedDraftEdit, ReadingPosition, SendAttempt } from './preferences';
 import { completeAttempt, recoverQueueEdit, restoreRecoveredDraft } from './preferences';
@@ -66,7 +66,7 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   const open = expanded ?? (Boolean(block.patch) || block.status === 'error' || (shell && Boolean(active || shortOutput)));
 
   return (
-    <details className="tool-card" open={open}>
+    <details className="tool-card" open={open} data-command-expanded={shell && expanded === true || undefined}>
       <summary title={target} aria-label={[label, target].filter(Boolean).join(' ')}
         aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : status} onClick={(event) => {
         event.preventDefault();
@@ -109,10 +109,12 @@ const Message = memo(function Message({ message, project, onReview, onFork, tool
 }) {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   const author = message.role === 'user' ? 'You' : 'Pideck';
+  const toolOnly = message.role === 'assistant' && message.blocks.some(block => block.type === 'tool')
+    && message.blocks.every(block => block.type === 'tool' || block.type === 'thinking');
   const entryId = message.entryId;
   const readingEntry = entryId ?? /^(\d+):\d+$/.exec(message.id)?.[1];
   return (
-    <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id}
+    <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id} data-tools-only={toolOnly || undefined}
       data-reading-entry={readingEntry}>
       <div className="message-content">
         {message.blocks.map((block, index) => {
@@ -132,7 +134,7 @@ const Message = memo(function Message({ message, project, onReview, onFork, tool
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
-      <MessageFooter message={message} onFork={onFork} />
+      <MessageFooter message={message} onFork={onFork} toolOnly={toolOnly} />
     </article>
   );
 });
@@ -688,8 +690,9 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             }} />
           <div className="composer-controls">
             <div className="composer-models">
-              {queueEdit ? <span className="queue-edit-label" role="status" title={queueEdit.hasImages ? 'Existing image attachments stay with the queued message' : undefined}>
-                Editing queued message{queueEdit.hasImages ? ' · includes images' : ''}
+              {queueEdit ? <span className="queue-edit-label" role="img" aria-label={queueEdit.hasImages ? 'Editing queued message with images' : 'Editing queued message'}
+                title={`Editing queued message${queueEdit.hasImages ? ' · existing image attachments are kept' : ''}`}>
+                <Icon name="edit" width={14} height={14} />{queueEdit.hasImages && <Icon name="picture" width={14} height={14} />}
               </span> : <>
               {canAttach && <>
                 <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
@@ -714,13 +717,12 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                       update({ model: key, thinking: model && modelKey(model) === key ? draft.thinking : undefined, error: undefined });
                       onModelChosen(key);
                     }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
-              {draft.recoveredDrafts?.length ? <button className="icon-button queue-restore" type="button"
-                aria-label="Restore saved draft" title={`Restore saved draft${draft.recoveredDrafts.length > 1 ? ` (${draft.recoveredDrafts.length})` : ''}; the current draft is kept`}
-                disabled={draft.sending || draft.reading} onClick={() => {
-                  updateDraft(restoreRecoveredDraft);
+              {draft.recoveredDrafts?.length ? <DraftRecoveryPicker current={draft} items={draft.recoveredDrafts}
+                disabled={Boolean(draft.sending || draft.reading)} onRestore={index => {
+                  updateDraft(current => restoreRecoveredDraft(current, index));
                   setQueueNotice(undefined);
                   textarea.current?.focus({ preventScroll: true });
-                }}><Icon name="restore" /></button> : null}
+                }} /> : null}
               {queueNotice && <span className="queue-recovery-note" role="status" title={queueNotice}>{queueNotice}</span>}
               </>}
             </div>

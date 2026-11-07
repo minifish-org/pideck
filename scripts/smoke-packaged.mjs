@@ -454,7 +454,11 @@ try {
     .filter({ has: page.getByText("Package stream verified with the real coding tools.", { exact: true }) });
   await finalMessage.locator(".message-duration").waitFor();
   assert.equal(await page.locator(".message-duration").count(), 1);
-  assert.match((await finalMessage.locator(".message-duration").innerText()).trim(), /^Worked for (?:<1s|[\dhms ]+)$/);
+  const duration = finalMessage.locator(".message-duration");
+  const durationText = (await duration.innerText()).trim();
+  assert.match(durationText, /^(?:<1s|\d+h(?: \d+m)?(?: \d+s)?|\d+m(?: \d+s)?|\d+s)$/);
+  assert.equal(await duration.getAttribute("aria-label"), "Total working time");
+  assert.equal(await duration.getAttribute("title"), `Total working time: ${durationText}`);
   for (const message of [sentMessage, finalMessage]) {
     const time = message.locator(".message-footer time");
     assert.match((await time.innerText()).trim(), /^(?:[01]\d|2[0-3]):[0-5]\d$/);
@@ -475,6 +479,16 @@ try {
       await message.getByRole("button", { name: "Message copied", exact: true }).waitFor();
       assert.equal(await app.evaluate(() => globalThis.__pideckSmokeCopy.text), expected);
     }
+    const shellMessage = page.getByRole("article", { name: "Pideck", exact: true })
+      .filter({ has: page.locator(".tool-card summary").filter({ hasText: "cat example.ts" }) });
+    assert.equal(await shellMessage.getAttribute("data-tools-only"), "true");
+    await shellMessage.hover();
+    await shellMessage.getByRole("button", { name: "Copy output", exact: true }).click();
+    await shellMessage.getByRole("button", { name: "Output copied", exact: true }).waitFor();
+    const copiedOutput = await app.evaluate(() => globalThis.__pideckSmokeCopy.text);
+    assert.equal(copiedOutput, await readFile(join(project, "example.ts"), "utf8"));
+    assert.equal(copiedOutput, await shellMessage.locator(".tool-output").textContent());
+    assert.doesNotMatch(copiedOutput, /"command"|"arguments"|^bash\b/);
   } finally {
     await app.evaluate(({ clipboard }) => {
       clipboard.writeText = globalThis.__pideckSmokeCopy.original;
@@ -588,11 +602,37 @@ try {
   const terminalRegion = page.getByRole("region", { name: "Project terminal" });
   const terminal = terminalRegion.locator(".xterm-helper-textarea");
   const terminalRows = terminalRegion.locator(".xterm-rows");
-  const findInTerminal = terminalRegion.getByRole("button", { name: "Find in terminal", exact: true });
+  const terminalScreen = terminalRegion.locator(".xterm-screen");
+  const terminalTrack = terminalRegion.locator(".xterm-scrollable-element > .scrollbar.vertical");
+  const terminalPainted = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  async function expectTerminalHistory(text) {
+    const target = terminalRows.getByText(text, { exact: true });
+    const screen = await terminalScreen.boundingBox();
+    assert.ok(screen, "Expected a visible terminal while checking retained output.");
+    await terminalScreen.hover();
+    let found = false;
+    // Read the rendered history through normal terminal scrolling. Half-screen
+    // steps overlap, so a short marker cannot be skipped between viewports.
+    for (let pageNumber = 0; pageNumber < 80; pageNumber++) {
+      if (await target.isVisible()) { found = true; break; }
+      await page.mouse.wheel(0, -screen.height / 2);
+      await terminalPainted();
+    }
+    assert.ok(found, `Retained terminal history did not contain ${text}. Visible rows: ${await terminalRows.innerText()}`);
+    await page.mouse.wheel(0, 100_000);
+    await terminalPainted();
+    await terminal.focus();
+  }
   const restartShell = terminalRegion.getByRole("button", { name: "Restart shell", exact: true });
-  const [findBox, restartBox] = await Promise.all([findInTerminal.boundingBox(), restartShell.boundingBox()]);
-  assert.ok(findBox && restartBox && restartBox.x >= findBox.x + findBox.width
-    && Math.abs(restartBox.y - findBox.y) <= 1, "The restart button must sit to the right of terminal search.");
+  assert.equal(await terminalRegion.getByRole("button", { name: "Find in terminal", exact: true }).count(), 0);
+  assert.equal(await terminalRegion.getByRole("searchbox").count(), 0);
+  assert.equal((await restartShell.innerText()).trim(), "");
+  assert.equal(await restartShell.locator("svg").count(), 1);
+  assert.equal(await restartShell.getAttribute("title"), "Restart shell (stops the current shell and its foreground command)");
+  const [restartBox, panelsBox] = await Promise.all([restartShell.boundingBox(), changesToggle.boundingBox()]);
+  assert.ok(restartBox && panelsBox && restartBox.x + restartBox.width <= panelsBox.x
+    && Math.abs(restartBox.y + restartBox.height / 2 - panelsBox.y - panelsBox.height / 2) <= 1,
+  "The icon-only restart button must precede the panel switches in the terminal header.");
   if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
   const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
   await review.waitFor({ state: "detached" });
@@ -683,27 +723,19 @@ try {
   assert.equal(await terminal.getAttribute("data-appearance-fixture"), "same");
   assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
   assert.notEqual(await ansiOutput.evaluate(element => getComputedStyle(element).color), darkAnsiColor);
-  await findInTerminal.click();
-  const appearanceSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
-  await appearanceSearch.fill("PTY_OK");
+  const lightTerminalRows = await terminalRows.innerText();
   await page.screenshot({ path: "output/playwright/pideck-native-light-terminal.png" });
   await chooseAppearance(app, page, "dark");
-  assert.equal(await appearanceSearch.inputValue(), "PTY_OK");
+  assert.equal(await terminalRows.innerText(), lightTerminalRows, "Changing appearance must preserve the terminal viewport and output.");
   assert.equal(await terminal.getAttribute("data-appearance-fixture"), "same");
   assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
-  await appearanceSearch.press("Escape");
   await changesToggle.click();
   assert.equal(await themeLayout.inputValue(), "split");
   await page.waitForFunction(top => Math.abs(document.querySelector('#review-panel .workspace-review-scroll').scrollTop - top) <= 2, reviewTop);
   await terminalToggle.click();
-  await findInTerminal.click();
-  await page.getByRole("searchbox", { name: "Find in terminal output" }).fill("PTY_OK");
-  const match = page.locator(".workspace-search-results");
-  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor({ timeout: 5_000 }).catch(async error => {
-    const text = await match.allTextContents();
-    throw new Error("Terminal search status was " + text.join(" "), { cause: error });
-  });
-  await page.getByRole("searchbox", { name: "Find in terminal output" }).press("Escape");
+  await expectTerminalHistory("PTY_OK");
+  await terminal.press("Control+f");
+  assert.equal(await terminalRegion.getByRole("searchbox").count(), 0, "Ctrl+F must remain a shell key, not open an application search.");
 
   await terminal.focus();
   await page.keyboard.insertText(process.platform === "win32"
@@ -746,11 +778,7 @@ try {
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
-  await findInTerminal.click();
-  const retainedSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
-  await retainedSearch.fill("RESTART_READY");
-  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor();
-  await retainedSearch.press("Escape");
+  await expectTerminalHistory("RESTART_READY");
 
   await page.keyboard.insertText("exit");
   await page.keyboard.press("Enter");
@@ -759,10 +787,7 @@ try {
   await clickNativeMenu(app, "toggle-terminal");
   await terminalRegion.getByText("Shell running").waitFor();
   await page.waitForFunction(id => document.documentElement.dataset.ptyId && document.documentElement.dataset.ptyId !== id, restartedPty);
-  await findInTerminal.click();
-  await retainedSearch.fill("INTERRUPT_OK");
-  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor();
-  await retainedSearch.press("Escape");
+  await expectTerminalHistory("INTERRUPT_OK");
 
   const boundsBeforeReview = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
   const activePty = await page.evaluate(() => document.documentElement.dataset.ptyId);
@@ -806,8 +831,6 @@ try {
   await sideProject.press("Backspace");
   await sideProject.waitFor({ state: "detached" });
 
-  const terminalScreen = terminalRegion.locator(".xterm-screen");
-  const terminalTrack = terminalRegion.locator(".xterm-scrollable-element > .scrollbar.vertical");
   async function verifyTerminalScrollSpace() {
     const [screen, track, viewport] = await Promise.all([
       terminalScreen.boundingBox(), terminalTrack.boundingBox(), terminalRegion.locator(".xterm").boundingBox(),
@@ -936,14 +959,7 @@ try {
   const queueMessages = sentQueue.flatMap(message => [firstQueued, movedQueued, editedQueued].filter(text => message.includes(text)));
   assert.deepEqual(queueMessages, [firstQueued, movedQueued, editedQueued]);
   assert.ok(sentQueue.every(message => !message.includes(discardedQueued) && !message.includes(draftQueued)));
-  await page.getByRole("button", { name: "Find in terminal" }).click();
-  const previousOutput = page.getByRole("searchbox", { name: "Find in terminal output" });
-  await previousOutput.fill("pty_ok");
-  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor({ timeout: 5_000 }).catch(async error => {
-    const text = await match.allTextContents();
-    const terminal = await page.locator(".xterm-rows").allTextContents();
-    throw new Error("Recovered terminal search status was " + text.join(" ") + "\n" + terminal.join("\n"), { cause: error });
-  });
+  await expectTerminalHistory("PTY_OK");
   assert.equal((await command("session:list", { projectId }))[0].id, conversation.id);
   await prompt.fill("Resume this draft after reopening.");
   await chooseAppearance(app, page, "light");

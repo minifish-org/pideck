@@ -67,7 +67,8 @@ export function savePreferences(value: Preferences) {
 export type Attachment = ImageInput & { name: string };
 export type SendAttempt = { text: string; attachments: Attachment[]; requestId: string };
 export type QueuedDraftEdit = { id: number; text: string; original: string; hasImages: boolean };
-type RecoveredDraft = { text: string; attachments: Attachment[] };
+type DraftKind = 'draft' | 'queue-edit';
+export type RecoveredDraft = { text: string; attachments: Attachment[]; kind?: DraftKind };
 
 export type Draft = {
   text: string;
@@ -81,6 +82,7 @@ export type Draft = {
   error?: string;
   queueEdit?: QueuedDraftEdit;
   recoveredDrafts?: RecoveredDraft[];
+  recoveryKind?: DraftKind;
 };
 
 export const emptyDraft: Draft = { text: '', attachments: [] };
@@ -93,15 +95,17 @@ export function recoverQueueEdit(draft: Draft): Draft {
   if (!edit) return draft;
   const next = { ...draft, queueEdit: undefined, error: undefined };
   if (edit.text === edit.original || !edit.text.trim()) return next;
-  if (!draft.text && !draft.attachments.length) return { ...next, text: edit.text, pendingRequestId: undefined };
-  return { ...next, recoveredDrafts: [...(draft.recoveredDrafts ?? []), { text: edit.text, attachments: [] }] };
+  if (!draft.text && !draft.attachments.length) return { ...next, text: edit.text, recoveryKind: 'queue-edit', pendingRequestId: undefined };
+  return { ...next, recoveredDrafts: [...(draft.recoveredDrafts ?? []), { text: edit.text, attachments: [], kind: 'queue-edit' }] };
 }
 
-export function restoreRecoveredDraft(draft: Draft): Draft {
-  const [restored, ...remaining] = draft.recoveredDrafts ?? [];
+export function restoreRecoveredDraft(draft: Draft, index: number): Draft {
+  const restored = draft.recoveredDrafts?.[index];
   if (!restored) return draft;
-  if (draft.text || draft.attachments.length) remaining.push({ text: draft.text, attachments: draft.attachments });
-  return { ...draft, ...restored, recoveredDrafts: remaining.length ? remaining : undefined,
+  const remaining = draft.recoveredDrafts!.filter((_, candidate) => candidate !== index);
+  if (draft.text || draft.attachments.length) remaining.push({ text: draft.text, attachments: draft.attachments, kind: draft.recoveryKind ?? 'draft' });
+  return { ...draft, text: restored.text, attachments: restored.attachments, recoveryKind: restored.kind,
+    recoveredDrafts: remaining.length ? remaining : undefined,
     pendingRequestId: undefined, error: undefined };
 }
 
@@ -112,6 +116,7 @@ export function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
     ...draft,
     text: unchanged ? '' : draft.text,
     attachments: unchanged ? [] : draft.attachments,
+    recoveryKind: unchanged ? undefined : draft.recoveryKind,
     attempt: undefined,
     pendingRequestId: undefined,
     sending: false,
@@ -141,16 +146,17 @@ export function readDrafts(): Drafts {
       if (!projectId || !sessionId || extra !== undefined || !identifier.test(projectId)
         || (sessionId !== newSessionDraft && !identifier.test(sessionId))) continue;
       try {
-        const { text, requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries } = record(JSON.parse(localStorage.getItem(key) ?? 'null'));
+        const { text, requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries, recoveryKind } = record(JSON.parse(localStorage.getItem(key) ?? 'null'));
         if (typeof text !== 'string' || text.length > maxDraftLength) continue;
         const edit = record(savedEdit);
         const queueEdit = Number.isSafeInteger(edit.id) && Number(edit.id) > 0
           && typeof edit.text === 'string' && edit.text.length <= maxDraftLength
           && typeof edit.original === 'string' && edit.original.length <= maxDraftLength && typeof edit.hasImages === 'boolean'
           ? edit as QueuedDraftEdit : undefined;
-        const recoveredDrafts = Array.isArray(savedRecoveries) ? savedRecoveries.flatMap(value => {
-          const { text } = record(value);
-          return typeof text === 'string' && text.length > 0 && text.length <= maxDraftLength ? [{ text, attachments: [] }] : [];
+        const recoveredDrafts = Array.isArray(savedRecoveries) ? savedRecoveries.flatMap<RecoveredDraft>(value => {
+          const { text, kind } = record(value);
+          return typeof text === 'string' && text.length > 0 && text.length <= maxDraftLength
+            ? [{ text, attachments: [], kind: kind === 'draft' || kind === 'queue-edit' ? kind : undefined }] : [];
         }) : [];
         if (!text && !queueEdit && !recoveredDrafts.length) continue;
         (drafts[projectId] ??= {})[sessionId] = {
@@ -158,6 +164,7 @@ export function readDrafts(): Drafts {
           pendingRequestId: typeof requestId === 'string' && identifier.test(requestId) ? requestId : undefined,
           queueEdit,
           recoveredDrafts: recoveredDrafts.length ? recoveredDrafts : undefined,
+          recoveryKind: recoveryKind === 'draft' || recoveryKind === 'queue-edit' ? recoveryKind : undefined,
         };
       } catch {
         // One corrupt record need not prevent other drafts from reopening.
@@ -184,12 +191,13 @@ export function saveDrafts(previous: Drafts, current: Drafts) {
       const prior = before[sessionId];
       const requestId = draftRequestId(next);
       if (next?.text === prior?.text && requestId === draftRequestId(prior)
-        && next?.queueEdit === prior?.queueEdit && next?.recoveredDrafts === prior?.recoveredDrafts) continue;
+        && next?.queueEdit === prior?.queueEdit && next?.recoveredDrafts === prior?.recoveredDrafts
+        && next?.recoveryKind === prior?.recoveryKind) continue;
       const key = `${draftKey}${projectId}/${sessionId}`;
       try {
         if (next && (next.text || next.queueEdit || next.recoveredDrafts?.length)) localStorage.setItem(key, JSON.stringify({
           text: next.text, requestId, queueEdit: next.queueEdit,
-          recoveredDrafts: next.recoveredDrafts?.map(({ text }) => ({ text })),
+          recoveredDrafts: next.recoveredDrafts?.map(({ text, kind }) => ({ text, kind })), recoveryKind: next.recoveryKind,
         }));
         else localStorage.removeItem(key);
       } catch {

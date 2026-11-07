@@ -4,7 +4,7 @@ import { AuthFlows } from "./auth-flows";
 import { PersistentCredentials } from "./credential-store";
 import { Runtime, type ChatWatch } from "./runtime";
 import { listChanges, readPatch, watchChanges } from "./review";
-import { resolveMessageFile } from "./message-links";
+import { readMessageFile, resolveMessageFile } from "./message-links";
 import { Terminals } from "./terminal";
 import type { FromHost, HostRequest, RemovalTarget, ToHost } from "../shared/transport";
 import type { ChatView, HostEvent, RemovalResult, Selection } from "../shared/api";
@@ -22,7 +22,7 @@ const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>(
 const activityWatches = new Map<number, { id: string; dispose: () => void }>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
 let credentialRead: { id: number; result: PromiseWithResolvers<Record<string, Credential>> } | undefined;
-const reviews = new Map<string, Set<{ controller: AbortController; pending: Promise<unknown> }>>();
+const reviews = new Map<string, Set<{ owner: number; requestId?: string; controller: AbortController; pending: Promise<unknown> }>>();
 const reviewWatches = new Map<number, { projectId: string; subscriptionId: string; controller: AbortController }>();
 let nextCredentialRequest = 0;
 
@@ -56,6 +56,9 @@ function closeOwner(owner: number) {
   activityWatches.get(owner)?.dispose();
   activityWatches.delete(owner);
   closeReviewWatch(owner);
+  for (const jobs of reviews.values()) for (const job of jobs) {
+    if (job.owner === owner) job.controller.abort(new Error("Review stopped because the window closed."));
+  }
   terminals.closeOwner(owner);
   auth?.closeOwner(owner);
 }
@@ -68,13 +71,17 @@ function requireOpenWorkspace(projectId: string) {
   if (removing?.projectId === projectId && !removing.sessionId) throw new Error("This workspace is being removed.");
 }
 
-async function runReview<T>(runtime: Runtime, projectId: string, read: (cwd: string, signal: AbortSignal) => Promise<T>) {
+async function runReview<T>(runtime: Runtime, owner: number, projectId: string,
+  read: (cwd: string, signal: AbortSignal) => Promise<T>, requestId?: string) {
   requireOpenWorkspace(projectId);
   const project = runtime.requireProject(projectId);
-  const controller = new AbortController();
-  const pending = read(project.directory, controller.signal);
   const jobs = reviews.get(projectId) ?? new Set();
-  const job = { controller, pending };
+  if (requestId && [...jobs].some(job => job.owner === owner && job.requestId === requestId)) {
+    throw new Error("This file preview is already opening.");
+  }
+  const controller = new AbortController();
+  const pending = Promise.resolve().then(() => read(project.directory, controller.signal));
+  const job = { owner, requestId, controller, pending };
   jobs.add(job);
   reviews.set(projectId, jobs);
   try { return await pending; }
@@ -238,11 +245,20 @@ async function handle(request: HostRequest): Promise<unknown> {
       return;
     }
     case "review:list":
-      return runReview(runtime, payload.projectId, listChanges);
+      return runReview(runtime, owner, payload.projectId, listChanges);
     case "review:patch":
-      return runReview(runtime, payload.projectId, (cwd, signal) => readPatch(cwd, payload.path, signal));
+      return runReview(runtime, owner, payload.projectId, (cwd, signal) => readPatch(cwd, payload.path, signal));
     case "review:resolve-link":
-      return runReview(runtime, payload.projectId, (cwd, signal) => resolveMessageFile(cwd, payload.href, signal));
+      return runReview(runtime, owner, payload.projectId, (cwd, signal) => resolveMessageFile(cwd, payload.href, signal));
+    case "review:file":
+      return runReview(runtime, owner, payload.projectId, (cwd, signal) => readMessageFile(cwd, payload.path, signal), payload.requestId);
+    case "review:file-cancel": {
+      runtime.requireProject(payload.projectId);
+      for (const job of reviews.get(payload.projectId) ?? []) {
+        if (job.owner === owner && job.requestId === payload.requestId) job.controller.abort(new Error("File preview stopped."));
+      }
+      return;
+    }
     case "review:watch": {
       const { projectId, subscriptionId } = payload;
       requireOpenWorkspace(projectId);

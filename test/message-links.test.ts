@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { resolveMessageFile } from "../src/host/message-links";
+import { readMessageFile, resolveMessageFile } from "../src/host/message-links";
 import { validPayload } from "../src/main/validation";
 import { externalMessageUrl, projectMessageLink } from "../src/shared/message-links";
 
@@ -70,4 +70,51 @@ test("file-link IPC requires an owned project identity and a bounded original hr
   for (const value of [undefined, { href: "a.ts" }, { projectId: "../other", href: "a.ts" },
     { projectId, href: "" }, { projectId, href: "a\0.ts" }, { projectId, href: "a\n.ts" },
     { projectId, href: "x".repeat(16_385) }]) assert.equal(validPayload("review:resolve-link", value), false);
+});
+
+test("read-only previews bound content and preserve UTF-8 project filenames without re-decoding them", async t => {
+  const temporary = await mkdtemp(join(tmpdir(), "pideck-file-preview-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const project = join(temporary, "project");
+  const outside = join(temporary, "outside");
+  await Promise.all([mkdir(project), mkdir(outside)]);
+  const source = "export const 词 = 'hello';\n";
+  await Promise.all([
+    writeFile(join(project, "词 #%.ts"), source),
+    writeFile(join(project, "empty.ts"), ""),
+    writeFile(join(project, "large.ts"), "a".repeat(1024 * 1024 + 1)),
+    writeFile(join(project, "binary.bin"), Buffer.from([1, 0, 2])),
+    writeFile(join(project, "encoded.txt"), Buffer.from([0xff, 0xfe, 0x61])),
+    writeFile(join(outside, "secret.ts"), "outside"),
+  ]);
+  await symlink(join(project, "词 #%.ts"), join(project, "local.ts"));
+  await symlink(join(outside, "secret.ts"), join(project, "escape.ts"));
+  await symlink(outside, join(project, "escape-directory"), "dir");
+  assert.deepEqual(await readMessageFile(project, "词 #%.ts"), { path: "词 #%.ts", contents: source });
+  assert.deepEqual(await readMessageFile(project, "local.ts"), { path: "词 #%.ts", contents: source });
+  assert.deepEqual(await readMessageFile(project, "empty.ts"), { path: "empty.ts", contents: "" });
+  for (const [path, reason] of [["large.ts", /1 MB/], ["binary.bin", /binary/], ["encoded.txt", /UTF-8/]] as const) {
+    const preview = await readMessageFile(project, path);
+    assert.equal(preview.contents, null);
+    assert.match(preview.reason ?? "", reason);
+  }
+  for (const path of ["../outside/secret.ts", "escape.ts", "escape-directory/secret.ts", outside, "escape-directory"]) {
+    await assert.rejects(readMessageFile(project, path), /inside|outside|file/);
+  }
+  const cancelled = AbortSignal.abort(new Error("File preview stopped."));
+  await assert.rejects(readMessageFile(project, "local.ts", cancelled), /preview stopped/);
+});
+
+test("preview IPC requires an owned project, bounded path and independent cancellation identity", () => {
+  const projectId = randomUUID();
+  const requestId = randomUUID();
+  assert.equal(validPayload("review:file", { projectId, path: "src/example.ts", requestId }), true);
+  assert.equal(validPayload("review:file-cancel", { projectId, requestId }), true);
+  for (const value of [undefined, {}, { projectId, path: "x" }, { projectId: "other", path: "x", requestId },
+    { projectId, path: "a\n.ts", requestId }, { projectId, path: "x".repeat(4097), requestId }]) {
+    assert.equal(validPayload("review:file", value), false);
+  }
+  for (const value of [undefined, {}, { projectId }, { projectId, requestId: "not-an-id" }]) {
+    assert.equal(validPayload("review:file-cancel", value), false);
+  }
 });

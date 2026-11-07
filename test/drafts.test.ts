@@ -16,11 +16,18 @@ test('consumed queue edits preserve the normal draft, earlier recoveries and in-
   assert.equal(second.text, original.text);
   assert.equal(second.attachments, original.attachments);
   assert.deepEqual(second.recoveredDrafts?.map(item => item.text), ['First revised message', 'Second revised message']);
-  const restored = restoreRecoveredDraft(second);
-  assert.equal(restored.text, 'First revised message');
+  const restored = restoreRecoveredDraft(second, 1);
+  assert.equal(restored.text, 'Second revised message');
   assert.deepEqual(restored.attachments, []);
-  assert.deepEqual(restored.recoveredDrafts?.map(item => item.text), ['Second revised message', original.text]);
+  assert.deepEqual(restored.recoveredDrafts?.map(item => item.text), ['First revised message', original.text]);
+  assert.deepEqual(restored.recoveredDrafts?.map(item => item.kind), ['queue-edit', 'draft']);
   assert.equal(restored.recoveredDrafts?.at(-1)?.attachments, original.attachments);
+  const returned = restoreRecoveredDraft(restored, 1);
+  assert.equal(returned.text, original.text);
+  assert.equal(returned.attachments, original.attachments);
+  assert.deepEqual(returned.recoveredDrafts?.map(item => item.text), ['First revised message', 'Second revised message']);
+  assert.deepEqual(returned.recoveredDrafts?.map(item => item.kind), ['queue-edit', 'queue-edit']);
+  assert.equal(restoreRecoveredDraft(returned, 10), returned);
   const empty: Draft = { text: '', attachments: [], queueEdit: original.queueEdit };
   assert.equal(recoverQueueEdit(empty).text, 'First revised message');
   assert.equal(recoverQueueEdit({ ...empty, queueEdit: { ...original.queueEdit!, text: 'First queued message' } }).text, '');
@@ -37,7 +44,7 @@ test('queue editing and recoveries survive reload without serializing images, th
   try {
     const edited: Draft = { text: '', attachments: [attachment],
       queueEdit: { id: 9, original: 'Queued original', text: 'Revised queued draft', hasImages: true },
-      recoveredDrafts: [{ text: 'Earlier saved edits', attachments: [attachment] }] };
+      recoveryKind: 'queue-edit', recoveredDrafts: [{ text: 'Earlier saved edits', attachments: [attachment], kind: 'queue-edit' }] };
     const drafts = { [projectId]: { [sessionId]: edited } };
     saveDrafts({}, drafts);
     const serialized = storage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`);
@@ -47,7 +54,12 @@ test('queue editing and recoveries survive reload without serializing images, th
     assert.equal(reopened.text, '');
     assert.deepEqual(reopened.queueEdit, edited.queueEdit);
     assert.deepEqual(reopened.attachments, []);
-    assert.deepEqual(reopened.recoveredDrafts, [{ text: 'Earlier saved edits', attachments: [] }]);
+    assert.equal(reopened.recoveryKind, 'queue-edit');
+    assert.deepEqual(reopened.recoveredDrafts, [{ text: 'Earlier saved edits', attachments: [], kind: 'queue-edit' }]);
+    storage.setItem(`pideck.draft.v1/${projectId}/${sessionId}`, JSON.stringify({ text: 'Legacy current draft', recoveredDrafts: [{ text: 'Legacy saved draft' }] }));
+    const legacy = readDrafts()[projectId][sessionId];
+    assert.equal(legacy.recoveredDrafts?.[0].text, 'Legacy saved draft');
+    assert.equal(legacy.recoveredDrafts?.[0].kind, undefined);
     saveDrafts(drafts, {});
     assert.deepEqual(readDrafts(), {});
   } finally {

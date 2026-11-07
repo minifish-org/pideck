@@ -12,7 +12,6 @@
 .workspace-review[hidden] { display: none; }
 
 .workspace-terminal {
-  container: terminal / inline-size;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -159,8 +158,7 @@
 .workspace-file-detail { color: var(--fgColor-muted); font-size: 11px; }
 .workspace-file-name, .workspace-file-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-file-filter { padding: 6px var(--workspace-inset, 16px) 0; }
-.workspace-file-filter input,
-.workspace-terminal-search input {
+.workspace-file-filter input {
   min-width: 0;
   height: 30px;
   background: var(--bgColor-default);
@@ -310,31 +308,9 @@
   border-radius: 999px;
   background-clip: padding-box;
 }
-.workspace-terminal-search {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  min-width: 0;
-}
-.workspace-terminal-search input { flex: 1 1 200px; width: 200px; min-width: 0; }
-.workspace-terminal-search input::-webkit-search-cancel-button { display: none; }
-.workspace-search-results { flex: 0 0 52px; text-align: center; white-space: nowrap; font-size: 11px; color: var(--fgColor-muted); }
 
 @container review (max-width: 390px) {
   .workspace-panel-header > :is(.workspace-panel-meta, .workspace-change-count) { display: none; }
   .workspace-diff-header { gap: 6px; }
   .workspace-diff-header .workspace-file-detail { display: none; }
-}
-
-@container terminal (max-width: 410px) {
-  .workspace-terminal-content[data-toolbar] .workspace-panel-header { gap: 0; }
-  .workspace-terminal-content[data-toolbar] .workspace-panel-header h2,
-  .workspace-terminal-content[data-toolbar] .workspace-terminal-status {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    clip-path: inset(50%);
-  }
-  .workspace-terminal-content[data-toolbar="find"] .workspace-panel-actions,
-  .workspace-terminal-search { flex: 1; }
 }

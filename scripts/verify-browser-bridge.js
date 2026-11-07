@@ -17,6 +17,22 @@ async page => {
     const fixedModel = { ...model, id: "fixture-fixed", name: "Fixture fixed model with a long display name to exercise truncation", thinking: ["off"] };
     const unavailableModel = { ...model, provider: "anthropic", id: "unavailable-fixture", name: "Unconnected fixture model" };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
+    const wrappedGuide = [
+      "# Pideck Final Review", "",
+      "This small project exercises reading, editing, verification and file review.", "",
+      "Change the result in example.ts from before to after, then verify it.", "",
+      ...["Project layout", "Reading the source", "Making a small change", "Reviewing changes", "Running verification",
+        "Working in the terminal", "Checking unchanged context"].flatMap((title, index) => [
+          `## ${title}`, "",
+          "- Keep the exported result on line 1 easy to inspect.",
+          "- Preserve the stable context at the end of example.ts.",
+          "- Check the file contents before running a command.",
+          "- Use the Changes panel to inspect the edit.",
+          "- Read this guide without modifying it.", "",
+          `Review checkpoint ${index + 1}: the guide is an unchanged project file.`, "",
+        ]),
+      "## Completing the task", "", "- Keep the exported result on line 1 easy to inspect.", "End of project guide.",
+    ].join("\n") + "\n";
     const largePatch = [
       "diff --git a/second.ts b/second.ts", "--- a/second.ts", "+++ b/second.ts", "@@ -1,180 +1,180 @@",
       ...Array.from({ length: 180 }, (_, index) => `-const old${index} = ${index};`),
@@ -412,7 +428,7 @@ async page => {
               ])) throw new Error("Queue operations did not leave the expected order and content.");
               window.addEventListener("pideck-fixture-finish-queue", () => {
                 const reply = { id: "reply", entryId: 8, role: "assistant", timestamp: messageTime + 95_000, durationMs: 95_000, blocks: [
-                  { type: "text", text: "I updated the status and checked the result.\n\n[Review source](example.ts#L1) · [Project source](/workspace/sample/example.ts#L1) · [Node docs](https://nodejs.org/api/assert.html) · [Unsafe link](javascript:alert%281%29) · [Outside file](/workspace/elsewhere/private.txt)" },
+                  { type: "text", text: "I updated the status and checked the result.\n\n[Review source](example.ts#L1) · [Project source](/workspace/sample/example.ts#L1) · [Project guide](README.md) · [Unchanged line](example.ts#L30) · [Node docs](https://nodejs.org/api/assert.html) · [Unsafe link](javascript:alert%281%29) · [Outside file](/workspace/elsewhere/private.txt)" },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "edit", id: "large-edit", path: "second.ts", status: "done", patch: largePatch },
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
@@ -466,14 +482,25 @@ async page => {
           }
           case "review:patch": {
             if (sessionStorage.getItem("pideck-review-patch-failure")) throw new Error("Could not load this diff.");
+            if (payload.path === "README.md") return { patch: null, reason: "This file has no current Git changes." };
             const filePatch = payload.path === "second.ts" ? patch.replaceAll("example.ts", "second.ts") : patch;
             return { patch: sessionStorage.getItem("pideck-review-edit") ? filePatch.replace("verified", "updated") : filePatch };
           }
           case "review:resolve-link":
-            if (payload.projectId !== project.id || !["example.ts#L1", "/workspace/sample/example.ts#L1"].includes(payload.href)) {
+            if (payload.projectId !== project.id || !["example.ts#L1", "/workspace/sample/example.ts#L1", "README.md", "example.ts#L30"].includes(payload.href)) {
               throw new Error("Unexpected project message link.");
             }
+            if (payload.href === "README.md") return { path: "README.md" };
+            if (payload.href === "example.ts#L30") return { path: "example.ts", line: 30 };
             return { path: "example.ts", line: 1 };
+          case "review:file":
+            if (payload.projectId !== project.id || !["README.md", "example.ts"].includes(payload.path)) throw new Error("Unexpected file preview.");
+            return { path: payload.path, contents: payload.path === "README.md"
+              ? sessionStorage.getItem("pideck-review-wrapped-guide") ? wrappedGuide
+                : ["# Project guide", "", "Read-only project documentation.",
+                    ...Array.from({ length: 77 }, (_, index) => `Project guide line ${index + 4}.`)].join("\n") + "\n"
+              : ["export const status = 'verified';", ...Array.from({length: 79}, (_, index) => `export const line${index + 2} = ${index + 2};`)].join("\n") + "\n" };
+          case "review:file-cancel": return;
           case "link:open-external":
             if (payload.url !== "https://nodejs.org/api/assert.html") throw new Error("Unexpected external message link.");
             document.body.dataset.openedExternalLink = payload.url;

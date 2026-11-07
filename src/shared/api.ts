@@ -119,6 +119,7 @@ export type ReviewFile = {
   status: string;
 };
 export type ReviewPatch = { patch: string | null; reason?: string };
+export type ReviewFileContents = { path: string; contents: string | null; reason?: string };
 type ReviewWatchRef = { projectId: string; subscriptionId: string };
 
 type TerminalRef = { projectId: string; terminalId: string };
@@ -165,6 +166,8 @@ export type Commands = {
   "review:list": [{ projectId: string }, ReviewFile[]];
   "review:patch": [{ projectId: string; path: string }, ReviewPatch];
   "review:resolve-link": [{ projectId: string; href: string }, ProjectLink];
+  "review:file": [{ projectId: string; path: string; requestId: string }, ReviewFileContents];
+  "review:file-cancel": [{ projectId: string; requestId: string }, void];
   "review:watch": [ReviewWatchRef, void];
   "review:unwatch": [ReviewWatchRef, void];
   "terminal:open": [{ projectId: string } & TerminalSize, TerminalOpen];

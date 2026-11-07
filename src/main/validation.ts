@@ -122,6 +122,9 @@ const validators = {
   "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
   "review:resolve-link": (value) => object(value) && project(value) && string(value.href, 16_384)
     && value.href.length > 0 && !/[\u0000-\u001f\u007f]/.test(value.href),
+  "review:file": (value) => object(value) && project(value) && match(value.requestId, id)
+    && string(value.path, 4096) && value.path.length > 0 && !/[\u0000-\u001f\u007f]/.test(value.path),
+  "review:file-cancel": (value) => object(value) && project(value) && match(value.requestId, id),
   "review:watch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
   "review:unwatch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
   "terminal:open": (value) => object(value) && project(value) && size(value),

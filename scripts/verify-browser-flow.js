@@ -543,6 +543,13 @@ async page => {
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Queue next" }).waitFor();
+  const copyOutput = page.getByRole("button", { name: "Copy output", exact: true });
+  await copyOutput.focus();
+  await copyOutput.press("Enter");
+  await page.getByRole("button", { name: "Output copied", exact: true }).waitFor();
+  if (await page.evaluate(() => document.body.dataset.copiedText) !== "Running the status check…") {
+    throw new Error("Copy output included text beyond the independent tool result.");
+  }
   if (await page.getByRole("button", { name: "Steer run", exact: true }).count()) throw new Error("The composer exposes a second send action.");
   const queue = page.getByRole("list", { name: "Queued messages" });
   const row = text => queue.getByRole("listitem").filter({ hasText: text });
@@ -591,6 +598,10 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-queue-narrow.png" });
   const queueEditButton = queueButton(editableText, "Edit message");
   const parkedDraft = "Keep this ordinary unsent draft.";
+  const removableDuringEdit = "Another queue item remains actionable.";
+  await prompt.fill(removableDuringEdit);
+  await prompt.press("Enter");
+  await row(removableDuringEdit).waitFor();
   await prompt.fill(parkedDraft);
   await pasteImage(2, 2);
   await attachmentPreview.waitFor();
@@ -602,6 +613,25 @@ async page => {
     || await attachmentPreview.count()) {
     throw new Error("Queue editing did not reuse the focused composer and park ordinary draft attachments.");
   }
+  const editMarker = queue.getByRole("status", { name: "Editing queued message", exact: true });
+  const compactEditRow = queue.getByRole("listitem").filter({ has: page.getByRole("status", { name: "Editing queued message", exact: true }) });
+  await editMarker.waitFor();
+  if (await compactEditRow.getByText(editableText, { exact: true }).count() || await compactEditRow.getByRole("button").count()
+    || await composer.getByText("Editing queued message", { exact: true }).count()) {
+    throw new Error("The edited queue row repeats its message/actions or the composer repeats the editing label.");
+  }
+  await composer.getByRole("img", { name: "Editing queued message", exact: true }).waitFor();
+  if (await queueButton("Prefer a focused check.", "Steer current run").getAttribute("aria-disabled") === "true"
+    || await dragSource("Drop this duplicate.").getAttribute("draggable") !== "true") {
+    throw new Error("Editing one queue item disabled steering or dragging other items.");
+  }
+  await queueButton(removableDuringEdit, "Delete message").click();
+  await row(removableDuringEdit).waitFor({ state: "detached" });
+  await dragMessage("Drop this duplicate.", "List follow-up work.", "after");
+  await queue.getByRole("listitem").last().getByText("Drop this duplicate.", { exact: true }).waitFor();
+  await dragMessage("Drop this duplicate.", "List follow-up work.", "before");
+  if (await queueEdit.inputValue() !== editableText) throw new Error("Acting on another queue item changed the active edit.");
+  await queueEdit.focus();
   await page.screenshot({ path: "output/playwright/pideck-ui-queue-edit.png" });
   await appearance("light");
   await page.screenshot({ path: "output/playwright/pideck-ui-light-queue-edit.png" });
@@ -752,16 +782,53 @@ async page => {
     throw new Error("A fully consumed queue left Queued0, a stale editor, or replaced the parked draft.");
   }
   const restoreDraft = page.getByRole("button", { name: "Restore saved draft", exact: true });
+  const savedDrafts = page.getByRole("dialog", { name: "Saved drafts", exact: true });
+  const firstRecovery = savedDrafts.getByRole("button", { name: "Restore unsent queue edit: Recover these edits after the save race.", exact: true });
+  const lastRecovery = savedDrafts.getByRole("button", { name: "Restore unsent queue edit: Keep these edits when the remaining queue starts.", exact: true });
+  await restoreDraft.press("ArrowDown");
+  await savedDrafts.waitFor();
+  await savedDrafts.getByRole("group", { name: "Current draft", exact: true }).getByText(parkedDraft, { exact: true }).waitFor();
+  await firstRecovery.waitFor();
+  await lastRecovery.waitFor();
+  if (await prompt.inputValue() !== parkedDraft || !await firstRecovery.evaluate(button => button === document.activeElement)) {
+    throw new Error("Opening draft recovery changed the current draft or failed to focus a choice.");
+  }
+  const recoveryBounds = await savedDrafts.boundingBox();
+  if (!recoveryBounds || recoveryBounds.x < 0 || recoveryBounds.y < 0
+    || recoveryBounds.x + recoveryBounds.width > page.viewportSize().width
+    || recoveryBounds.y + recoveryBounds.height > page.viewportSize().height) {
+    throw new Error("The saved draft chooser does not fit the window.");
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-draft-recovery.png" });
+  await appearance("light");
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-draft-recovery.png" });
+  await appearance("dark");
+  await firstRecovery.press("ArrowDown");
+  if (!await lastRecovery.evaluate(button => button === document.activeElement)) throw new Error("Draft recovery arrow navigation did not move to the next preview.");
+  await lastRecovery.press("Escape");
+  await savedDrafts.waitFor({ state: "hidden" });
+  if (await prompt.inputValue() !== parkedDraft || !await restoreDraft.evaluate(button => button === document.activeElement)) {
+    throw new Error("Escape changed the draft or lost the recovery trigger focus.");
+  }
   await restoreDraft.click();
-  if (await prompt.inputValue() !== "Recover these edits after the save race.") throw new Error("A later dequeue overwrote earlier recovered edits.");
+  await savedDrafts.waitFor();
+  await prompt.click({ position: { x: 8, y: 8 } });
+  await savedDrafts.waitFor({ state: "hidden" });
+  if (!await prompt.evaluate(editor => editor === document.activeElement)) throw new Error("Outside dismissal stole composer focus.");
   await restoreDraft.click();
-  if (await prompt.inputValue() !== "Keep these edits when the remaining queue starts.") throw new Error("The final consumed queue edit was not recoverable.");
+  await firstRecovery.press("End");
+  await lastRecovery.press("Enter");
+  if (await prompt.inputValue() !== "Keep these edits when the remaining queue starts.") throw new Error("Choosing a specific recovery still restored an unrelated draft.");
   await restoreDraft.click();
+  await savedDrafts.getByRole("button", { name: `Restore unsent draft: ${parkedDraft}`, exact: true }).click();
   if (await prompt.inputValue() !== parkedDraft) throw new Error("Restoring edits lost the original unsent draft.");
   await prompt.fill("");
   await restoreDraft.click();
+  await lastRecovery.click();
   await prompt.fill("");
   await restoreDraft.click();
+  await firstRecovery.click();
+  if (await prompt.inputValue() !== "Recover these edits after the save race.") throw new Error("A later dequeue overwrote earlier recovered edits.");
   await prompt.fill("");
   await restoreDraft.waitFor({ state: "detached" });
   const latest = page.getByRole("button", { name: "Latest", exact: true });
@@ -820,7 +887,110 @@ async page => {
     if (await linkedReview.getByText("From chat", { exact: true }).count()) throw new Error("A project file link opened a saved tool patch instead of the current file.");
   }
   await page.screenshot({ path: "output/playwright/pideck-ui-linked-file.png" });
+  await assistantMessage.getByRole("link", { name: "Project guide", exact: true }).click();
+  const filePreview = linkedReview.locator('[data-file-preview="README.md"]');
+  await filePreview.filter({ hasText: "Read-only project documentation." }).waitFor();
+  if (await linkedReview.getByText("This file has no current Git changes.", { exact: true }).count()) {
+    throw new Error("An unchanged project link stopped at an empty diff instead of showing its file.");
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-file-preview.png" });
+  await appearance("light");
+  await filePreview.filter({ hasText: "Read-only project documentation." }).waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-file-preview.png" });
+  await appearance("dark");
+  await filePreview.hover();
+  await page.mouse.wheel(0, 700);
+  await page.waitForFunction(() => document.querySelector('[data-file-preview="README.md"]')?.scrollTop > 300);
+  const previewPosition = await filePreview.evaluate(element => element.scrollTop);
+  for (const theme of ["light", "dark"]) {
+    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await appearance(theme);
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await filePreview.waitFor();
+    await page.waitForFunction(position => {
+      const preview = document.querySelector('[data-file-preview="README.md"]');
+      return preview && Math.abs(preview.scrollTop - position) <= 2;
+    }, previewPosition);
+  }
+  await assistantMessage.getByRole("link", { name: "Unchanged line", exact: true }).click();
+  const unchangedLinePreview = linkedReview.locator('[data-file-preview="example.ts"]');
+  await unchangedLinePreview.filter({ hasText: "export const line30 = 30;" }).waitFor();
+  await unchangedLinePreview.locator('[data-selected-line]').first().waitFor();
+  await page.screenshot({ path: "output/playwright/pideck-ui-linked-file.png" });
+  await unchangedLinePreview.hover();
+  await page.mouse.wheel(0, -2_000);
+  await page.waitForFunction(() => document.querySelector('[data-file-preview="example.ts"]')?.scrollTop === 0);
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await appearance("light");
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
+  await linkedReview.locator('[data-file-preview="example.ts"][aria-busy="false"]').waitFor();
+  await unchangedLinePreview.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  if (await unchangedLinePreview.evaluate(element => element.scrollTop) !== 0) {
+    throw new Error("Returning to a file preview jumped back to its old line link instead of preserving the reading position.");
+  }
+  await unchangedLinePreview.hover();
+  await page.mouse.wheel(0, 450);
+  await unchangedLinePreview.locator('[data-selected-line][data-line="30"]').waitFor();
+  await appearance("dark");
+  const beforeWrappedViewport = page.viewportSize();
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.evaluate(() => sessionStorage.setItem("pideck-review-wrapped-guide", "1"));
+  await assistantMessage.getByRole("link", { name: "Project guide", exact: true }).click();
+  await linkedReview.locator('[data-file-preview="README.md"][aria-busy="false"]').waitFor();
+  const wrappedBounds = await filePreview.boundingBox();
+  const wrappedDivider = page.getByRole("separator", { name: "Resize right sidebar", exact: true });
+  const dividerBounds = await wrappedDivider.boundingBox();
+  await page.mouse.move(dividerBounds.x + dividerBounds.width / 2, dividerBounds.y + 30);
+  await page.mouse.down();
+  await page.mouse.move(dividerBounds.x + dividerBounds.width / 2 - (447 - wrappedBounds.width), dividerBounds.y + 30);
+  await page.mouse.up();
+  await filePreview.hover();
+  await page.mouse.wheel(0, -10_000);
+  await filePreview.filter({ hasText: "Pideck Final Review" }).waitFor();
+  await page.mouse.wheel(0, 700);
+  await page.waitForFunction(() => document.querySelector('[data-file-preview="README.md"]')?.scrollTop >= 650);
+  await filePreview.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  function previewReadingAnchor(root) {
+    const edge = root.getBoundingClientRect().top;
+    const rows = [...root.querySelectorAll("diffs-container")].flatMap(host => [...host.shadowRoot.querySelectorAll("[data-line]")]);
+    const row = rows.find(row => row.getBoundingClientRect().top >= edge - 1 && row.getBoundingClientRect().bottom > edge + 1);
+    const heights = rows.map(row => row.getBoundingClientRect().height).filter(height => height > 0);
+    return { line: row?.getAttribute("data-line"), offset: row?.getBoundingClientRect().top - edge,
+      wrapped: Math.max(...heights) > Math.min(...heights) + 1 };
+  }
+  let wrappedAnchor = await filePreview.evaluate(previewReadingAnchor);
+  if (!wrappedAnchor.line || !wrappedAnchor.wrapped) throw new Error("The reading-position fixture did not produce wrapped source lines.");
+  for (const theme of ["light", "dark"]) {
+    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await appearance(theme);
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await page.waitForFunction(target => {
+      const root = document.querySelector('[data-file-preview="README.md"]');
+      if (!root) return false;
+      const edge = root.getBoundingClientRect().top;
+      const rows = [...root.querySelectorAll("diffs-container")].flatMap(host => [...host.shadowRoot.querySelectorAll("[data-line]")]);
+      const row = rows.find(row => row.getBoundingClientRect().top >= edge - 1 && row.getBoundingClientRect().bottom > edge + 1);
+      return row?.getAttribute("data-line") === target.line && Math.abs(row.getBoundingClientRect().top - edge - target.offset) <= 2;
+    }, wrappedAnchor);
+    await filePreview.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const restoredAnchor = await filePreview.evaluate(previewReadingAnchor);
+    if (restoredAnchor.line !== wrappedAnchor.line || Math.abs(restoredAnchor.offset - wrappedAnchor.offset) > 2) {
+      throw new Error("Wrapped file content moved after changing appearance in Terminal.");
+    }
+    if (theme === "light") {
+      const top = await filePreview.evaluate(element => element.scrollTop);
+      await filePreview.hover();
+      await page.mouse.wheel(0, 180);
+      await page.waitForFunction(previous => document.querySelector('[data-file-preview="README.md"]').scrollTop > previous + 100, top);
+      await filePreview.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      wrappedAnchor = await filePreview.evaluate(previewReadingAnchor);
+    }
+  }
+  await wrappedDivider.press("Enter");
+  await page.evaluate(() => sessionStorage.removeItem("pideck-review-wrapped-guide"));
+  if (beforeWrappedViewport) await page.setViewportSize(beforeWrappedViewport);
   await linkedReview.getByRole("button", { name: /example\.ts/ }).click();
+  await linkedReview.locator('[data-file-preview]').waitFor({ state: "detached" });
   await linkedReview.locator('[data-selected-line]').first().waitFor({ state: "detached" });
   await page.getByRole("button", { name: "Changes", exact: true }).click();
   await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
@@ -856,6 +1026,9 @@ async page => {
     await message.getByRole("button", { name: "Copy message", exact: true }).click();
     await message.getByRole("button", { name: "Message copied", exact: true }).waitFor();
     const copied = await page.evaluate(() => document.body.dataset.copiedText);
+    if (copied?.includes('"command":') || copied?.includes('"path":')) {
+      throw new Error("Copying visible output should not include serialized tool arguments.");
+    }
     if (message === userMessage ? copied !== "Update and verify the status."
       : !copied?.includes("I updated the status and checked the result.") || !copied.includes("Checks passed.") || copied.includes("Worked for")) {
       throw new Error("Copying a message included controls or lost its text/tool result.");
@@ -864,7 +1037,7 @@ async page => {
   const duration = assistantMessage.locator(".message-duration");
   if (await page.locator(".message-duration").count() !== 1
     || await duration.getAttribute("aria-label") !== "Total working time"
-    || (await duration.textContent()).trim() !== "Worked for 1m 35s") {
+    || (await duration.textContent()).trim() !== "1m 35s" || !await duration.getAttribute("title")) {
     throw new Error("The finished interaction should display its total working time exactly once.");
   }
   await userMessage.hover();
@@ -873,10 +1046,11 @@ async page => {
     throw new Error("User messages, including earlier history, should not expose a branch action.");
   }
   const branchMessage = assistantMessage.getByRole("button", { name: "Branch from here" });
+  await prompt.focus();
   await page.mouse.move(0, 0);
   if (!await branchMessage.evaluate(button => Boolean(button.closest(".message-footer"))
-    && getComputedStyle(button).opacity !== "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
-    throw new Error("The assistant branch action should be a visible icon in the footer below its output.");
+    && getComputedStyle(button).opacity === "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
+    throw new Error("Message actions should stay quiet until hovering or focusing their message.");
   }
   await branchMessage.focus();
   if (await branchMessage.evaluate(button => getComputedStyle(button).opacity) !== "1") {
@@ -951,7 +1125,6 @@ async page => {
     "border-top-color": "rgba(0, 0, 0, 0)",
   };
   const terminal = page.getByRole("region", { name: "Project terminal" });
-  const findTerminal = terminal.getByRole("button", { name: "Find in terminal", exact: true });
   const restartShell = terminal.getByRole("button", { name: "Restart shell", exact: true });
   const shellRunning = terminal.getByText("Shell running", { exact: true });
   const tools = page.locator("#workspace-tools");
@@ -963,11 +1136,12 @@ async page => {
       throw new Error("Switching the right panel moved the workspace toggles.");
     }
   };
-  const expectRestartBesideFind = async () => {
-    const [find, restart] = await Promise.all([findTerminal.boundingBox(), restartShell.boundingBox()]);
-    if (!find || !restart || restart.x < find.x + find.width || Math.abs(restart.y - find.y) > 1
+  const expectTerminalToolbar = async () => {
+    const [restart, panelToggle] = await Promise.all([restartShell.boundingBox(), changes.boundingBox()]);
+    if (await terminal.getByRole("searchbox").count() || await terminal.getByRole("button", { name: /Find in terminal/ }).count()
+      || !restart || !panelToggle || restart.x + restart.width > panelToggle.x + 1 || Math.abs(restart.y - panelToggle.y) > 1
       || !await restartShell.evaluate(button => !button.textContent.trim() && Boolean(button.title && button.querySelector("svg")))) {
-      throw new Error("The terminal restart icon must sit to the right of Find in terminal and have a tooltip.");
+      throw new Error("Terminal should have a compact restart icon before its panel toggles, with no search controls.");
     }
   };
   const review = page.getByRole("complementary", { name: "Review changes" });
@@ -1115,7 +1289,7 @@ async page => {
   await expectDockedTool("#workspace-terminal");
   await expectTogglePositions(dockedTogglePositions);
   await expectColors(terminalToggle, selectedToggleColors);
-  await expectRestartBesideFind();
+  await expectTerminalToolbar();
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
   const expectSameShell = async () => {
@@ -1211,7 +1385,7 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectColors(terminalToggle, selectedToggleColors);
-  await expectRestartBesideFind();
+  await expectTerminalToolbar();
   await screen.waitFor();
   const terminalBack = terminal.getByRole("button", { name: "Back to chat" });
   await terminalBack.waitFor();
@@ -1304,15 +1478,11 @@ async page => {
   if (await composition.count()) await expectColors(composition, {
     "background-color": "rgb(246, 248, 250)", "color": "rgb(31, 35, 40)",
   });
-  await findTerminal.click();
-  const lightSearch = terminal.getByRole("searchbox", { name: "Find in terminal output" });
-  await lightSearch.fill("Fixture");
-  await expectColors(lightSearch, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await expectTerminalToolbar();
   await page.screenshot({ path: "output/playwright/pideck-ui-light-terminal.png" });
   await appearance("dark");
   await expectSameShell();
-  if (await lightSearch.inputValue() !== "Fixture") throw new Error("Changing appearance reset terminal search.");
-  await lightSearch.press("Escape");
+  await expectTerminalToolbar();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
     .backgroundColor === "rgb(1, 4, 9)");
   await changes.click();

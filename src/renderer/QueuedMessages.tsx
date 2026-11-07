@@ -1,16 +1,17 @@
-import { useLayoutEffect, useRef, useState, type DragEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import type { ChatView, QueueUpdate, Selection } from '../shared/api';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
-import type { QueuedDraftEdit } from './preferences';
+import type { Draft, QueuedDraftEdit, RecoveredDraft } from './preferences';
 
 type Item = NonNullable<ChatView['queued']>[number];
 type Move = Extract<QueueUpdate, { action: 'move' }>;
 type Drop = Pick<Move, 'targetId' | 'position'>;
 
-function QueueActions({ item, canSteer, blocked, onEdit, onUpdate }: {
+function QueueActions({ item, canSteer, canEdit, blocked, onEdit, onUpdate }: {
   item: Item;
   canSteer: boolean;
+  canEdit: boolean;
   blocked: boolean;
   onEdit: () => void;
   onUpdate: (update: QueueUpdate) => void;
@@ -24,8 +25,8 @@ function QueueActions({ item, canSteer, blocked, onEdit, onUpdate }: {
       aria-label="Steer current run" title="Steer current run" aria-disabled={blocked || undefined}
       onClick={() => update({ action: 'steer' })}>Steer</button>}
     <button className="icon-button queue-action-edit" type="button"
-      aria-label="Edit message" title="Edit message" aria-disabled={blocked || undefined}
-      onClick={() => { if (!blocked) onEdit(); }}>
+      aria-label="Edit message" title={canEdit ? 'Edit message' : 'Finish the current edit first'} aria-disabled={blocked || !canEdit || undefined}
+      onClick={() => { if (!blocked && canEdit) onEdit(); }}>
       <Icon name="edit" />
     </button>
     <button className="icon-button queue-action-delete" type="button"
@@ -54,7 +55,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
   const restore = useRef<{ id: number; removed?: number; steered?: true; move?: Drop } | undefined>(undefined);
   // A steer enters the current run at its next boundary. Follow-ups wait for the run's end.
   const ordered = items.toSorted((left, right) => Number(right.delivery === 'steer') - Number(left.delivery === 'steer'));
-  const canReorder = enabled && !pending && editingId === undefined;
+  const canReorder = enabled && !pending;
 
   function clearDrag() {
     dragSource.current = undefined;
@@ -67,7 +68,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
 
   useLayoutEffect(() => {
     const focus = restore.current;
-    if (!focus || editingId !== undefined || items.some(({ id, delivery }) => id === focus.removed
+    if (!focus || items.some(({ id, delivery }) => id === focus.removed
       || (focus.steered && canSteer && id === focus.id && delivery === 'follow-up'))) return;
     if (focus.move) {
       const from = items.findIndex(({ id }) => id === focus.id);
@@ -76,7 +77,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
     }
     const row = list.current?.querySelector(`[data-queue-id="${focus.id}"]`);
     const target = (focus.move && row?.querySelector<HTMLElement>('.queued-message[tabindex]'))
-      || row?.querySelector<HTMLElement>('.queue-action-edit');
+      || row?.querySelector<HTMLElement>(editingId === undefined ? '.queue-action-edit' : '.queue-actions button:not([aria-disabled="true"])');
     restore.current = undefined;
     if (document.activeElement === document.body) {
       if (target) target.focus({ preventScroll: !focus.move });
@@ -146,10 +147,13 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
     const previous = ordered[index - 1]?.delivery === item.delivery ? ordered[index - 1] : undefined;
     const following = ordered[index + 1]?.delivery === item.delivery ? ordered[index + 1] : undefined;
     const hasPeers = Boolean(previous || following);
-    const draggable = hasPeers && canReorder;
+    const editing = editingId === item.id;
+    const draggable = hasPeers && canReorder && !editing;
     return <li key={item.id} data-queue-id={item.id} data-delivery={item.delivery}
       data-dragging={drag?.id === item.id || undefined} data-drop={drag?.over?.targetId === item.id ? drag.over.position : undefined}>
-      <div className="queued-row" data-editing={editingId === item.id || undefined}>
+      {editing ? <div className="queued-edit-marker" role="status" aria-label="Editing queued message" title="Editing in the message box">
+        <Icon name="edit" width={13} height={13} /><span>Editing</span>
+      </div> : <div className="queued-row">
         <div className="queued-message" draggable={draggable} tabIndex={hasPeers ? 0 : undefined}
           title={draggable ? `${item.preview}\nDrag to reorder` : item.preview}
           aria-keyshortcuts={hasPeers ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
@@ -177,9 +181,9 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
           <span className="queued-preview">{item.preview}</span>
         </div>
         <QueueActions item={item}
-          canSteer={canSteer} blocked={!enabled || pending || editingId !== undefined} onEdit={() => startEdit(item.id)}
+          canSteer={canSteer} canEdit={editingId === undefined} blocked={!enabled || pending} onEdit={() => startEdit(item.id)}
           onUpdate={(change) => update(item.id, change)} />
-      </div>
+      </div>}
     </li>;
   });
 
@@ -218,4 +222,86 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
       </button>
     </div>}
   </div>;
+}
+
+function draftPreview(draft: Pick<Draft, 'text' | 'attachments'>) {
+  const text = draft.text.replace(/\s+/g, ' ').trim();
+  return text ? text.length > 100 ? `${text.slice(0, 100)}…` : text
+    : draft.attachments.length ? `${draft.attachments.length} image${draft.attachments.length === 1 ? '' : 's'}` : 'Empty draft';
+}
+
+function draftLabel(kind: RecoveredDraft['kind']) {
+  return kind === 'queue-edit' ? 'Unsent queue edit' : kind === 'draft' ? 'Unsent draft' : 'Saved draft';
+}
+
+export function DraftRecoveryPicker({ current, items, disabled, onRestore }: {
+  current: Pick<Draft, 'text' | 'attachments'>;
+  items: RecoveredDraft[];
+  disabled: boolean;
+  onRestore: (index: number) => void;
+}) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    if (open) panel.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+  }, [open]);
+
+  return <>
+    <button className="icon-button queue-restore" type="button" ref={trigger} aria-label="Restore saved draft"
+      title={`Choose a saved draft (${items.length}); your current draft is kept`} popoverTarget={id}
+      aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onKeyDown={event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        if (panel.current?.matches(':popover-open')) panel.current.querySelector<HTMLButtonElement>('button')?.focus();
+        else event.currentTarget.click();
+      }}><Icon name="restore" /></button>
+    <div className="chat-popover draft-recovery-popover" id={id} ref={panel} popover="auto" role="dialog" aria-label="Saved drafts"
+      onToggle={event => setOpen(event.newState === 'open')}
+      onBlur={event => {
+        if (event.relatedTarget instanceof Node && event.relatedTarget !== trigger.current
+          && !event.currentTarget.contains(event.relatedTarget) && event.currentTarget.matches(':popover-open')) {
+          event.currentTarget.hidePopover();
+        }
+      }} onKeyDown={event => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          panel.current?.hidePopover();
+          trigger.current?.focus();
+          return;
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        const choices = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+        const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+        if (!choices.length || index < 0) return;
+        event.preventDefault();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+        choices[next]?.focus();
+      }}>
+      {open && <>
+        <div className="draft-recovery-current" role="group" aria-label="Current draft">
+          <span className="draft-recovery-kind">Current draft</span>
+          <span className="draft-recovery-preview">{draftPreview(current)}</span>
+          {current.text.trim() && current.attachments.length > 0 && <small>{current.attachments.length} image{current.attachments.length === 1 ? '' : 's'}</small>}
+        </div>
+        <ul className="draft-recovery-list" aria-label="Available drafts">
+          {items.map((item, index) => <li key={index}>
+            <button type="button" className="draft-recovery-option" aria-label={`Restore ${draftLabel(item.kind).toLowerCase()}: ${draftPreview(item)}`}
+              title={item.text.slice(0, 1000) || draftPreview(item)} onClick={() => {
+                panel.current?.hidePopover();
+                onRestore(index);
+              }}>
+              <span className="draft-recovery-kind"><Icon name={item.kind === 'queue-edit' ? 'edit' : 'file'} width={12} height={12} />{draftLabel(item.kind)}</span>
+              <span className="draft-recovery-preview">{draftPreview(item)}</span>
+              {item.text.trim() && item.attachments.length > 0 && <small>{item.attachments.length} image{item.attachments.length === 1 ? '' : 's'}</small>}
+            </button>
+          </li>)}
+        </ul>
+      </>}
+    </div>
+  </>;
 }

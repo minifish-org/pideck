@@ -6,8 +6,7 @@ function messageText(message: ChatMessage) {
   return [...message.blocks.flatMap(block => {
     if (block.type === 'text') return [block.text];
     if (block.type !== 'tool') return [];
-    const argumentsText = block.arguments && JSON.stringify(block.arguments, null, 2);
-    return [[block.name, argumentsText, block.output].filter(Boolean).join('\n')];
+    return block.output ? [block.output] : [];
   }), ...(message.error ? [message.error] : [])].join('\n\n');
 }
 
@@ -19,7 +18,7 @@ function workingTime(milliseconds: number) {
   return [hours && `${hours}h`, (hours || minutes) && `${minutes}m`, `${seconds % 60}s`].filter(Boolean).join(' ');
 }
 
-export function MessageFooter({ message, onFork }: { message: ChatMessage; onFork?: (entryId: number) => void }) {
+export function MessageFooter({ message, onFork, toolOnly = false }: { message: ChatMessage; onFork?: (entryId: number) => void; toolOnly?: boolean }) {
   const text = useMemo(() => messageText(message), [message.blocks, message.error]);
   const [copy, setCopy] = useState<'ready' | 'copying' | 'copied' | 'error'>('ready');
   useEffect(() => {
@@ -32,11 +31,13 @@ export function MessageFooter({ message, onFork }: { message: ChatMessage; onFor
     ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}` : undefined;
   const duration = message.durationMs;
   const entryId = message.entryId;
+  const copyLabel = toolOnly ? 'Copy output' : 'Copy message';
+  const copiedLabel = toolOnly ? 'Output copied' : 'Message copied';
 
   return <footer className="message-footer">
     <button type="button" className="icon-button message-copy" disabled={!text || copy === 'copying'}
-      aria-label={copy === 'copied' ? 'Message copied' : 'Copy message'}
-      title={!text ? 'No text to copy' : copy === 'copied' ? 'Message copied' : 'Copy message'} onClick={async () => {
+      aria-label={copy === 'copied' ? copiedLabel : copyLabel}
+      title={!text ? 'No text to copy' : copy === 'copied' ? copiedLabel : copyLabel} onClick={async () => {
         setCopy('copying');
         try {
           await window.pideck.invoke('clipboard:write', { text });
@@ -51,7 +52,9 @@ export function MessageFooter({ message, onFork }: { message: ChatMessage; onFor
     </button>}
     {timestamp && <time className="message-time" dateTime={date!.toISOString()}>{timestamp}</time>}
     {message.role === 'assistant' && duration !== undefined && Number.isFinite(duration) && duration >= 0
-      && <span className="message-duration" aria-label="Total working time">Worked for {workingTime(duration)}</span>}
+      && <span className="message-duration" aria-label="Total working time" title={`Total working time: ${workingTime(duration)}`}>
+        <Icon name="timer" width={13} height={13} />{workingTime(duration)}
+      </span>}
     {copy === 'error' && <span className="message-copy-error" role="alert">Couldn’t copy. Try again.</span>}
   </footer>;
 }

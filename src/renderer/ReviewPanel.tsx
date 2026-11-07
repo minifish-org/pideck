@@ -1,12 +1,13 @@
-import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
+import { parsePatchFiles, type CodeViewLineSelection, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView, FileDiff, Virtualizer, WorkerPoolContextProvider, type CodeViewHandle, type FileDiffOptions } from "@pierre/diffs/react";
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Project, ReviewFile, ReviewPatch } from "../shared/api";
+import type { Project, ReviewFile, ReviewFileContents, ReviewPatch } from "../shared/api";
 import { Icon } from "./Icons";
 import { useAppearance } from "./appearance";
+import { diffContainsLine, fileLineCount } from "./review-target";
 import "./workspace.css";
 
 type DiffStyle = "unified" | "split";
@@ -65,7 +66,7 @@ function LinkedPatchView({ files, style, line, selectionVersion }: {
   const items = useMemo(() => files.map((fileDiff, index) => ({
     id: fileDiff.cacheKey ?? String(index), type: "diff" as const, fileDiff,
   })), [files]);
-  const id = items[0]?.id;
+  const id = items.findLast(item => diffContainsLine([item.fileDiff], line))?.id;
   useEffect(() => {
     if (!id) return;
     viewer.current?.setSelectedLines({ id, range: { start: line, end: line, side: "additions" } });
@@ -74,6 +75,176 @@ function LinkedPatchView({ files, style, line, selectionVersion }: {
   return <CodeView ref={viewer} className="workspace-review-scroll workspace-diff" items={items}
     options={{ ...diffOptions, hunkSeparators: "line-info", themeType: appearance, diffStyle: style,
       overflow: "wrap", disableFileHeader: files.length === 1 }} />;
+}
+
+type PreviewPosition = { top: number; line?: number; offset?: number };
+
+function FilePreview({ projectId, path, line, selectionVersion, revision, visible, initialPosition, onScrollPosition }: {
+  projectId: string; path: string; line?: number; selectionVersion?: number; revision: number; visible: boolean; initialPosition?: PreviewPosition;
+  onScrollPosition: (position: PreviewPosition) => void;
+}) {
+  const [result, setResult] = useState<{ value?: ReviewFileContents; error?: string }>();
+  const [attempt, setAttempt] = useState(0);
+  const [reading, setReading] = useState(true);
+  useEffect(() => {
+    if (!visible) return;
+    const scope = { projectId, path, requestId: crypto.randomUUID() };
+    let active = true;
+    setReading(true);
+    void window.pideck.invoke("review:file", scope).then(
+      value => { if (active) { setResult({ value }); setReading(false); } },
+      cause => { if (active) { setResult({ error: message(cause) }); setReading(false); } },
+    );
+    return () => {
+      active = false;
+      void window.pideck.invoke("review:file-cancel", { projectId, requestId: scope.requestId }).catch(() => {});
+    };
+  }, [projectId, path, revision, visible, attempt]);
+  if (!result) return <p className="workspace-empty" role="status">Reading file…</p>;
+  if (result.error) return <ReviewIssue message={result.error} onRetry={() => setAttempt(current => current + 1)} />;
+  const contents = result.value?.contents;
+  if (contents === null || contents === undefined) return <p className="workspace-empty" role="status">{result.value?.reason}</p>;
+  return <PreviewContents path={path} contents={contents} line={line} reading={reading}
+    selectionVersion={selectionVersion} initialPosition={initialPosition} visible={visible} onScrollPosition={onScrollPosition} />;
+}
+
+function PreviewContents({ path, contents, line, selectionVersion, reading, initialPosition, visible, onScrollPosition }: {
+  path: string; contents: string; line?: number; selectionVersion?: number; reading: boolean; initialPosition?: PreviewPosition;
+  visible: boolean; onScrollPosition: (position: PreviewPosition) => void;
+}) {
+  const appearance = useAppearance();
+  const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const container = useRef<HTMLDivElement | null>(null);
+  const shown = useRef(visible);
+  const readingPosition = useRef(line === undefined ? initialPosition : undefined);
+  const restoring = useRef(false);
+  const restoreFrame = useRef<number | undefined>(undefined);
+  const scrollAppearance = useRef(appearance);
+  const rememberPosition = useCallback((top: number) => {
+    const instance = viewer.current?.getInstance();
+    const item = instance?.getRenderedItems().find(item => item.id === path && item.type === "file");
+    const itemTop = instance?.getTopForItem(path);
+    const anchor = item?.type === "file" && itemTop !== undefined ? item.instance.getNumericScrollAnchor(top - itemTop) : undefined;
+    const position = { top, ...(anchor && itemTop !== undefined ? { line: anchor.lineNumber, offset: itemTop + anchor.top - top } : {}) };
+    readingPosition.current = position;
+    onScrollPosition(position);
+  }, [onScrollPosition, path]);
+  const restorePosition = useCallback(() => {
+    if (!shown.current || !restoring.current || restoreFrame.current !== undefined
+      || readingPosition.current === undefined || !container.current?.clientHeight) return;
+    restoreFrame.current = requestAnimationFrame(() => {
+      restoreFrame.current = undefined;
+      if (!container.current?.clientHeight || readingPosition.current === undefined) return;
+      const instance = viewer.current?.getInstance();
+      if (!instance) return;
+      const target = readingPosition.current;
+      const item = instance.getRenderedItems().find(item => item.id === path && item.type === "file");
+      const itemTop = instance.getTopForItem(path);
+      const position = target.line !== undefined && item?.type === "file" ? item.instance.getLinePosition(target.line) : undefined;
+      const desiredTop = position && itemTop !== undefined ? itemTop + position.top - (target.offset ?? 0) : target.top;
+      const boundedTop = Math.max(0, Math.min(desiredTop, instance.getScrollHeight() - instance.getHeight()));
+      if (Math.abs(instance.getScrollTop() - boundedTop) <= 1) return;
+      if (target.line !== undefined) {
+        viewer.current?.scrollTo({ type: "line", id: path, lineNumber: target.line, align: "start", offset: target.offset, behavior: "instant" });
+      } else viewer.current?.scrollTo({ type: "position", position: target.top, behavior: "instant" });
+    });
+  }, [path]);
+  const resumeReading = useCallback(() => {
+    restoring.current = false;
+    if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
+    restoreFrame.current = undefined;
+    const top = viewer.current?.getInstance()?.getScrollTop();
+    if (top !== undefined) rememberPosition(top);
+  }, [rememberPosition]);
+  useLayoutEffect(() => {
+    shown.current = visible;
+    restoring.current = true;
+    scrollAppearance.current = appearance;
+    if (visible && readingPosition.current !== undefined) restorePosition();
+    else if (visible) restoring.current = false;
+    return () => {
+      if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
+      restoreFrame.current = undefined;
+    };
+  }, [appearance, restorePosition, visible]);
+  useEffect(() => {
+    const element = container.current;
+    if (!visible || !element) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) resumeReading();
+    };
+    element.addEventListener("wheel", resumeReading, { passive: true });
+    element.addEventListener("pointerdown", resumeReading);
+    element.addEventListener("keydown", onKey);
+    return () => {
+      element.removeEventListener("wheel", resumeReading);
+      element.removeEventListener("pointerdown", resumeReading);
+      element.removeEventListener("keydown", onKey);
+    };
+  }, [resumeReading, visible]);
+  const onRendered = useCallback(() => {
+    if (restoring.current) restorePosition();
+    else if (shown.current) {
+      if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
+      restoreFrame.current = requestAnimationFrame(() => {
+        restoreFrame.current = undefined;
+        if (!shown.current || restoring.current) return;
+        const top = viewer.current?.getInstance()?.getScrollTop();
+        if (top !== undefined) rememberPosition(top);
+      });
+    }
+  }, [rememberPosition, restorePosition]);
+  const items = useMemo(() => [{ id: path, type: "file" as const,
+    file: { name: path, contents, cacheKey: `pideck-file-${++patchId}` } }], [path, contents]);
+  const lineCount = fileLineCount(contents);
+  const lineExists = line !== undefined && line <= lineCount;
+  const [selectedLines, setSelectedLines] = useState<CodeViewLineSelection | null>(() => lineExists && line !== undefined
+    ? { id: path, range: { start: line, end: line } } : null);
+  const lastLocation = useRef<{ line?: number; selectionVersion?: number; lineExists: boolean; hidden?: boolean;
+    instance: ReturnType<CodeViewHandle<undefined, undefined>["getInstance"]> } | undefined>(undefined);
+  useEffect(() => {
+    if (!visible) {
+      if (lastLocation.current) lastLocation.current.hidden = true;
+      return;
+    }
+    if (reading) return;
+    const instance = viewer.current?.getInstance();
+    if (!instance) return;
+    const previous = lastLocation.current;
+    const sameLocation = previous && previous.line === line && previous.selectionVersion === selectionVersion;
+    if (previous?.instance === instance && previous.line === line
+      && previous.selectionVersion === selectionVersion && previous.lineExists === lineExists) return;
+    lastLocation.current = { line, selectionVersion, lineExists, instance };
+    if (!lineExists || line === undefined) {
+      if (!sameLocation) setSelectedLines(null);
+      return;
+    }
+    if (!sameLocation) setSelectedLines({ id: path, range: { start: line, end: line } });
+    if (!sameLocation || !previous.hidden) {
+      resumeReading();
+      viewer.current?.scrollTo({ type: "line", id: path, lineNumber: line, align: "center", behavior: "instant" });
+    }
+  }, [items, line, lineExists, path, reading, resumeReading, selectionVersion, visible]);
+  return <>
+    {!reading && line !== undefined && !lineExists && <p className="workspace-empty" role="status">Line {line} is not in this file.</p>}
+    {!contents ? <p className="workspace-empty">Empty file.</p>
+      : visible && <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
+          <CodeView ref={viewer} className="workspace-review-scroll workspace-diff" items={items}
+            selectedLines={selectedLines} onSelectedLinesChange={setSelectedLines}
+            containerRef={element => {
+              container.current = element;
+              if (element) {
+                element.dataset.filePreview = path;
+                element.setAttribute("aria-busy", String(reading));
+              }
+            }}
+            onScroll={position => {
+              if (visible && !restoring.current && scrollAppearance.current === appearance) rememberPosition(position);
+            }}
+            options={{ ...highlighterOptions, enableLineSelection: true, themeType: appearance, overflow: "wrap", disableFileHeader: true,
+              onPostRender: onRendered }} />
+        </WorkerPoolContextProvider>}
+  </>;
 }
 
 function ChangeCount({ files }: { files: FileDiffMetadata[] }) {
@@ -87,6 +258,10 @@ function ChangeCount({ files }: { files: FileDiffMetadata[] }) {
   return <span className="workspace-change-count" role="group" aria-label={`${added} added, ${removed} removed`}>
     <span>+{added}</span> <span>−{removed}</span>
   </span>;
+}
+
+function ReadOnlyFile() {
+  return <span className="workspace-panel-meta" role="img" title="Read-only project file" aria-label="Read-only project file"><Icon name="lock" /></span>;
 }
 
 export function InlineDiff({ patch, onOpen }: { patch: string; onOpen: () => void }) {
@@ -149,10 +324,12 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   const [watchError, setWatchError] = useState(false);
   const [list, setList] = useState<{ files: ReviewFile[]; revision: number; error?: string }>();
   const [result, setResult] = useState<{ revision: number; path: string; value?: ReviewPatch; error?: string }>();
+  const [previewSelection, setPreviewSelection] = useState<{ path: string; selectionVersion?: number }>();
   const panel = useRef<HTMLElement>(null);
   const nav = useRef<HTMLElement>(null);
   const watchReady = useRef(false);
-  const diffScroll = useRef<{ key: string; top: number } | undefined>(undefined);
+  const scrollPositions = useRef(new Map<string, number>());
+  const previewPositions = useRef(new Map<string, PreviewPosition>());
   const lastRefreshVersion = useRef(refreshVersion);
   const style = layout === "auto" ? (wide ? "split" : "unified") : layout;
   const files = list?.files ?? [];
@@ -165,12 +342,25 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   const currentResult = result?.path === currentPath ? result : undefined;
   const patch = showMessagePatch ? selectedPatch : currentResult?.value?.patch;
   const parsed = usePatch(patch);
+  const loading = !listReady || Boolean(currentPath && !list?.error
+    && (result?.path !== currentPath || result.revision !== revision));
+  const previewPath = requestedGitPath && requestedGitPath === path
+    && ((previewSelection?.path === requestedGitPath && previewSelection.selectionVersion === selectionVersion)
+      || list?.error || missingRequestedFile || (selectedLine !== undefined && currentResult
+      && !diffContainsLine(parsed, selectedLine))) ? requestedGitPath : undefined;
   const query = filter.trim().toLocaleLowerCase();
   const visibleFiles = files.filter(candidate => !query || candidate.path.toLocaleLowerCase().includes(query));
   const fileTabStop = visibleFiles.find(candidate => candidate.path === currentPath) ?? visibleFiles[0];
-  const displayedPath = showMessagePatch ? messagePath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined);
+  const displayedPath = previewPath ?? (showMessagePatch ? messagePath : currentPath ?? (missingRequestedFile ? requestedGitPath : undefined));
   const diffKey = showMessagePatch ? `chat-${selectionVersion}-${displayedPath}` : `git-${displayedPath}`;
+  const scrollKey = previewPath ? `file-${previewPath}` : diffKey;
   const refresh = useCallback(() => setRefreshRequested(true), []);
+  const rememberPreviewScroll = useCallback((position: PreviewPosition) => previewPositions.current.set(scrollKey, position), [scrollKey]);
+
+  useEffect(() => {
+    if (previewPath) setPreviewSelection(current => current?.path === previewPath && current.selectionVersion === selectionVersion
+      ? current : { path: previewPath, selectionVersion });
+  }, [previewPath, selectionVersion]);
 
   useLayoutEffect(() => {
     const element = panel.current;
@@ -185,15 +375,12 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   }, []);
 
   useLayoutEffect(() => {
-    const saved = diffScroll.current;
-    if (saved?.key !== diffKey) {
-      diffScroll.current = undefined;
-      return;
-    }
-    if (!visible) return;
+    const saved = scrollPositions.current.get(scrollKey);
+    if (saved === undefined) return;
+    if (!visible || previewPath) return;
     const scroller = panel.current?.querySelector<HTMLElement>(".workspace-review-scroll");
-    if (scroller) scroller.scrollTop = saved.top;
-  }, [diffKey, visible]);
+    if (scroller) scroller.scrollTop = saved;
+  }, [previewPath, scrollKey, visible]);
 
   useEffect(() => {
     const last = lastSelection.current;
@@ -294,8 +481,6 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
     };
   }, [project.id, currentPath, listReady, list?.error, revision, visible]);
 
-  const loading = !listReady || Boolean(currentPath && !list?.error
-    && (result?.path !== currentPath || result.revision !== revision));
   const readingDiff = loading && currentPath !== undefined && !currentResult;
   useEffect(() => {
     if (!visible || !watchReady.current || loading || !refreshRequested) return;
@@ -312,7 +497,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
 
   const showFileList = files.length > 1 || (files.length > 0 && (showMessagePatch || missingRequestedFile)) || Boolean(filter);
   const showSelectionInList = showFileList && visibleFiles.some(candidate => candidate.path === currentPath);
-  const layoutControl = parsed.some(item => item.hunks.length > 0) && <div className="workspace-layout">
+  const layoutControl = !previewPath && parsed.some(item => item.hunks.length > 0) && <div className="workspace-layout">
     <select aria-label="Diff layout" title="Diff layout" value={layout}
       onChange={event => setLayout(event.target.value as DiffLayout)}>
       <option value="auto">Auto layout</option>
@@ -323,8 +508,8 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
   </div>;
   return <aside className="workspace-review" id="review-panel" ref={panel} tabIndex={-1} aria-label="Review changes"
     hidden={!visible} data-overlay={overlay || undefined} onScrollCapture={event => {
-      if (visible && event.target instanceof HTMLElement && event.target.classList.contains("workspace-review-scroll")) {
-        diffScroll.current = { key: diffKey, top: event.target.scrollTop };
+      if (visible && !previewPath && event.target instanceof HTMLElement && event.target.classList.contains("workspace-review-scroll")) {
+        scrollPositions.current.set(scrollKey, event.target.scrollTop);
       }
     }} onKeyDown={event => {
     if (event.key !== "Escape") return;
@@ -338,12 +523,12 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
         aria-label="Back to chat" title="Back to chat (Esc)"><ArrowLeft size={17} aria-hidden="true" /></button>}
       <h2>Changes</h2>
       {files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
-      {showSelectionInList && <><ChangeCount files={parsed} />{layoutControl}</>}
+      {showSelectionInList && (previewPath ? <ReadOnlyFile /> : <><ChangeCount files={parsed} />{layoutControl}</>)}
       {panelControls}
     </header>
     {!list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
       : <>
-        {(list?.error || (watchError && !currentResult?.error)) && <ReviewIssue
+        {!previewPath && (list?.error || (watchError && !currentResult?.error)) && <ReviewIssue
           message={list?.error ?? "Automatic updates are unavailable."} onRetry={retryReview} />}
         {showFileList && (files.length > 7 || filter) && <div className="workspace-file-filter">
           <input type="search" value={filter} placeholder="Filter changed files…" aria-label="Filter changed files"
@@ -373,6 +558,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
                 if (showMessagePatch) {
                   if (files.length === 1) panel.current?.focus({ preventScroll: true });
                 }
+                setPreviewSelection(undefined);
                 onSelectWorkingTreeFile(candidate.path);
                 setPath(candidate.path);
               }}>
@@ -392,10 +578,14 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
               {file && !showFileList && <FileStatus status={file.status} />}
             </h3>
             {showMessagePatch && <span className="workspace-panel-meta">From chat</span>}
-            <ChangeCount files={parsed} />
+            {previewPath ? <ReadOnlyFile />
+              : <ChangeCount files={parsed} />}
             {layoutControl}
           </div>}
-          {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
+          {previewPath ? <FilePreview key={previewPath} projectId={project.id} path={previewPath} line={selectedLine}
+            selectionVersion={selectionVersion} revision={revision} visible={visible}
+            initialPosition={previewPositions.current.get(scrollKey)} onScrollPosition={rememberPreviewScroll} />
+            : patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
             {selectedLine && currentPath === requestedGitPath && parsed.length > 0
               ? <LinkedPatchView key={diffKey} files={parsed} style={style} line={selectedLine} selectionVersion={selectionVersion} />
               : <Virtualizer key={diffKey} className="workspace-review-scroll">
