@@ -326,4 +326,3 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .provider-message small { display: block; margin-top: 4px; }
 .provider-code { display: flex; align-items: center; gap: 7px; margin: 5px 0; }
 .provider-code code { font: 600 14px var(--mono); color: var(--fgColor-accent); }
-.provider-prompt > .button { justify-self: end; }

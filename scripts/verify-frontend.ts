@@ -13,7 +13,7 @@ const screenshot = `${output}/${name}.png`;
 const workspaceScreens = ["welcome", "first-draft", "providers", "provider-sign-in", "providers-connected", "model-menu", "model-thinking", "running", "queue", "queue-narrow", "background", "tool-logs", "conversation",
   "image-attachment", "image-preview", "workspace", "right-sidebar", "wide", "narrow", "sidebar", "terminal", "branches", "project-tree",
   "light-providers", "light-model-menu", "light-workspace", "light-terminal",
-  "providers-change", "light-providers-change", "providers-key", "light-providers-key"]
+  "providers-change", "light-providers-change", "providers-key", "light-providers-key", "light-provider-sign-in"]
   .map(stage => `${output}/pideck-ui-${stage}.png`);
 const log = `${output}/${name}.log`;
 const flowLog = `${output}/${name}-flow.log`;

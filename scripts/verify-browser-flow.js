@@ -105,6 +105,22 @@ async page => {
   await connect.click();
   const settings = page.getByRole("dialog", { name: "Model providers" });
   const provider = settings.getByRole("combobox", { name: "Provider", exact: true });
+  const signIn = settings.getByRole("region", { name: "Provider sign-in", exact: true });
+  async function expectSignInActions() {
+    const cancel = signIn.getByRole("button", { name: "Cancel", exact: true });
+    const proceed = signIn.getByRole("button", { name: "Continue", exact: true });
+    await proceed.waitFor();
+    if (await cancel.count() !== 1 || await settings.getByRole("button", { name: "Cancel", exact: true }).count() !== 1) {
+      throw new Error("Sign-in must offer one Cancel action within the input card.");
+    }
+    const [card, back, next] = await Promise.all([signIn.boundingBox(), cancel.boundingBox(), proceed.boundingBox()]);
+    if (!card || !back || !next || back.x + back.width > next.x || next.x - back.x - back.width > 16
+      || Math.abs(back.y + back.height / 2 - next.y - next.height / 2) > 1
+      || back.x < card.x || next.x + next.width > card.x + card.width
+      || back.y < card.y || next.y + next.height > card.y + card.height) {
+      throw new Error("Sign-in Cancel must sit immediately left of Continue on the same line inside the card.");
+    }
+  }
   await provider.locator('option[value="openai"]').waitFor({ state: "attached" });
   await expectColors(settings, { "background-color": overlay, "border-top-color": "rgba(61, 68, 77, 0.7)", "color": foreground });
   await expectColors(settings, { "background-color": "rgba(33, 40, 48, 0.4)" }, "::backdrop");
@@ -132,6 +148,7 @@ async page => {
   await settings.getByRole("button", { name: "Copy code" }).click();
   const authorization = settings.getByLabel("Authorization code");
   const continueSignIn = settings.getByRole("button", { name: "Continue" });
+  await expectSignInActions();
   await expectColors(authorization, { "background-color": canvas });
   await expectColors(continueSignIn, { "background-color": "rgb(16, 88, 35)" });
   await page.screenshot({ path: "output/playwright/pideck-ui-provider-sign-in.png" });
@@ -197,11 +214,14 @@ async page => {
     await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}providers-change.png` });
     await apiKeyOption.click();
     await settings.getByLabel("API key", { exact: true }).waitFor();
-    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    await expectSignInActions();
+    await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
     if ((await currentConnection()).credential !== "oauth") throw new Error("Cancelling key replacement changed the saved subscription connection.");
     await subscriptionOption.click();
     await settings.getByLabel("Authorization code", { exact: true }).waitFor();
-    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    await expectSignInActions();
+    await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}provider-sign-in.png` });
+    await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
     if ((await currentConnection()).credential !== "oauth") throw new Error("Cancelling subscription replacement changed the saved connection.");
     await back.click();
     await connection.getByRole("button", { name: "Change", exact: true }).waitFor();
@@ -226,9 +246,10 @@ async page => {
     await expectAlignedConnection(2);
     await connection.getByRole("button", { name: "Change", exact: true }).click();
     await keyPrompt.waitFor();
+    await expectSignInActions();
     if (await connection.count()) throw new Error("Changing a single-method connection still shows an intermediate choice card.");
     await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}providers-key.png` });
-    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
     await connection.getByRole("button", { name: "Change", exact: true }).waitFor();
     await expectAlignedConnection(2);
   }

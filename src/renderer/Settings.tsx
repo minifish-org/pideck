@@ -336,14 +336,17 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
             : <input type={prompt.data.type === 'text' ? 'text' : 'password'} autoComplete="off" spellCheck={false} maxLength={16_384}
                 placeholder={prompt.data.placeholder} value={answer} disabled={answering} onChange={(event) => setAnswer(event.target.value)} />}
         </label>
-        <button type="submit" className="button button--primary" disabled={answering || !answer.trim()}>{answering ? 'Continuing…' : 'Continue'}</button>
+        <div className="provider-manage">
+          <button type="button" className="button provider-quiet" onClick={cancel}>Cancel</button>
+          <button type="submit" className="button button--primary" disabled={answering || !answer.trim()}>{answering ? 'Continuing…' : 'Continue'}</button>
+        </div>
       </form>}
+      {!prompt && <div className="provider-manage">
+        <button type="button" className="button provider-quiet" onClick={cancel}>Cancel</button>
+      </div>}
     </section>}
     {error && <p className="dialog-error" role="alert">{error}</p>}
     {status && <p className="provider-message" role="status">{status}</p>}
     {!loading && !providers && <button type="button" className="button" onClick={() => { setError(undefined); void readProviders(); }}>Retry loading providers</button>}
-    {flow && <div className="dialog-actions provider-manage">
-      <button type="button" className="button provider-quiet" onClick={cancel}>Cancel sign-in</button>
-    </div>}
   </dialog>;
 }
