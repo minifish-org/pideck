@@ -316,7 +316,15 @@ try {
     await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
     assert.ok(await imagePreview.evaluate(dialog => {
       const rect = dialog.getBoundingClientRect();
-      return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+      const close = dialog.querySelector("button").getBoundingClientRect();
+      const imageElement = dialog.querySelector("img");
+      const image = imageElement.getBoundingClientRect();
+      return rect.left === 0 && rect.top === 0 && rect.width === innerWidth && rect.height === innerHeight
+        && close.top >= 8 && close.top <= 24 && innerWidth - close.right >= 8 && innerWidth - close.right <= 24
+        && getComputedStyle(dialog).backgroundColor === "rgba(0, 0, 0, 0)"
+        && getComputedStyle(dialog, "::backdrop").backgroundColor === "rgba(0, 0, 0, 0)"
+        && image.left >= 0 && image.top >= 0 && image.right <= innerWidth && image.bottom <= innerHeight
+        && getComputedStyle(imageElement).objectFit === "contain";
     }));
     await page.keyboard.press("Escape");
     await imagePreview.waitFor({ state: "hidden" });

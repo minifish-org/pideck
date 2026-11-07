@@ -25,10 +25,7 @@ export function ImagePreview({ source, alt, onClose }: {
   return <dialog ref={dialog} className="image-preview" aria-label="Image preview"
     onCancel={event => { event.preventDefault(); onClose(); }}
     onClick={event => {
-      if (event.target !== event.currentTarget) return;
-      const bounds = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX > bounds.right
-        || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      if (event.target === event.currentTarget) onClose();
     }}>
     <button type="button" className="icon-button image-preview-close" aria-label="Close image preview"
       title="Close image preview (Esc)" autoFocus onClick={onClose}><Icon name="close" /></button>

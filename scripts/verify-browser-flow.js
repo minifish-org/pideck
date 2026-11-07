@@ -194,6 +194,19 @@ async page => {
   await attachmentPreview.focus();
   await page.keyboard.press("Enter");
   await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
+  const windowPreview = await imagePreview.evaluate(dialog => {
+    const bounds = dialog.getBoundingClientRect();
+    const close = dialog.querySelector("button").getBoundingClientRect();
+    const imageElement = dialog.querySelector("img");
+    const image = imageElement.getBoundingClientRect();
+    return bounds.left === 0 && bounds.top === 0 && bounds.width === innerWidth && bounds.height === innerHeight
+      && close.top >= 8 && close.top <= 24 && innerWidth - close.right >= 8 && innerWidth - close.right <= 24
+      && image.left >= 0 && image.top >= 0 && image.right <= innerWidth && image.bottom <= innerHeight
+      && getComputedStyle(imageElement).objectFit === "contain";
+  });
+  if (!windowPreview) throw new Error("The image preview does not fit the window with its close button in the upper-right corner.");
+  await expectColors(imagePreview, { "background-color": "rgba(0, 0, 0, 0)", "border-top-width": "0px" });
+  await expectColors(imagePreview, { "background-color": "rgba(0, 0, 0, 0)" }, "::backdrop");
   if (await sessionCount() !== 0 || await page.locator("#prompt").inputValue() !== "Update and verify the status.") {
     throw new Error("Previewing a pasted image submitted or changed the unsent message.");
   }
@@ -205,11 +218,9 @@ async page => {
   await imagePreview.getByRole("button", { name: "Close image preview", exact: true }).click();
   await imagePreview.waitFor({ state: "hidden" });
   await attachmentPreview.click();
-  const backdrop = await imagePreview.evaluate(dialog => {
-    const bounds = dialog.getBoundingClientRect();
-    return { x: Math.max(1, bounds.left - 2), y: Math.max(1, bounds.top - 2) };
-  });
-  await page.mouse.click(backdrop.x, backdrop.y);
+  await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).click();
+  if (!await imagePreview.isVisible()) throw new Error("Clicking the preview image closed it.");
+  await imagePreview.click({ position: { x: 2, y: 2 } });
   await imagePreview.waitFor({ state: "hidden" });
   await removeAttachment.click();
   await attachmentPreview.waitFor({ state: "detached" });
