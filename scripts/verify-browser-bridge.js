@@ -401,7 +401,11 @@ async page => {
             if (exit) emit({ type: "terminal:exit", projectId, terminalId, sequence: 1, exitCode: Number(exit[1] ?? 0) });
             return;
           }
-          case "terminal:close": terminalInputs.delete(payload.terminalId); return;
+          case "terminal:close": {
+            terminalInputs.delete(payload.terminalId);
+            document.body.dataset.closedTerminalId = payload.terminalId;
+            return;
+          }
           case "terminal:resize": return;
           case "terminal:sync": return [];
           case "review:watch": reviewWatches.set(payload.subscriptionId, payload); return;

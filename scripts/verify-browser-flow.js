@@ -538,6 +538,9 @@ async page => {
     "border-top-color": "rgba(0, 0, 0, 0)",
   };
   const terminal = page.getByRole("region", { name: "Project terminal" });
+  const findTerminal = terminal.getByRole("button", { name: "Find in terminal", exact: true });
+  const restartShell = terminal.getByRole("button", { name: "Restart shell", exact: true });
+  const shellRunning = terminal.getByText("Shell running", { exact: true });
   const tools = page.locator("#workspace-tools");
   const screen = terminal.locator(".xterm-helper-textarea");
   const divider = page.getByRole("separator", { name: "Resize right sidebar" });
@@ -545,6 +548,13 @@ async page => {
   const expectTogglePositions = async expected => {
     if ((await togglePositions()).some((position, index) => Math.abs(position - expected[index]) > 1)) {
       throw new Error("Switching the right panel moved the workspace toggles.");
+    }
+  };
+  const expectRestartBesideFind = async () => {
+    const [find, restart] = await Promise.all([findTerminal.boundingBox(), restartShell.boundingBox()]);
+    if (!find || !restart || restart.x < find.x + find.width || Math.abs(restart.y - find.y) > 1
+      || !await restartShell.evaluate(button => !button.textContent.trim() && Boolean(button.title && button.querySelector("svg")))) {
+      throw new Error("The terminal restart icon must sit to the right of Find in terminal and have a tooltip.");
     }
   };
   const review = page.getByRole("complementary", { name: "Review changes" });
@@ -677,6 +687,7 @@ async page => {
   await expectDockedTool("#workspace-terminal");
   await expectTogglePositions(dockedTogglePositions);
   await expectColors(terminalToggle, selectedToggleColors);
+  await expectRestartBesideFind();
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
   const expectSameShell = async () => {
@@ -772,6 +783,7 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectColors(terminalToggle, selectedToggleColors);
+  await expectRestartBesideFind();
   await screen.waitFor();
   const terminalBack = terminal.getByRole("button", { name: "Back to chat" });
   await terminalBack.waitFor();
@@ -875,25 +887,32 @@ async page => {
   if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Reattaching a surviving session lost its draft.");
 
   await terminalToggle.click();
-  await page.getByText("Shell running").waitFor();
-  if (await terminal.getByRole("button", { name: /end shell|restart shell|stop/i }).count()) throw new Error("The terminal toolbar still has shell controls.");
+  await shellRunning.waitFor();
+  if (await terminal.getByRole("button", { name: /end shell|stop/i }).count()) throw new Error("The terminal toolbar has a separate stop action.");
+  const expectNewShell = async previousId => {
+    await page.waitForFunction(id => Boolean(document.body.dataset.terminalId && document.body.dataset.terminalId !== id), previousId);
+    await shellRunning.waitFor();
+    await expectActiveTool("terminal");
+    if (await screen.getAttribute("data-workspace-fixture") !== "same") throw new Error("The new shell replaced the terminal view.");
+    return page.evaluate(() => document.body.dataset.terminalId);
+  };
+  const shellBeforeRestart = await page.evaluate(() => document.body.dataset.terminalId);
+  await restartShell.click();
+  await page.waitForFunction(id => document.body.dataset.closedTerminalId === id, shellBeforeRestart);
+  const restartedShell = await expectNewShell(shellBeforeRestart);
   await screen.focus();
   await page.keyboard.insertText("exit");
   await page.keyboard.press("Enter");
   await terminal.waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.activeElement?.id === "toggle-terminal");
   await terminalToggle.click();
-  await page.getByText("Shell running").waitFor();
-  if (await page.evaluate(() => document.body.dataset.terminalId) === liveShell
-    || await screen.getAttribute("data-workspace-fixture") !== "same") throw new Error("Reopening did not start a new shell in the same terminal view.");
+  const reopenedShell = await expectNewShell(restartedShell);
   await screen.focus();
   await page.keyboard.insertText("exit 7");
   await page.keyboard.press("Enter");
   await terminal.getByText(/^Shell exited \(7\)/).waitFor();
-  if (await terminal.getByRole("button", { name: /restart shell/i }).count()) throw new Error("A stopped terminal still has a restart button.");
-  await terminalToggle.click();
-  await terminalToggle.click();
-  await page.getByText("Shell running").waitFor();
+  await restartShell.click();
+  await expectNewShell(reopenedShell);
   const primaryBranch = nav.getByRole("list", { name: "Sample project sessions", exact: true });
   await primaryBranch.getByRole("button", { name: "Separate draft", exact: true }).waitFor();
   if (await fallback.locator(":scope > svg").count()) throw new Error("The session row still displays a leading icon.");

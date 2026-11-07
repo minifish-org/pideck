@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
-import { ArrowLeft, Search } from "lucide-react";
+import { ArrowLeft, RotateCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Project } from "../shared/api";
 import { Icon } from "./Icons";
@@ -51,6 +51,7 @@ function ProjectTerminal(props: TerminalProps) {
 function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit }: TerminalProps) {
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon; searchOptions: ISearchOptions } | null>(null);
+  const stopConnection = useRef<(() => void) | undefined>(undefined);
   const searchInput = useRef<HTMLInputElement>(null);
   const previousHost = useRef(0);
   const [host, setHost] = useState<{ generation: number; disconnected?: string }>({ generation: 0 });
@@ -162,9 +163,11 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       },
       issue: setIssue,
     });
+    stopConnection.current = connection.stop;
     const write = terminal.onData(connection.input);
     const resize = terminal.onResize(connection.resize);
     return () => {
+      stopConnection.current = undefined;
       resize.dispose();
       write.dispose();
       connection.stop();
@@ -196,12 +199,20 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
   }, [finding, query]);
 
   const failed = status.type === "failed" || (status.type === "exited" && status.exitCode !== 0);
-  const statusMessage = host.disconnected ?? (failed ? `${status.message} · Reopen Terminal to try again.` : status.message);
+  const statusMessage = host.disconnected ?? (failed ? `${status.message} · Restart the shell to try again.` : status.message);
   const matchLabel = query
     ? !matches?.resultCount ? "No results"
       : matches.resultIndex < 0 ? `${matches.resultCount} results` : `${matches.resultIndex + 1} of ${matches.resultCount}`
     : "";
   const isMac = window.pideck.platform === "darwin";
+  function restartShell() {
+    // Unsubscribe before the old shell can report an exit and close the panel.
+    stopConnection.current?.();
+    setStatus(opening);
+    setAttempt(current => (current ?? 0) + 1);
+    setFinding(false);
+    screen.current?.terminal.focus();
+  }
   function findMatch(previous: boolean) {
     const active = screen.current;
     if (!active || !query) return;
@@ -250,6 +261,11 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
             onClick={() => setFinding(false)}><Icon name="close" /></button>
         </div> : <button type="button" className="workspace-icon-button" onClick={() => setFinding(true)}
           aria-label="Find in terminal" title={`Find in terminal (${isMac ? "⌘F" : "Ctrl+Shift+F"})`}><Search size={16} aria-hidden="true" /></button>}
+        <button type="button" className="workspace-icon-button" aria-label="Restart shell"
+          title="Restart shell (stops the current shell and its foreground command)"
+          disabled={Boolean(host.disconnected) || status.type === "opening"} onClick={restartShell}>
+          <RotateCw size={16} aria-hidden="true" />
+        </button>
       </div>
     </header>
     {issue && <p className="workspace-terminal-issue" role="alert">{issue}</p>}

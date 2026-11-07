@@ -387,7 +387,11 @@ try {
   const terminalRegion = page.getByRole("region", { name: "Project terminal" });
   const terminal = terminalRegion.locator(".xterm-helper-textarea");
   const terminalRows = terminalRegion.locator(".xterm-rows");
-  assert.equal(await terminalRegion.getByRole("button", { name: /end shell|restart shell/i }).count(), 0);
+  const findInTerminal = terminalRegion.getByRole("button", { name: "Find in terminal", exact: true });
+  const restartShell = terminalRegion.getByRole("button", { name: "Restart shell", exact: true });
+  const [findBox, restartBox] = await Promise.all([findInTerminal.boundingBox(), restartShell.boundingBox()]);
+  assert.ok(findBox && restartBox && restartBox.x >= findBox.x + findBox.width
+    && Math.abs(restartBox.y - findBox.y) <= 1, "The restart button must sit to the right of terminal search.");
   if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
   const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
   await review.waitFor({ state: "detached" });
@@ -437,7 +441,7 @@ try {
   await page.keyboard.insertText(print);
   await page.keyboard.press("Enter");
   await page.locator(".xterm-rows").getByText("PTY_OK", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Find in terminal" }).click();
+  await findInTerminal.click();
   await page.getByRole("searchbox", { name: "Find in terminal output" }).fill("PTY_OK");
   const match = page.locator(".workspace-search-results");
   await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor({ timeout: 5_000 }).catch(async error => {
@@ -457,15 +461,50 @@ try {
   await page.keyboard.press("Enter");
   await terminalRows.getByText("INTERRUPT_OK", { exact: true }).waitFor({ timeout: 6_000 });
   assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
+
+  await page.keyboard.insertText(process.platform === "win32"
+    ? 'Set-Content ../restart-shell-pid $PID; Write-Host ("RESTART_" + "READY"); Start-Sleep -Seconds 30'
+    : `echo "$$" > ../restart-shell-pid; sh -c 'echo "$$" > ../restart-job-pid; printf "RESTART_%s\\n" READY; exec sleep 30'`);
+  await page.keyboard.press("Enter");
+  await terminalRows.getByText("RESTART_READY", { exact: true }).waitFor();
+  const stoppedPids = await Promise.all((process.platform === "win32" ? ["restart-shell-pid"] : ["restart-shell-pid", "restart-job-pid"])
+    .map(async name => Number(await readFile(join(temporary, name), "utf8"))));
+  assert.ok(stoppedPids.every(pid => Number.isSafeInteger(pid) && pid > 0));
+  await terminal.evaluate(input => { input.dataset.restartFixture = "same"; });
+  await restartShell.click();
+  const restartedPty = await page.waitForFunction(id => {
+    const current = document.documentElement.dataset.ptyId;
+    return current && current !== id ? current : false;
+  }, firstPty).then(handle => handle.jsonValue());
+  await terminalRegion.getByText("Shell running").waitFor();
+  assert.equal(await terminalToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(await terminal.getAttribute("data-restart-fixture"), "same");
+  const restartDeadline = Date.now() + 5_000;
+  for (const pid of stoppedPids) {
+    while (true) {
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if (error.code === "ESRCH") break;
+        throw error;
+      }
+      assert.ok(Date.now() < restartDeadline, "Restart left the previous shell or its foreground command running.");
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  await findInTerminal.click();
+  const retainedSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
+  await retainedSearch.fill("RESTART_READY");
+  await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor();
+  await retainedSearch.press("Escape");
+
   await page.keyboard.insertText("exit");
   await page.keyboard.press("Enter");
   await terminalRegion.waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.activeElement?.id === "toggle-terminal");
   await clickNativeMenu(app, "toggle-terminal");
   await terminalRegion.getByText("Shell running").waitFor();
-  await page.waitForFunction(id => document.documentElement.dataset.ptyId && document.documentElement.dataset.ptyId !== id, firstPty);
-  await terminalRegion.getByRole("button", { name: "Find in terminal" }).click();
-  const retainedSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
+  await page.waitForFunction(id => document.documentElement.dataset.ptyId && document.documentElement.dataset.ptyId !== id, restartedPty);
+  await findInTerminal.click();
   await retainedSearch.fill("INTERRUPT_OK");
   await match.filter({ hasText: /[1-9]\d* (?:of|results)/ }).waitFor();
   await retainedSearch.press("Escape");
