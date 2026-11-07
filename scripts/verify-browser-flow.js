@@ -313,6 +313,13 @@ async page => {
   await model.getByText("Off", { exact: true }).waitFor();
   await expectColors(picker, { "background-color": overlay, "color": foreground });
   await expectColors(modelSearch, { "background-color": canvas });
+  const modelGroup = picker.getByRole("group", { name: "OpenAI models", exact: true });
+  if (await modelGroup.count() !== 1 || await modelGroup.getByText("OpenAI", { exact: true }).count() !== 1) {
+    throw new Error("Models do not share one provider heading.");
+  }
+  const configuredModelOption = modelGroup.getByRole("button", { name: "Fixture model · OpenAI · 128,000 token context · Supports images", exact: true });
+  await configuredModelOption.getByText("128k", { exact: true }).waitFor();
+  if (!await configuredModelOption.locator('[title="Supports images"] svg').count()) throw new Error("The image-capability glyph is missing.");
   await appearance("light");
   await expectColors(picker, { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
   await expectColors(modelSearch, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
@@ -583,17 +590,40 @@ async page => {
   if (!inlineButtonsFit) throw new Error("Queue controls crowd the message or overflow the narrow window.");
   await page.screenshot({ path: "output/playwright/pideck-ui-queue-narrow.png" });
   const queueEditButton = queueButton(editableText, "Edit message");
+  const parkedDraft = "Keep this ordinary unsent draft.";
+  await prompt.fill(parkedDraft);
+  await pasteImage(2, 2);
+  await attachmentPreview.waitFor();
   await queueEditButton.press("Enter");
   const queueEdit = page.getByRole("textbox", { name: "Edit queued message" });
   await queueEdit.waitFor();
-  if (await queueEdit.inputValue() !== editableText || !await queueEdit.evaluate(editor => editor === document.activeElement)) {
-    throw new Error("The inline queue editor did not load and focus the full message.");
+  if (await queueEdit.inputValue() !== editableText || !await queueEdit.evaluate(editor => editor === document.activeElement)
+    || await composer.locator("textarea").count() !== 1 || await queue.locator("textarea").count()
+    || await attachmentPreview.count()) {
+    throw new Error("Queue editing did not reuse the focused composer and park ordinary draft attachments.");
   }
+  await page.screenshot({ path: "output/playwright/pideck-ui-queue-edit.png" });
+  await appearance("light");
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-queue-edit.png" });
+  await appearance("dark");
+  await queueEdit.fill("An edit retained while switching sessions.");
+  await page.waitForFunction(() => Object.entries(localStorage).some(([key, value]) => key.startsWith("pideck.draft.v1/")
+    && JSON.parse(value).queueEdit?.text === "An edit retained while switching sessions." && JSON.parse(value).text === "Keep this ordinary unsent draft."));
+  await page.setViewportSize(queueViewport);
+  await draftSession.click();
+  await prompt.waitFor();
+  await runningSession.click();
+  await queueEdit.waitFor();
+  if (await queueEdit.inputValue() !== "An edit retained while switching sessions.") throw new Error("Session switching lost the pending queue edit.");
   await queueEdit.press("Escape");
-  await queueEditButton.waitFor();
-  if (!await queueEditButton.evaluate(button => button === document.activeElement)) {
-    throw new Error("Closing the inline queue editor lost keyboard focus.");
+  await prompt.waitFor();
+  await attachmentPreview.waitFor();
+  if (await prompt.inputValue() !== parkedDraft || !await prompt.evaluate(editor => editor === document.activeElement)) {
+    throw new Error("Cancelling the queue edit lost the parked draft or composer focus.");
   }
+  await removeAttachment.click();
+  await prompt.fill("");
+  await page.setViewportSize({ width: 760, height: 560 });
 
   const extraRows = ["Scroll fixture one.", "Scroll fixture two.", "Scroll fixture three.", "Scroll fixture four."];
   for (const text of extraRows) {
@@ -629,10 +659,14 @@ async page => {
     await row(text).waitFor({ state: "detached" });
   }
   await page.setViewportSize(queueViewport);
+  await prompt.fill(parkedDraft);
   await queueEditButton.click();
   await queueEdit.fill("Report the final verification.");
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save queued message", exact: true }).click();
   await row("Report the final verification.").waitFor();
+  await prompt.waitFor();
+  if (await prompt.inputValue() !== parkedDraft) throw new Error("Saving a queue edit replaced the ordinary unsent draft.");
+  await prompt.fill("");
   const editedRow = dragSource("Report the final verification.");
   await editedRow.press("Alt+ArrowDown");
   await queue.getByRole("listitem").nth(2).getByText("Report the final verification.", { exact: true }).waitFor();
@@ -653,6 +687,21 @@ async page => {
   }
   await dragMessage("List follow-up work.", "Report the final verification.", "before");
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
+  await prompt.fill("An input that starts before save.");
+  await prompt.press("Enter");
+  await row("An input that starts before save.").waitFor();
+  await prompt.fill(parkedDraft);
+  await queueButton("An input that starts before save.", "Edit message").click();
+  await queueEdit.fill("Recover these edits after the save race.");
+  await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-consume-next-queue-edit")));
+  await page.getByRole("button", { name: "Save queued message", exact: true }).click();
+  await prompt.waitFor();
+  if (await prompt.inputValue() !== parkedDraft || await queueEdit.count() || await queue.getByRole("listitem").count() !== 3) {
+    throw new Error("A consumed queue input left a stale editor or overwrote the ordinary draft.");
+  }
+  await page.getByRole("button", { name: "Restore saved draft", exact: true }).waitFor();
+  await page.waitForFunction(() => Object.entries(localStorage).some(([key, value]) => key.startsWith("pideck.draft.v1/")
+    && JSON.parse(value).recoveredDrafts?.some(draft => draft.text === "Recover these edits after the save race.")));
   await page.mouse.move(0, 0);
   await page.screenshot({ path: "output/playwright/pideck-ui-queue.png" });
   const steer = queueButton("Prefer a focused check.", "Steer current run");
@@ -688,6 +737,8 @@ async page => {
     const id = preferences.sessions?.[preferences.projectId];
     return preferences.reading?.[preferences.projectId]?.[id]?.messageId === "prompt";
   });
+  await queueButton("Report the final verification.", "Edit message").click();
+  await queueEdit.fill("Keep these edits when the remaining queue starts.");
   await draftSession.click();
   await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-queue")));
   const finishedBadge = runningSession.locator("[data-activity=finished]");
@@ -695,6 +746,24 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-background.png" });
   await runningSession.click();
   await page.getByText("I updated the status and checked the result.").waitFor({ state: "attached" });
+  await prompt.waitFor();
+  if (await prompt.inputValue() !== parkedDraft || await queueEdit.count() || await queue.count()
+    || await page.getByRole("button", { name: "Save queued message", exact: true }).count()) {
+    throw new Error("A fully consumed queue left Queued0, a stale editor, or replaced the parked draft.");
+  }
+  const restoreDraft = page.getByRole("button", { name: "Restore saved draft", exact: true });
+  await restoreDraft.click();
+  if (await prompt.inputValue() !== "Recover these edits after the save race.") throw new Error("A later dequeue overwrote earlier recovered edits.");
+  await restoreDraft.click();
+  if (await prompt.inputValue() !== "Keep these edits when the remaining queue starts.") throw new Error("The final consumed queue edit was not recoverable.");
+  await restoreDraft.click();
+  if (await prompt.inputValue() !== parkedDraft) throw new Error("Restoring edits lost the original unsent draft.");
+  await prompt.fill("");
+  await restoreDraft.click();
+  await prompt.fill("");
+  await restoreDraft.click();
+  await prompt.fill("");
+  await restoreDraft.waitFor({ state: "detached" });
   const latest = page.getByRole("button", { name: "Latest", exact: true });
   await latest.waitFor();
   if (!await finishedBadge.count()) throw new Error("Opening at an old reading position cleared the unseen result.");
@@ -702,7 +771,7 @@ async page => {
   await finishedBadge.waitFor({ state: "detached" });
   await page.setViewportSize(queueViewport);
   const successOutput = page.getByText("Checks passed.", { exact: true });
-  await successfulCommand.getByText("Succeeded", { exact: true }).waitFor();
+  await successfulCommand.getByRole("status", { name: "Succeeded", exact: true }).waitFor();
   await successOutput.waitFor();
   await page.getByText("Lint reported an error.", { exact: true }).waitFor();
   const smallDiff = page.locator(".tool-card").filter({ has: page.locator("summary").filter({ hasText: "example.ts" }) });
@@ -733,6 +802,28 @@ async page => {
   }
   const userMessage = page.getByRole("article", { name: "You", exact: true }).filter({ hasText: "Update and verify the status." });
   const assistantMessage = page.getByRole("article", { name: "Pideck", exact: true }).filter({ hasText: "I updated the status and checked the result." });
+  if (await assistantMessage.getByRole("link", { name: "Unsafe link", exact: true }).count()
+    || await assistantMessage.getByRole("link", { name: "Outside file", exact: true }).count()) {
+    throw new Error("Unsafe schemes or paths outside the project became clickable message links.");
+  }
+  const messageUrl = page.url();
+  await assistantMessage.getByRole("link", { name: "Node docs", exact: true }).click();
+  await page.waitForFunction(() => document.body.dataset.openedExternalLink === "https://nodejs.org/api/assert.html");
+  if (page.url() !== messageUrl) throw new Error("An external message link navigated the privileged renderer.");
+  await page.evaluate(() => sessionStorage.setItem("pideck-extra-review-file", "1"));
+  const linkedReview = page.getByRole("complementary", { name: "Review changes" });
+  for (const name of ["Review source", "Project source"]) {
+    await assistantMessage.getByRole("link", { name, exact: true }).click();
+    await linkedReview.waitFor();
+    await linkedReview.locator('[aria-current="true"]').filter({ hasText: "example.ts" }).waitFor();
+    await linkedReview.locator('[data-selected-line]').first().waitFor();
+    if (await linkedReview.getByText("From chat", { exact: true }).count()) throw new Error("A project file link opened a saved tool patch instead of the current file.");
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-linked-file.png" });
+  await linkedReview.getByRole("button", { name: /example\.ts/ }).click();
+  await linkedReview.locator('[data-selected-line]').first().waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
+  await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   async function expectTranscriptLayout() {
     if (await userMessage.getByText("You", { exact: true }).count() || await assistantMessage.getByText("Pideck", { exact: true }).count()) {
       throw new Error("The transcript still displays speaker labels.");

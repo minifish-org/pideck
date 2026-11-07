@@ -4,6 +4,7 @@ import { AuthFlows } from "./auth-flows";
 import { PersistentCredentials } from "./credential-store";
 import { Runtime, type ChatWatch } from "./runtime";
 import { listChanges, readPatch, watchChanges } from "./review";
+import { resolveMessageFile } from "./message-links";
 import { Terminals } from "./terminal";
 import type { FromHost, HostRequest, RemovalTarget, ToHost } from "../shared/transport";
 import type { ChatView, HostEvent, RemovalResult, Selection } from "../shared/api";
@@ -240,6 +241,8 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runReview(runtime, payload.projectId, listChanges);
     case "review:patch":
       return runReview(runtime, payload.projectId, (cwd, signal) => readPatch(cwd, payload.path, signal));
+    case "review:resolve-link":
+      return runReview(runtime, payload.projectId, (cwd, signal) => resolveMessageFile(cwd, payload.href, signal));
     case "review:watch": {
       const { projectId, subscriptionId } = payload;
       requireOpenWorkspace(projectId);

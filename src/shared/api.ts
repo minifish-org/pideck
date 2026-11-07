@@ -1,4 +1,5 @@
 import type { Op } from "@earendil-works/chord/delta";
+import type { ProjectLink } from "./message-links";
 
 export type AppearancePreference = "system" | "light" | "dark";
 export type AppearanceState = { preference: AppearancePreference; resolved: "light" | "dark" };
@@ -132,6 +133,7 @@ type WatchRef = Selection & { subscriptionId: string };
 export type Commands = {
   "appearance:get": [undefined, AppearanceState];
   "clipboard:write": [{ text: string }, void];
+  "link:open-external": [{ url: string }, void];
   "project:list": [undefined, Project[]];
   "project:open": [undefined, Project | null];
   "project:remove": [{ projectId: string }, RemovalResult | null];
@@ -162,6 +164,7 @@ export type Commands = {
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];
   "review:list": [{ projectId: string }, ReviewFile[]];
   "review:patch": [{ projectId: string; path: string }, ReviewPatch];
+  "review:resolve-link": [{ projectId: string; href: string }, ProjectLink];
   "review:watch": [ReviewWatchRef, void];
   "review:unwatch": [ReviewWatchRef, void];
   "terminal:open": [{ projectId: string } & TerminalSize, TerminalOpen];

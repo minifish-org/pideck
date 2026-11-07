@@ -1,22 +1,21 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { ImagePreview } from './ImagePreview';
 import { MessageFooter } from './MessageFooter';
+import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
 import { useReadSessionActivity } from './session-activity';
-import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
-import { completeAttempt } from './preferences';
+import type { Attachment, Draft, QueuedDraftEdit, ReadingPosition, SendAttempt } from './preferences';
+import { completeAttempt, recoverQueueEdit, restoreRecoveredDraft } from './preferences';
 import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
 
-type ReviewSelection = { path?: string; patch?: string };
+type ReviewSelection = { path?: string; patch?: string; line?: number };
 type ToolBlock = Extract<ChatBlock, { type: 'tool' }>;
 
 function imageSource(image: { mimeType: string; data: string }) {
@@ -38,6 +37,7 @@ function ImageBlock({ image, alt, thumbnail = false }: { image: { mimeType: stri
 }
 
 const toolLabels: Record<string, string> = { read: 'Read', write: 'Write', edit: 'Edit', bash: 'Shell' };
+const toolIcons = { read: 'eye', write: 'filePlus', edit: 'edit', bash: 'terminal' } as const;
 const toolPhases: Record<string, string> = {
   read: 'Reading file…', write: 'Writing file…', edit: 'Editing file…', bash: 'Running command…',
 };
@@ -56,6 +56,8 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   const path = block.path ?? (typeof argPath === 'string' ? argPath : undefined);
   const target = typeof command === 'string' ? command : path;
   const shell = block.name === 'bash';
+  const knownTool = Object.hasOwn(toolIcons, block.name);
+  const label = toolLabels[block.name] ?? block.name;
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
   const active = block.status === 'pending' || block.status === 'running';
   const status = block.status === 'error' ? 'Failed' : shell && block.status === 'done' ? 'Succeeded' : undefined;
@@ -65,16 +67,20 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
 
   return (
     <details className="tool-card" open={open}>
-      <summary title={target} aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : undefined} onClick={(event) => {
+      <summary title={target} aria-label={[label, target].filter(Boolean).join(' ')}
+        aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : status} onClick={(event) => {
         event.preventDefault();
         const selection = shell && event.detail > 0 ? window.getSelection() : null;
         if (selection && !selection.isCollapsed && selection.containsNode(event.currentTarget, true)) return;
         onExpand(block.id, !open);
       }}>
-        <Icon name={active ? 'spinner' : shell ? 'terminal' : 'file'} className={active ? 'tool-spinner' : undefined} />
-        {(!shell || !target) && <span className="tool-label">{Object.hasOwn(toolLabels, block.name) ? toolLabels[block.name] : block.name}</span>}
+        <span className="tool-icon" title={label}><Icon name={active ? 'spinner' : knownTool ? toolIcons[block.name as keyof typeof toolIcons] : 'file'}
+          className={active ? 'tool-spinner' : undefined} /></span>
+        {(!knownTool || !target) && <span className="tool-label">{label}</span>}
         {target && <span className={shell ? 'tool-target tool-target--command' : 'tool-target'}>{target}</span>}
-        {status && <span className="tool-state" data-status={block.status}>{status}</span>}
+        {status && <span className="tool-state" data-status={block.status} role="status" aria-label={status} title={status}>
+          <Icon name={block.status === 'error' ? 'alert' : 'check'} width={14} height={14} />
+        </span>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
       </summary>
       <div className="tool-detail">
@@ -93,17 +99,9 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   );
 }
 
-const Markdown = memo(function Markdown({ text }: { text: string }) {
-  return <div className="markdown">
-    <ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={{
-      a: ({ children, href }) => <span className="markdown-link" title={href}>{children}</span>,
-      img: ({ alt }) => <span>{alt}</span>,
-    }}>{text}</ReactMarkdown>
-  </div>;
-});
-
-const Message = memo(function Message({ message, onReview, onFork, toolDisclosure, onToolExpand }: {
+const Message = memo(function Message({ message, project, onReview, onFork, toolDisclosure, onToolExpand }: {
   message: ChatMessage;
+  project: Project;
   onReview: (selection: ReviewSelection) => void;
   onFork?: (entryId: number) => void;
   toolDisclosure: ReadonlyMap<string, boolean>;
@@ -122,7 +120,7 @@ const Message = memo(function Message({ message, onReview, onFork, toolDisclosur
             case 'text':
               return message.role === 'user'
                 ? <div key={index}>{block.text}</div>
-                : <Markdown key={index} text={block.text} />;
+                : <MessageMarkdown key={index} text={block.text} project={project} onReview={onReview} />;
             case 'thinking':
               return block.text && <details className="thinking" key={index}><summary>Thinking</summary><pre>{block.text}</pre></details>;
             case 'image':
@@ -253,6 +251,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [readingHistory, setReadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
   const [forking, setForking] = useState(false);
+  const [queueSaving, setQueueSaving] = useState(false);
+  const [queueNotice, setQueueNotice] = useState<string>();
   const [toolDisclosure, setToolDisclosure] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const setToolExpanded = useCallback((id: string, expanded: boolean) => {
     setToolDisclosure(current => new Map(current).set(id, expanded));
@@ -267,7 +267,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const toolStates = useRef<Map<string, string> | undefined>(undefined);
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
   useReadSessionActivity(watchConnected ? activityReceipt : undefined, view, scroll);
-  const { text, attachments } = draft;
+  const { text, attachments, queueEdit } = draft;
 
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
   const busy = view?.status === 'running' || view?.status === 'cancelling';
@@ -292,9 +292,12 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const hasDraft = Boolean(text.trim() || attachments.length);
   const startingSession = !session && draft.sending;
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
-  const canSend = connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
+  const canSend = !queueEdit && connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured || awaitingSavedModel)
     && hasDraft && (!attachments.length || canAttach);
+  const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !queueSaving && !draft.sending
+    && view?.status !== 'cancelling' && view?.queued?.some(item => item.id === queueEdit.id)
+    && queueEdit.text !== queueEdit.original && (queueEdit.text.trim() || queueEdit.hasImages));
   const gaps = view?.gaps ?? [];
 
   useEffect(() => {
@@ -303,6 +306,45 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
 
   function update(patch: Partial<Draft>) {
     updateDraft((current) => ({ ...current, ...patch }));
+  }
+
+  useLayoutEffect(() => {
+    if (queueEdit) textarea.current?.focus({ preventScroll: true });
+  }, [queueEdit?.id]);
+
+  useEffect(() => {
+    if (!queueEdit || queueSaving || !watchConnected || !view || view.queued?.some(item => item.id === queueEdit.id)) return;
+    updateDraft(recoverQueueEdit);
+    setQueueNotice(queueEdit.text !== queueEdit.original && queueEdit.text.trim() ? 'Edits saved as a draft' : 'Message left the queue');
+  }, [queueEdit, queueSaving, updateDraft, view, watchConnected]);
+
+  function editQueuedMessage(edit: QueuedDraftEdit) {
+    setQueueNotice(undefined);
+    updateDraft(current => current.queueEdit ? current : { ...current, queueEdit: edit, error: undefined });
+  }
+
+  function cancelQueueEdit() {
+    if (queueSaving) return;
+    update({ queueEdit: undefined, error: undefined });
+    setQueueNotice(undefined);
+    textarea.current?.focus({ preventScroll: true });
+  }
+
+  async function saveQueueEdit() {
+    const edit = queueEdit;
+    if (!edit || !selection || !canSaveQueue) return;
+    setQueueSaving(true);
+    update({ error: undefined });
+    try {
+      await window.pideck.invoke('chat:queue-update', { ...selection, id: edit.id, action: 'edit', text: edit.text });
+      updateDraft(current => current.queueEdit?.id === edit.id ? { ...current, queueEdit: undefined, error: undefined } : current);
+      setQueueNotice(undefined);
+    } catch (cause) {
+      updateDraft(current => current.queueEdit?.id === edit.id ? { ...current, error: readableError(cause) } : current);
+    } finally {
+      setQueueSaving(false);
+      textarea.current?.focus({ preventScroll: true });
+    }
   }
 
   function jumpToLatest() {
@@ -563,7 +605,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             {view?.messages.map((message) => (
               <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
                 {renderGaps(message.id)}
-                <Message message={message} onReview={onReview} onFork={connected && !forking ? fork : undefined}
+                <Message message={message} project={project} onReview={onReview} onFork={connected && !forking ? fork : undefined}
                   toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded} />
               </div>
             ))}
@@ -572,7 +614,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
           </div>
         ) : null}
       </div>
-      {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" onClick={jumpToLatest}><Icon name="arrowDown" /> Latest</button></div>}
+      {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" aria-label="Latest"
+        title="Jump to latest message" onClick={jumpToLatest}><Icon name="arrowDown" /></button></div>}
       <div className="composer-wrap">
         {runStatus && <div className="composer-run">
           <div className="run-state" role="status">
@@ -581,10 +624,11 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
           </div>
           <button className="composer-stop" type="button" onClick={cancel}
             title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
-            disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /> Stop</button>
+            disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>
         </div>}
         {selection && <QueuedMessages selection={selection} items={view?.queued} canSteer={Boolean(view?.canSteerQueued)}
           enabled={connected && !stopping && view?.status !== 'cancelling'}
+          editingId={queueEdit?.id} onEdit={editQueuedMessage}
           onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />}
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
           <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
@@ -593,8 +637,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             : <button className="icon-button" type="button" aria-label="Dismiss chat notice"
               onClick={() => update({ error: undefined })}><Icon name="close" /></button>}
         </div>}
-        <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void send(); }}>
-          {attachments.length > 0 && <div className="attachments">
+        <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void (queueEdit ? saveQueueEdit() : send()); }}>
+          {!queueEdit && attachments.length > 0 && <div className="attachments">
             {attachments.map((attachment, index) => (
               <div className="attachment" key={index}>
                 <ImageBlock image={attachment} alt={`Attached image ${index + 1}`} thumbnail />
@@ -605,10 +649,23 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
               </div>
             ))}
           </div>}
-          <textarea ref={textarea} id="prompt" value={text} maxLength={200000} rows={2} aria-label="Message Pideck"
-            placeholder={queueing ? 'Write a follow-up…' : 'Message Pideck…'}
-            onChange={(event) => update({ text: event.target.value, pendingRequestId: undefined, error: undefined })}
+          <textarea ref={textarea} id="prompt" value={queueEdit?.text ?? text} maxLength={200000} rows={2}
+            aria-label={queueEdit ? 'Edit queued message' : 'Message Pideck'} readOnly={queueSaving}
+            placeholder={queueEdit ? 'Edit queued message…' : queueing ? 'Write a follow-up…' : 'Message Pideck…'}
+            onChange={(event) => {
+              const value = event.target.value;
+              setQueueNotice(undefined);
+              updateDraft(current => queueEdit && current.queueEdit?.id === queueEdit.id
+                ? { ...current, queueEdit: { ...current.queueEdit, text: value }, error: undefined }
+                : queueEdit ? current : { ...current, text: value, pendingRequestId: undefined, error: undefined });
+            }}
             onKeyDown={(event) => {
+              if (queueEdit && event.key === 'Escape' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.stopPropagation();
+                cancelQueueEdit();
+                return;
+              }
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault();
                 form.current?.requestSubmit();
@@ -616,6 +673,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             }}
             onPaste={(event) => {
               const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'));
+              if (queueEdit && images.length) {
+                if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+                return;
+              }
               if (images.length) {
                 if (canAttach && !startingSession) {
                   event.preventDefault();
@@ -627,6 +688,9 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             }} />
           <div className="composer-controls">
             <div className="composer-models">
+              {queueEdit ? <span className="queue-edit-label" role="status" title={queueEdit.hasImages ? 'Existing image attachments stay with the queued message' : undefined}>
+                Editing queued message{queueEdit.hasImages ? ' · includes images' : ''}
+              </span> : <>
               {canAttach && <>
                 <input className="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple ref={fileInput}
                   onChange={(event) => {
@@ -650,10 +714,27 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                       update({ model: key, thinking: model && modelKey(model) === key ? draft.thinking : undefined, error: undefined });
                       onModelChosen(key);
                     }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
+              {draft.recoveredDrafts?.length ? <button className="icon-button queue-restore" type="button"
+                aria-label="Restore saved draft" title={`Restore saved draft${draft.recoveredDrafts.length > 1 ? ` (${draft.recoveredDrafts.length})` : ''}; the current draft is kept`}
+                disabled={draft.sending || draft.reading} onClick={() => {
+                  updateDraft(restoreRecoveredDraft);
+                  setQueueNotice(undefined);
+                  textarea.current?.focus({ preventScroll: true });
+                }}><Icon name="restore" /></button> : null}
+              {queueNotice && <span className="queue-recovery-note" role="status" title={queueNotice}>{queueNotice}</span>}
+              </>}
             </div>
             <div className="composer-actions">
+              {queueEdit ? <div className="queue-edit-actions" role="group" aria-label="Queue edit actions">
+                <button className="icon-button" type="button" aria-label="Cancel queue edit" title="Cancel editing (Esc)"
+                  disabled={queueSaving} onClick={cancelQueueEdit}><Icon name="close" /></button>
+                <button className="button button--primary queue-save-button" type="submit" aria-label="Save queued message"
+                  title="Save queued message (Enter)" disabled={!canSaveQueue} aria-busy={queueSaving || undefined}>
+                  <Icon name={queueSaving ? 'spinner' : 'check'} />
+                </button>
+              </div> :
               <button className="button button--primary send-button" type="submit" title={`${submitLabel} (Enter)`} aria-label={submitLabel}
-                disabled={!canSend}>{submitLabel}<Icon name="arrowUp" width={14} height={14} /></button>
+                disabled={!canSend}><Icon name={queueing ? 'queue' : 'arrowUp'} width={17} height={17} /></button>}
             </div>
           </div>
         </form>

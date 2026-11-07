@@ -23,7 +23,7 @@ const activityIcons = { running: 'spinner', finished: 'check', attention: 'alert
 type Removal = { projectId: string; sessionId?: string };
 type RemovalCheck = { target: Removal; trigger: HTMLButtonElement; error: string };
 type RenameTarget = Selection & { source: 'titlebar' | 'sidebar' };
-type Review = { projectId: string; visible: boolean; sessionId?: string; path?: string; patch?: string; selection?: number };
+type Review = { projectId: string; visible: boolean; sessionId?: string; path?: string; patch?: string; line?: number; selection?: number };
 
 function closePopovers() {
   document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((panel) => panel.hidePopover());
@@ -398,14 +398,15 @@ function Desktop() {
     setReview((current) => current?.visible ? { ...current, visible: false } : current);
   }
 
-  const openReview = useCallback(({ path, patch }: { path?: string; patch?: string }) => {
+  const openReview = useCallback(({ path, patch, line }: { path?: string; patch?: string; line?: number }) => {
     if (!projectId || !sessionId || removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return;
     reviewOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     hideTerminal(projectId);
-    setReview((current) => ({ projectId, visible: true, sessionId, path, patch, selection: (current?.selection ?? 0) + 1 }));
+    setReview((current) => ({ projectId, visible: true, sessionId, path, patch, line, selection: (current?.selection ?? 0) + 1 }));
   }, [hideTerminal, projectId, sessionId]);
   const selectWorkingTreeFile = useCallback((path: string) => {
-    setReview(current => current?.patch ? { projectId: current.projectId, visible: current.visible, path } : current);
+    setReview(current => current && (current.patch || current.line !== undefined)
+      ? { projectId: current.projectId, visible: current.visible, path } : current);
   }, []);
   const refreshReview = useCallback(() => setReviewVersion((current) => current + 1), []);
 
@@ -1013,7 +1014,7 @@ function Desktop() {
             </div>
             <div className="workspace-tools" id="workspace-tools" hidden={!toolsOpen} data-docked={toolsDocked || undefined}>
               {project && activeReview && <Suspense key={`review:${project.id}`} fallback={reviewOpen && <div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
-                <ReviewPanel project={project} visible={reviewOpen} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch}
+                <ReviewPanel project={project} visible={reviewOpen} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch} selectedLine={activeReview.line}
                   panelControls={reviewOpen ? panelControls : undefined}
                   onSelectWorkingTreeFile={selectWorkingTreeFile}
                   rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}

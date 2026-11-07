@@ -2,9 +2,9 @@ import { useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import type { ChatView, QueueUpdate, Selection } from '../shared/api';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
+import type { QueuedDraftEdit } from './preferences';
 
 type Item = NonNullable<ChatView['queued']>[number];
-type Edit = { id: number; text: string; original: string; hasImages: boolean };
 type Move = Extract<QueueUpdate, { action: 'move' }>;
 type Drop = Pick<Move, 'targetId' | 'position'>;
 
@@ -36,26 +36,25 @@ function QueueActions({ item, canSteer, blocked, onEdit, onUpdate }: {
   </div>;
 }
 
-export function QueuedMessages({ selection, items = [], canSteer, enabled, onFocusComposer }: {
+export function QueuedMessages({ selection, items = [], canSteer, enabled, editingId, onEdit, onFocusComposer }: {
   selection: Selection;
   items?: ChatView['queued'];
   canSteer: boolean;
   enabled: boolean;
+  editingId?: number;
+  onEdit: (edit: QueuedDraftEdit) => void;
   onFocusComposer: () => void;
 }) {
-  const [editing, setEditing] = useState<Edit>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [drag, setDrag] = useState<{ id: number; over?: Drop }>();
   const dragSource = useRef<number | undefined>(undefined);
   const busy = useRef(false);
-  const editor = useRef<HTMLFormElement>(null);
   const list = useRef<HTMLOListElement>(null);
   const restore = useRef<{ id: number; removed?: number; steered?: true; move?: Drop } | undefined>(undefined);
   // A steer enters the current run at its next boundary. Follow-ups wait for the run's end.
   const ordered = items.toSorted((left, right) => Number(right.delivery === 'steer') - Number(left.delivery === 'steer'));
-  const missing = editing !== undefined && !items.some(({ id }) => id === editing.id);
-  const canReorder = enabled && !pending && !editing;
+  const canReorder = enabled && !pending && editingId === undefined;
 
   function clearDrag() {
     dragSource.current = undefined;
@@ -68,7 +67,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
 
   useLayoutEffect(() => {
     const focus = restore.current;
-    if (!focus || editing || items.some(({ id, delivery }) => id === focus.removed
+    if (!focus || editingId !== undefined || items.some(({ id, delivery }) => id === focus.removed
       || (focus.steered && canSteer && id === focus.id && delivery === 'follow-up'))) return;
     if (focus.move) {
       const from = items.findIndex(({ id }) => id === focus.id);
@@ -85,7 +84,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
     } else if (focus.move && target && target === document.activeElement) {
       target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }, [canSteer, editing, items, onFocusComposer]);
+  }, [canSteer, editingId, items, onFocusComposer]);
 
   async function run<T>(action: () => Promise<T>, complete?: (result: T) => void) {
     if (!enabled || busy.current) return;
@@ -137,52 +136,11 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
 
   function startEdit(id: number) {
     void run(() => window.pideck.invoke('chat:queue-read', { ...selection, id }), ({ text, hasImages }) => {
-      setEditing({ id, text, original: text, hasImages });
+      onEdit({ id, text, original: text, hasImages });
     });
   }
 
-  function closeEditor(id: number) {
-    if (editor.current?.contains(document.activeElement) || document.activeElement === document.body) restore.current = { id };
-    setEditing(undefined);
-    setError(undefined);
-  }
-
-  function renderEditor(edit: Edit) {
-    const canSave = enabled && !pending && !missing && edit.text !== edit.original
-      && (Boolean(edit.text.trim()) || edit.hasImages);
-    function save() {
-      if (canSave) update(edit.id, { action: 'edit', text: edit.text }, () => closeEditor(edit.id));
-    }
-    return <form className="queue-editor" ref={editor} onSubmit={(event) => { event.preventDefault(); save(); }}
-      onKeyDown={(event) => {
-        if (event.nativeEvent.isComposing) return;
-        if (event.key === 'Escape' && !pending) {
-          event.preventDefault();
-          event.stopPropagation();
-          closeEditor(edit.id);
-        } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-          event.preventDefault();
-          save();
-        }
-      }}>
-      <textarea autoFocus aria-label="Edit queued message" placeholder="Edit queued message…" rows={2} maxLength={200000}
-        value={edit.text} readOnly={missing || pending} onChange={(event) => {
-          setEditing({ ...edit, text: event.target.value });
-        }} />
-      <div className="queue-editor-footer">
-        {missing ? <span role="status">This message has left the queue.</span>
-          : edit.hasImages && <span>Includes image attachments</span>}
-        <button className="button" type="button" disabled={pending} onClick={() => closeEditor(edit.id)}>
-          {missing ? 'Close' : 'Cancel'}
-        </button>
-        {!missing && <button className="button button--primary" type="submit" disabled={!canSave}>
-          {pending ? 'Saving…' : 'Save changes'}
-        </button>}
-      </div>
-    </form>;
-  }
-
-  if (!ordered.length && !editing && !error) return null;
+  if (!ordered.length && !error) return null;
 
   const rows = ordered.map((item, index) => {
     const previous = ordered[index - 1]?.delivery === item.delivery ? ordered[index - 1] : undefined;
@@ -191,7 +149,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
     const draggable = hasPeers && canReorder;
     return <li key={item.id} data-queue-id={item.id} data-delivery={item.delivery}
       data-dragging={drag?.id === item.id || undefined} data-drop={drag?.over?.targetId === item.id ? drag.over.position : undefined}>
-      {editing?.id === item.id ? renderEditor(editing) : <div className="queued-row">
+      <div className="queued-row" data-editing={editingId === item.id || undefined}>
         <div className="queued-message" draggable={draggable} tabIndex={hasPeers ? 0 : undefined}
           title={draggable ? `${item.preview}\nDrag to reorder` : item.preview}
           aria-keyshortcuts={hasPeers ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
@@ -219,12 +177,11 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, onFoc
           <span className="queued-preview">{item.preview}</span>
         </div>
         <QueueActions item={item}
-          canSteer={canSteer} blocked={!enabled || pending || Boolean(editing)} onEdit={() => startEdit(item.id)}
+          canSteer={canSteer} blocked={!enabled || pending || editingId !== undefined} onEdit={() => startEdit(item.id)}
           onUpdate={(change) => update(item.id, change)} />
-      </div>}
+      </div>
     </li>;
   });
-  if (missing) rows.push(<li key={editing.id} data-queue-id={editing.id}>{renderEditor(editing)}</li>);
 
   return <div className="queued-messages">
     {rows.length > 0 && <>

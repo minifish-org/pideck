@@ -13,7 +13,7 @@ async page => {
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", createdAt: 1 };
     const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", createdAt: 2 };
     const secondSession = { id: "0c1bd9dc-58bd-4918-92ee-bc30609f0dbd", projectId: secondProject.id, title: "Other task", createdAt: 2, updatedAt: 2 };
-    const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true };
+    const model = { provider: "openai", id: "fixture", name: "Fixture model", configured: false, thinking: ["off", "low", "high"], supportsImages: true, contextWindow: 128000 };
     const fixedModel = { ...model, id: "fixture-fixed", name: "Fixture fixed model with a long display name to exercise truncation", thinking: ["off"] };
     const unavailableModel = { ...model, provider: "anthropic", id: "unavailable-fixture", name: "Unconnected fixture model" };
     const patch = "diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-export const status = 'old';\n+export const status = 'verified';\n";
@@ -30,6 +30,7 @@ async page => {
     let savedConnectionsPending = Boolean(state.savedConnectionsPending);
     let unlockCancelled = false;
     let auth;
+    let consumeNextQueueEdit = false;
     let offline = false;
     const attemptedRemovals = new Set();
     const resetting = new Set();
@@ -52,6 +53,7 @@ async page => {
       publishAppearance();
     });
     systemAppearance.addEventListener("change", () => { if (state.appearance === "system") publishAppearance(); });
+    window.addEventListener("pideck-fixture-consume-next-queue-edit", () => { consumeNextQueueEdit = true; });
     const update = (watch, payload) => emit({ type: "chat:update", ...watch.payload, sequence: ++watch.sequence, ...payload });
     const publishActivity = () => {
       if (activityWatch) emit({ type: "session:activity", subscriptionId: activityWatch, items: [...activity.values()] });
@@ -378,6 +380,12 @@ async page => {
                 queuedTexts.delete(item.id);
                 break;
               case "edit":
+                if (consumeNextQueueEdit) {
+                  consumeNextQueueEdit = false;
+                  queuedTexts.delete(item.id);
+                  change(sessionId, { queued });
+                  throw new Error("The message is no longer queued.");
+                }
                 queuedTexts.set(item.id, payload.text);
                 queued.splice(index, 0, { ...item, preview: payload.text });
                 break;
@@ -404,7 +412,7 @@ async page => {
               ])) throw new Error("Queue operations did not leave the expected order and content.");
               window.addEventListener("pideck-fixture-finish-queue", () => {
                 const reply = { id: "reply", entryId: 8, role: "assistant", timestamp: messageTime + 95_000, durationMs: 95_000, blocks: [
-                  { type: "text", text: "I updated the status and checked the result." },
+                  { type: "text", text: "I updated the status and checked the result.\n\n[Review source](example.ts#L1) · [Project source](/workspace/sample/example.ts#L1) · [Node docs](https://nodejs.org/api/assert.html) · [Unsafe link](javascript:alert%281%29) · [Outside file](/workspace/elsewhere/private.txt)" },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "edit", id: "large-edit", path: "second.ts", status: "done", patch: largePatch },
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
@@ -461,6 +469,15 @@ async page => {
             const filePatch = payload.path === "second.ts" ? patch.replaceAll("example.ts", "second.ts") : patch;
             return { patch: sessionStorage.getItem("pideck-review-edit") ? filePatch.replace("verified", "updated") : filePatch };
           }
+          case "review:resolve-link":
+            if (payload.projectId !== project.id || !["example.ts#L1", "/workspace/sample/example.ts#L1"].includes(payload.href)) {
+              throw new Error("Unexpected project message link.");
+            }
+            return { path: "example.ts", line: 1 };
+          case "link:open-external":
+            if (payload.url !== "https://nodejs.org/api/assert.html") throw new Error("Unexpected external message link.");
+            document.body.dataset.openedExternalLink = payload.url;
+            return;
           default: throw new Error("Unexpected fixture command " + command);
         }
       },

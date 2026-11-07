@@ -1,5 +1,6 @@
 import type { Command, Commands, Thinking } from "../shared/api";
 import { normalizeSessionTitle, sessionTitleLimit } from "../shared/session-title";
+import { externalMessageUrl } from "../shared/message-links";
 
 const thinking = new Set<Thinking>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -73,6 +74,7 @@ function chatInput(value: Record<string, unknown>): boolean {
 const validators = {
   "appearance:get": empty,
   "clipboard:write": (value) => object(value) && string(value.text, 2_000_000),
+  "link:open-external": (value) => object(value) && typeof value.url === "string" && Boolean(externalMessageUrl(value.url)),
   "project:list": empty,
   "project:open": empty,
   "project:remove": (value) => object(value) && project(value),
@@ -118,6 +120,8 @@ const validators = {
     && (value.title === undefined || string(value.title, sessionTitleLimit)),
   "review:list": (value) => object(value) && project(value),
   "review:patch": (value) => object(value) && project(value) && string(value.path, 4096) && value.path.length > 0,
+  "review:resolve-link": (value) => object(value) && project(value) && string(value.href, 16_384)
+    && value.href.length > 0 && !/[\u0000-\u001f\u007f]/.test(value.href),
   "review:watch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
   "review:unwatch": (value) => object(value) && project(value) && match(value.subscriptionId, id),
   "terminal:open": (value) => object(value) && project(value) && size(value),

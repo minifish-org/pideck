@@ -298,6 +298,22 @@ try {
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("new-session").enabled), false);
   const command = (name, payload) => page.evaluate(([name, payload]) => window.pideck.invoke(name, payload), [name, payload]);
   await assert.rejects(command("appearance:get", {}), /Invalid appearance request/);
+  for (const url of ["javascript:alert(1)", "file:///etc/passwd", "https://user:password@example.com/", "https://example.com/%0a"]) {
+    await assert.rejects(command("link:open-external", { url }), /could not be opened safely/);
+  }
+  await app.evaluate(({ shell }) => {
+    globalThis.__pideckSmokeLink = { original: shell.openExternal, opened: [] };
+    shell.openExternal = async url => { globalThis.__pideckSmokeLink.opened.push(url); };
+  });
+  try {
+    await command("link:open-external", { url: "https://nodejs.org/api/assert.html" });
+    assert.deepEqual(await app.evaluate(() => globalThis.__pideckSmokeLink.opened), ["https://nodejs.org/api/assert.html"]);
+  } finally {
+    await app.evaluate(({ shell }) => {
+      shell.openExternal = globalThis.__pideckSmokeLink.original;
+      delete globalThis.__pideckSmokeLink;
+    });
+  }
   for (const name of ["project:open", "project:add", "project:inspect", "project:trust"]) {
     await assert.rejects(command(name, { directory: "/" }), /Invalid workspace request/);
   }
@@ -313,6 +329,9 @@ try {
   const [added] = await command("project:list");
   assert.equal(added.name, "smoke-project");
   const projectId = added.id;
+  assert.deepEqual(await command("review:resolve-link", { projectId, href: "example.ts#L1" }), { path: "example.ts", line: 1 });
+  await assert.rejects(command("review:resolve-link", { projectId, href: "../outside.txt" }), /inside the selected project/);
+  await assert.rejects(command("review:resolve-link", { projectId: crypto.randomUUID(), href: "example.ts" }), /project/i);
   assert.deepEqual(await command("project:open"), added);
   assert.deepEqual(await command("session:list", { projectId }), []);
   await assert.rejects(command("chat:watch", { projectId, sessionId: crypto.randomUUID(), subscriptionId: crypto.randomUUID() }), /Session not found/);
@@ -891,7 +910,7 @@ try {
   const editQueued = page.getByRole("textbox", { name: "Edit queued message" });
   assert.equal(await editQueued.inputValue(), draftQueued);
   await editQueued.fill(editedQueued);
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save queued message", exact: true }).click();
   await queuedRow(editedQueued).waitFor();
   await queueAction(discardedQueued, "Delete message");
   await queuedRow(discardedQueued).waitFor({ state: "detached" });

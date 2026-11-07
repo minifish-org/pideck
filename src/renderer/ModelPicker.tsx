@@ -13,6 +13,11 @@ export function providerLabel(provider: string) {
     ?? provider.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' ');
 }
 
+function contextLabel(tokens: number) {
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: tokens < 1_000_000 ? 0 : 2 })
+    .format(tokens).replace('K', 'k');
+}
+
 export function ModelPicker({ models, selected, label, description, thinking, onThinkingChange, onChoose, onLoadSavedModels }: {
   models: ModelOption[];
   selected: ModelOption | undefined;
@@ -43,6 +48,15 @@ export function ModelPicker({ models, selected, label, description, thinking, on
       return words.every((word) => label.includes(word));
     });
   }, [available, currentKey, deferredQuery]);
+  const groups = useMemo(() => {
+    const providers = new Map<string, ModelOption[]>();
+    for (const option of results) {
+      const group = providers.get(option.provider);
+      if (group) group.push(option);
+      else providers.set(option.provider, [option]);
+    }
+    return [...providers];
+  }, [results]);
 
   useLayoutEffect(() => {
     if (open) search.current?.focus({ preventScroll: true });
@@ -135,21 +149,31 @@ export function ModelPicker({ models, selected, label, description, thinking, on
           if (next) next.focus();
           else if (event.key === 'ArrowUp') search.current?.focus();
         }}>
-          {results.length > 0 ? <ul>
-            {results.map((option, index) => {
+          {groups.length > 0 ? groups.map(([provider, options]) => <div className="model-group" key={provider}
+            role="group" aria-label={`${providerLabel(provider)} models`}>
+            <div className="model-group-label" aria-hidden="true">{providerLabel(provider)}</div>
+            <ul>{options.map((option) => {
               const current = currentKey === modelKey(option);
-              const context = option.contextWindow ? ` · ${Math.round(option.contextWindow / 1000).toLocaleString()}k context` : '';
+              const description = [option.name, providerLabel(provider),
+                option.contextWindow && `${option.contextWindow.toLocaleString()} token context`,
+                option.supportsImages && 'Supports images'].filter(Boolean).join(' · ');
               return <li key={modelKey(option)}>
-                <button className="model-option" type="button" tabIndex={index === 0 ? 0 : -1}
+                <button className="model-option" type="button" tabIndex={option === results[0] ? 0 : -1}
+                  aria-label={description} title={description}
                   aria-current={current ? 'true' : undefined} onClick={() => choose(option)}>
                   <span className="model-option-label"><strong>{option.name}</strong>
-                    <small>{providerLabel(option.provider)}{context}{option.supportsImages ? ' · Images' : ''}</small>
+                    <small className="model-option-meta" aria-hidden="true">
+                      {option.contextWindow ? <span title={`${option.contextWindow.toLocaleString()} token context`}>{contextLabel(option.contextWindow)}</span> : null}
+                      <span className="model-capability" title={option.supportsImages ? 'Supports images' : undefined}>
+                        {option.supportsImages && <Icon name="picture" width={13} height={13} />}
+                      </span>
+                    </small>
                   </span>
-                  {current && <Icon className="model-option-mark" name="check" />}
+                  <Icon className="model-option-mark" name="check" />
                 </button>
               </li>;
-            })}
-          </ul> : !onLoadSavedModels && <p className="model-empty">{available.length ? 'No models match your search.' : 'No models are available.'}</p>}
+            })}</ul>
+          </div>) : !onLoadSavedModels && <p className="model-empty">{available.length ? 'No models match your search.' : 'No models are available.'}</p>}
         </div>
         {thinking && selected && <label className="model-effort">
           Thinking level

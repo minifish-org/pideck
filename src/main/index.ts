@@ -12,6 +12,7 @@ import { checkForUpdate, releasesPage } from "./update-check";
 import { isCommand, validPayload } from "./validation";
 import { minimumWindow, openWindowState } from "./window-state";
 import { appearanceBackground, appearanceDocument, openAppearance } from "./appearance";
+import { externalMessageUrl } from "../shared/message-links";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -225,6 +226,13 @@ async function initialize() {
     if (command === "clipboard:write") {
       if (!validPayload(command, payload)) throw new Error("Invalid clipboard text.");
       clipboard.writeText(payload.text);
+      return;
+    }
+    if (command === "link:open-external") {
+      if (!validPayload(command, payload)) throw new Error("This link could not be opened safely.");
+      const url = externalMessageUrl(payload.url);
+      if (!url) throw new Error("This link could not be opened safely.");
+      await shell.openExternal(url.href);
       return;
     }
     if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");

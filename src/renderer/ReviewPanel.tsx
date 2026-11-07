@@ -1,5 +1,5 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
-import { FileDiff, Virtualizer, WorkerPoolContextProvider, type FileDiffOptions } from "@pierre/diffs/react";
+import { CodeView, FileDiff, Virtualizer, WorkerPoolContextProvider, type CodeViewHandle, type FileDiffOptions } from "@pierre/diffs/react";
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +17,7 @@ const highlighterOptions = {
   theme: { dark: "github-dark-default", light: "github-light-default" },
   preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
 } as const;
-const diffOptions: FileDiffOptions<undefined, undefined> = {
+const diffOptions = {
   ...highlighterOptions,
   // Primer Light already supplies complete line and gutter backgrounds.
   // Keep Pierre's dark blend, but use the light backgrounds directly.
@@ -25,7 +25,7 @@ const diffOptions: FileDiffOptions<undefined, undefined> = {
   enableLineSelection: true,
   hunkSeparators: "line-info",
   maxLineDiffLength: 300,
-};
+} satisfies FileDiffOptions<undefined, undefined>;
 let patchId = 0;
 
 function usePatch(patch: string | null | undefined) {
@@ -55,6 +55,25 @@ function PatchView({ patch, files, style, wrap }: { patch: string; files: FileDi
     overflow: wrap ? "wrap" : "scroll",
     disableFileHeader: files.length === 1,
   }} />);
+}
+
+function LinkedPatchView({ files, style, line, selectionVersion }: {
+  files: FileDiffMetadata[]; style: DiffStyle; line: number; selectionVersion?: number;
+}) {
+  const appearance = useAppearance();
+  const viewer = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const items = useMemo(() => files.map((fileDiff, index) => ({
+    id: fileDiff.cacheKey ?? String(index), type: "diff" as const, fileDiff,
+  })), [files]);
+  const id = items[0]?.id;
+  useEffect(() => {
+    if (!id) return;
+    viewer.current?.setSelectedLines({ id, range: { start: line, end: line, side: "additions" } });
+    viewer.current?.scrollTo({ type: "line", id, lineNumber: line, side: "additions", align: "center" });
+  }, [id, line, selectionVersion]);
+  return <CodeView ref={viewer} className="workspace-review-scroll workspace-diff" items={items}
+    options={{ ...diffOptions, hunkSeparators: "line-info", themeType: appearance, diffStyle: style,
+      overflow: "wrap", disableFileHeader: files.length === 1 }} />;
 }
 
 function ChangeCount({ files }: { files: FileDiffMetadata[] }) {
@@ -96,6 +115,7 @@ type ReviewPanelProps = {
   onClose: () => void;
   selectedPath?: string;
   selectedPatch?: string;
+  selectedLine?: number;
   onSelectWorkingTreeFile: (path: string) => void;
   rememberedPath?: string;
   onRememberPath?: (path: string | undefined) => void;
@@ -113,7 +133,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   return <ProjectReview key={props.project.id} {...props} />;
 }
 
-function ProjectReview({ project, visible, overlay, onClose, selectedPath, selectedPatch, onSelectWorkingTreeFile,
+function ProjectReview({ project, visible, overlay, onClose, selectedPath, selectedPatch, selectedLine, onSelectWorkingTreeFile,
   rememberedPath, onRememberPath, refreshVersion, selectionVersion, panelControls }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
   const showMessagePatch = Boolean(selectedPatch);
@@ -352,8 +372,8 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
               aria-current={selected ? "true" : undefined} onClick={() => {
                 if (showMessagePatch) {
                   if (files.length === 1) panel.current?.focus({ preventScroll: true });
-                  onSelectWorkingTreeFile(candidate.path);
                 }
+                onSelectWorkingTreeFile(candidate.path);
                 setPath(candidate.path);
               }}>
               <Icon name="file" className="workspace-file-icon" />
@@ -376,9 +396,11 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
             {layoutControl}
           </div>}
           {patch ? <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
-            <Virtualizer key={diffKey} className="workspace-review-scroll">
+            {selectedLine && currentPath === requestedGitPath && parsed.length > 0
+              ? <LinkedPatchView key={diffKey} files={parsed} style={style} line={selectedLine} selectionVersion={selectionVersion} />
+              : <Virtualizer key={diffKey} className="workspace-review-scroll">
               <PatchView patch={patch} files={parsed} style={style} wrap />
-            </Virtualizer>
+            </Virtualizer>}
           </WorkerPoolContextProvider> : !list?.error && <div className="workspace-review-scroll">
             {currentResult?.error ? <ReviewIssue message={currentResult.error} onRetry={retryReview} />
               : <p className="workspace-empty" role={readingDiff ? "status" : undefined}>
