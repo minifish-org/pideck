@@ -807,6 +807,10 @@ function Desktop() {
                 : <span className="workspace-title-current" title={project.directory}>{project.name}</span>}
             </div>}
           </div>
+          {!showNavigation && !toolsOverlay && project && session && <button className="icon-button" type="button"
+            data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
+            title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
+            disabled={!canCreateSession} onClick={() => openSessionDraft()}>{hasNewDraft ? 'Draft' : <Icon name="plus" />}</button>}
           {project && <div className="title-panels" role="group" aria-label="Workspace panels">
             <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
               title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
@@ -817,10 +821,6 @@ function Desktop() {
               aria-controls={terminalVisible ? 'workspace-terminal' : undefined}
               disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
           </div>}
-          {!showNavigation && !toolsOverlay && project && session && <button className="icon-button" type="button"
-            data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
-            title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
-            disabled={!canCreateSession} onClick={() => openSessionDraft()}>{hasNewDraft ? 'Draft' : <Icon name="plus" />}</button>}
         </div>
       </header>
       <div className="app-body">

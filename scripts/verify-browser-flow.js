@@ -620,7 +620,9 @@ async page => {
       const sameEdge = (first, second) => Math.abs(first - second) <= 1;
       const sidebarEdge = bounds(".navigation").right;
       const titlebar = bounds(".titlebar");
-      const middleHeader = bounds(".titlebar-content");
+      const middleHeaderElement = document.querySelector(".titlebar-content");
+      const middleHeader = middleHeaderElement.getBoundingClientRect();
+      const middleHeaderEnd = middleHeader.right - parseFloat(getComputedStyle(middleHeaderElement).paddingInlineEnd);
       const sessionTitle = bounds(".workspace-title");
       const right = bounds("#workspace-tools[data-docked]");
       const conversation = bounds(".workspace-conversation");
@@ -637,12 +639,12 @@ async page => {
         && sameEdge(middleHeader.right, right.left)
         && sessionTitle.left - middleHeader.left <= 24 && sessionTitle.left > middleHeader.left
         && sessionTitle.right <= reviewToggle.left
-        && terminalToggle.left >= reviewToggle.right && terminalToggle.right <= middleHeader.right
+        && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, middleHeaderEnd)
         && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
     }, pane);
-    if (!aligned) throw new Error("The active tool does not fill the right sidebar or align with the middle toolbar.");
+    if (!aligned) throw new Error("The active tool must fill the right sidebar and its buttons must align to the middle header's trailing edge.");
   };
   await expectActiveTool("changes");
   await expectDockedTool("#review-panel");

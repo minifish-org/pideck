@@ -84,11 +84,10 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   padding-inline: var(--workspace-inset);
 }
 .app:not(.app--nav, .app--drawer) .titlebar-content { padding-left: 8px; }
-.titlebar-content > .icon-button { margin-inline-start: auto; }
 .titlebar button { -webkit-app-region: no-drag; }
 .wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; }
 .wordmark svg { color: var(--fgColor-accent); }
-.title-context { display: flex; min-width: 0; max-width: 360px; align-items: center; }
+.title-context { display: flex; flex: 1; min-width: 0; align-items: center; }
 .workspace-title {
   display: grid;
   min-width: 0;

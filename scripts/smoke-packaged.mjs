@@ -328,16 +328,21 @@ try {
       const sameEdge = (first, second) => Math.abs(first - second) <= 1;
       const right = bounds("#workspace-tools[data-docked]");
       const titlebar = bounds(".titlebar");
+      const middleHeaderElement = document.querySelector(".titlebar-content");
+      const middleHeader = middleHeaderElement.getBoundingClientRect();
+      const middleHeaderEnd = middleHeader.right - parseFloat(getComputedStyle(middleHeaderElement).paddingInlineEnd);
+      const reviewToggle = bounds("#toggle-review");
+      const terminalToggle = bounds("#toggle-terminal");
       const panel = bounds(selector);
       return sameEdge(bounds(".workspace-conversation").right, right.left)
-        && sameEdge(bounds(".titlebar-content").right, right.left)
-        && bounds(".workspace-title").right < bounds("#toggle-review").left
-        && bounds("#toggle-review").right < right.left && bounds("#toggle-terminal").right < right.left
+        && sameEdge(middleHeader.right, right.left)
+        && bounds(".workspace-title").right < reviewToggle.left
+        && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, middleHeaderEnd)
         && sameEdge(panel.top, titlebar.top)
         && sameEdge(bounds(selector + " .workspace-panel-header").bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
-    }, panelSelector), "The active tool must fill the right sidebar beside the middle toolbar.");
+    }, panelSelector), "The active tool must fill the right sidebar and its buttons must align to the middle header's trailing edge.");
   }
   await clickNativeMenu(app, "toggle-review");
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
