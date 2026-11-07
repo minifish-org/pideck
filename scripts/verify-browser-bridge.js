@@ -9,6 +9,7 @@ async page => {
     let activityWatch;
     let nextTaskId = 0;
     let nextQueueId = 2;
+    let nextFixtureEntryId = 100;
     const messageTime = Date.parse("2026-11-07T05:04:00Z");
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", createdAt: 1 };
     const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", createdAt: 2 };
@@ -41,12 +42,12 @@ async page => {
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
+    state.queueHolds ??= {};
     state.appearance ??= "dark";
     const systemAppearance = matchMedia("(prefers-color-scheme: dark)");
     let savedConnectionsPending = Boolean(state.savedConnectionsPending);
     let unlockCancelled = false;
     let auth;
-    let consumeNextQueueEdit = false;
     let offline = false;
     const attemptedRemovals = new Set();
     const resetting = new Set();
@@ -54,6 +55,13 @@ async page => {
     let releaseSessionList;
     if (state.projectId) project.id = state.projectId;
     model.configured = state.configured;
+    for (const view of Object.values(state.views)) {
+      for (const item of view.queued ?? []) {
+        nextQueueId = Math.max(nextQueueId, item.id);
+        queuedTexts.set(item.id, item.preview);
+      }
+      for (const message of view.messages) nextFixtureEntryId = Math.max(nextFixtureEntryId, message.entryId ?? 0);
+    }
 
     const emit = (event) => {
       for (const listener of listeners) listener(event);
@@ -69,7 +77,6 @@ async page => {
       publishAppearance();
     });
     systemAppearance.addEventListener("change", () => { if (state.appearance === "system") publishAppearance(); });
-    window.addEventListener("pideck-fixture-consume-next-queue-edit", () => { consumeNextQueueEdit = true; });
     const update = (watch, payload) => emit({ type: "chat:update", ...watch.payload, sequence: ++watch.sequence, ...payload });
     const publishActivity = () => {
       if (activityWatch) emit({ type: "session:activity", subscriptionId: activityWatch, items: [...activity.values()] });
@@ -92,6 +99,35 @@ async page => {
       }
     }
 
+    function drainIdleQueue(sessionId) {
+      const view = state.views[sessionId];
+      if (view.status !== "idle") return;
+      const queued = view.queued ?? [];
+      const hold = state.queueHolds[sessionId];
+      const stop = hold ? queued.findIndex(item => item.id === hold.id) : queued.length;
+      if (hold && stop < 0) throw new Error("An edit hold lost its queued input.");
+      if (!stop) return;
+      const ready = queued.slice(0, stop);
+      const placed = ready.map(item => ({
+        id: `queued-${item.id}`, entryId: ++nextFixtureEntryId, requestId: item.requestId,
+        role: "user", timestamp: messageTime + nextFixtureEntryId * 100,
+        blocks: [{ type: "text", text: queuedTexts.get(item.id) ?? item.preview }],
+      }));
+      for (const item of ready) queuedTexts.delete(item.id);
+      change(sessionId, { messages: [...view.messages, ...placed, {
+        id: `queued-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant",
+        timestamp: messageTime + nextFixtureEntryId * 100, blocks: [{ type: "text", text: "Queued work finished." }],
+      }], queued: queued.slice(stop), canSteerQueued: false });
+    }
+
+    function finishSecondaryRun(sessionId) {
+      change(sessionId, { messages: [...state.views[sessionId].messages, {
+        id: `secondary-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant",
+        timestamp: messageTime + nextFixtureEntryId * 100, blocks: [{ type: "text", text: "Secondary work completed." }],
+      }], status: "idle", canSteerQueued: false });
+      drainIdleQueue(sessionId);
+    }
+
     function addSession(title, view = { messages: [], status: "idle" }, id = crypto.randomUUID()) {
       const session = { id, projectId: project.id, title: title ?? "Untitled session",
         createdAt: Date.now(), updatedAt: Date.now() };
@@ -105,7 +141,9 @@ async page => {
     function deleteSessions(sessionIds) {
       state.sessions = state.sessions.filter(({ id }) => !sessionIds.includes(id));
       for (const id of sessionIds) {
+        for (const item of state.views[id]?.queued ?? []) queuedTexts.delete(item.id);
         delete state.views[id];
+        delete state.queueHolds[id];
         delete state.parents[id];
         delete state.untitled[id];
         activity.delete(id);
@@ -328,6 +366,7 @@ async page => {
               { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
             ] };
             const first = payload.text === "Update and verify the status.";
+            if (first) state.mainSessionId = session.id;
             const selectedModel = payload.model.id === fixedModel.id ? fixedModel : model;
             if (first && payload.thinking !== "high") throw new Error("Expected the selected thinking level.");
             const messages = first ? [prompt, { id: "reply", role: "assistant", timestamp: messageTime + 500, blocks: [
@@ -348,12 +387,15 @@ async page => {
               setTimeout(() => emit({ type: "host:restart" }), 100);
               throw new Error("The fixture lost the first message acknowledgement.");
             }
-            window.addEventListener("pideck-fixture-finish-second-run", () => change(session.id, { status: "idle" }), { once: true });
+            window.addEventListener("pideck-fixture-finish-second-run", () => finishSecondaryRun(session.id), { once: true });
             await new Promise(resolve => window.addEventListener("pideck-fixture-finish-start", resolve, { once: true }));
             return { ...session };
           }
           case "chat:send": {
-            if (!state.configured || !payload.requestId || payload.thinking !== "high") throw new Error("Expected a configured model and selected thinking.");
+            const selectedModel = payload.model.id === fixedModel.id ? fixedModel : model;
+            if (!state.configured || !payload.requestId || payload.thinking !== (selectedModel.id === fixedModel.id ? "off" : "high")) {
+              throw new Error("Expected a configured model and selected thinking.");
+            }
             const { sessionId } = payload;
             const view = state.views[sessionId];
             if (payload.delivery === "send") {
@@ -361,13 +403,14 @@ async page => {
                 state.sessions.find(({ id }) => id === sessionId).title = payload.text.split("\n")[0].trim();
                 delete state.untitled[sessionId];
               }
-              const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", timestamp: messageTime, blocks: [
+              const prompt = { id: `prompt-${payload.requestId}`, entryId: ++nextFixtureEntryId, requestId: payload.requestId, role: "user", timestamp: messageTime, blocks: [
                 { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
               ] };
               // The host accepted the input but its IPC reply was lost. The next
               // watch supplies the Durable request ID and clears the matching draft.
               watches.clear();
-              change(sessionId, { messages: [...view.messages, prompt], status: "running", canSteerQueued: true, model, thinking: payload.thinking });
+              change(sessionId, { messages: [...view.messages, prompt], status: "running", canSteerQueued: true, model: selectedModel, thinking: payload.thinking });
+              if (sessionId !== state.mainSessionId) window.addEventListener("pideck-fixture-finish-second-run", () => finishSecondaryRun(sessionId), { once: true });
               emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
               setTimeout(() => emit({ type: "host:restart" }), 100);
               throw new Error("The fixture lost the send acknowledgement.");
@@ -384,24 +427,46 @@ async page => {
             if (!item || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
             return { text: queuedTexts.get(item.id), hasImages: false };
           }
+          case "chat:queue-edit-start": {
+            const view = state.views[payload.sessionId];
+            const item = view?.queued?.find(item => item.id === payload.id);
+            if (!item || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
+            const hold = state.queueHolds[payload.sessionId];
+            if (hold && hold.id !== payload.id) throw new Error("Finish the current queue edit first.");
+            const token = hold?.token ?? payload.token;
+            state.queueHolds[payload.sessionId] = { id: payload.id, token };
+            change(payload.sessionId, { queued: view.queued.map(item => ({ ...item, editing: item.id === payload.id || undefined })) });
+            return { token, text: queuedTexts.get(item.id) ?? item.preview, hasImages: false };
+          }
+          case "chat:queue-edit-finish": {
+            const view = state.views[payload.sessionId];
+            const hold = state.queueHolds[payload.sessionId];
+            if (payload.projectId !== project.id || !hold || hold.id !== payload.id || hold.token !== payload.token) {
+              throw new Error("The queue edit is no longer active.");
+            }
+            if (payload.text !== undefined) {
+              if (!payload.text.trim()) throw new Error("Enter a message.");
+              queuedTexts.set(payload.id, payload.text);
+            }
+            delete state.queueHolds[payload.sessionId];
+            change(payload.sessionId, { queued: view.queued.map(item => item.id === payload.id
+              ? { ...item, preview: payload.text ?? item.preview, editing: undefined } : item) });
+            drainIdleQueue(payload.sessionId);
+            return;
+          }
           case "chat:queue-update": {
             const { sessionId, action } = payload;
             const view = state.views[sessionId];
             const queued = [...(view?.queued ?? [])];
             const index = queued.findIndex(({ id }) => id === payload.id);
             if (index < 0 || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
+            if (state.queueHolds[sessionId]) throw new Error("Finish the current queue edit first.");
             const [item] = queued.splice(index, 1);
             switch (action) {
               case "remove":
                 queuedTexts.delete(item.id);
                 break;
               case "edit":
-                if (consumeNextQueueEdit) {
-                  consumeNextQueueEdit = false;
-                  queuedTexts.delete(item.id);
-                  change(sessionId, { queued });
-                  throw new Error("The message is no longer queued.");
-                }
                 queuedTexts.set(item.id, payload.text);
                 queued.splice(index, 0, { ...item, preview: payload.text });
                 break;

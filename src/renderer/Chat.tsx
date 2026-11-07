@@ -7,10 +7,10 @@ import { MessageFooter } from './MessageFooter';
 import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
-import { DraftRecoveryPicker, QueuedMessages } from './QueuedMessages';
+import { QueuedMessages } from './QueuedMessages';
 import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, QueuedDraftEdit, ReadingPosition, SendAttempt } from './preferences';
-import { completeAttempt, recoverQueueEdit, restoreRecoveredDraft } from './preferences';
+import { completeAttempt, retainQueueEditText } from './preferences';
 import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
@@ -254,7 +254,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [historyError, setHistoryError] = useState<string>();
   const [forking, setForking] = useState(false);
   const [queueSaving, setQueueSaving] = useState(false);
-  const [queueNotice, setQueueNotice] = useState<string>();
+  const [queueReady, setQueueReady] = useState<string>();
+  const queueClaim = useRef<string | undefined>(undefined);
   const [toolDisclosure, setToolDisclosure] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const setToolExpanded = useCallback((id: string, expanded: boolean) => {
     setToolDisclosure(current => new Map(current).set(id, expanded));
@@ -299,7 +300,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     && hasDraft && (!attachments.length || canAttach);
   const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !queueSaving && !draft.sending
     && view?.status !== 'cancelling' && view?.queued?.some(item => item.id === queueEdit.id)
-    && queueEdit.text !== queueEdit.original && (queueEdit.text.trim() || queueEdit.hasImages));
+    && queueReady === queueEdit.token && (queueEdit.text.trim() || queueEdit.hasImages));
   const gaps = view?.gaps ?? [];
 
   useEffect(() => {
@@ -316,20 +317,55 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
 
   useEffect(() => {
     if (!queueEdit || queueSaving || !watchConnected || !view || view.queued?.some(item => item.id === queueEdit.id)) return;
-    updateDraft(recoverQueueEdit);
-    setQueueNotice(queueEdit.text !== queueEdit.original && queueEdit.text.trim() ? 'Edits saved as a draft' : 'Message left the queue');
+    updateDraft(retainQueueEditText);
   }, [queueEdit, queueSaving, updateDraft, view, watchConnected]);
 
+  useEffect(() => {
+    if (!queueEdit || !session || !watchConnected) {
+      setQueueReady(undefined);
+      queueClaim.current = undefined;
+      return;
+    }
+    const edit = queueEdit;
+    const claim = `${watchId}/${edit.token}`;
+    if (queueClaim.current === claim) return;
+    let active = true;
+    setQueueReady(undefined);
+    void window.pideck.invoke('chat:queue-edit-start', {
+      projectId: project.id, sessionId: session.id, id: edit.id, token: edit.token,
+    }).then(({ token }) => {
+      if (!active) return;
+      queueClaim.current = `${watchId}/${token}`;
+      setQueueReady(token);
+      if (token !== edit.token) updateDraft(current => current.queueEdit?.token === edit.token
+        ? { ...current, queueEdit: { ...current.queueEdit, token } } : current);
+    }, cause => {
+      if (active) updateDraft(current => current.queueEdit?.token === edit.token
+        ? { ...retainQueueEditText(current), error: readableError(cause) } : current);
+    });
+    return () => { active = false; };
+  }, [project.id, queueEdit?.id, queueEdit?.token, session?.id, updateDraft, watchConnected, watchId]);
+
   function editQueuedMessage(edit: QueuedDraftEdit) {
-    setQueueNotice(undefined);
+    queueClaim.current = `${watchId}/${edit.token}`;
+    setQueueReady(edit.token);
     updateDraft(current => current.queueEdit ? current : { ...current, queueEdit: edit, error: undefined });
   }
 
-  function cancelQueueEdit() {
-    if (queueSaving) return;
-    update({ queueEdit: undefined, error: undefined });
-    setQueueNotice(undefined);
-    textarea.current?.focus({ preventScroll: true });
+  async function cancelQueueEdit() {
+    const edit = queueEdit;
+    if (!edit || !selection || queueSaving || queueReady !== edit.token) return;
+    setQueueSaving(true);
+    update({ error: undefined });
+    try {
+      await window.pideck.invoke('chat:queue-edit-finish', { ...selection, id: edit.id, token: edit.token });
+      updateDraft(current => current.queueEdit?.token === edit.token ? { ...current, queueEdit: undefined, error: undefined } : current);
+    } catch (cause) {
+      updateDraft(current => current.queueEdit?.token === edit.token ? { ...current, error: readableError(cause) } : current);
+    } finally {
+      setQueueSaving(false);
+      textarea.current?.focus({ preventScroll: true });
+    }
   }
 
   async function saveQueueEdit() {
@@ -338,11 +374,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     setQueueSaving(true);
     update({ error: undefined });
     try {
-      await window.pideck.invoke('chat:queue-update', { ...selection, id: edit.id, action: 'edit', text: edit.text });
-      updateDraft(current => current.queueEdit?.id === edit.id ? { ...current, queueEdit: undefined, error: undefined } : current);
-      setQueueNotice(undefined);
+      await window.pideck.invoke('chat:queue-edit-finish', { ...selection, id: edit.id, token: edit.token, text: edit.text });
+      updateDraft(current => current.queueEdit?.token === edit.token ? { ...current, queueEdit: undefined, error: undefined } : current);
     } catch (cause) {
-      updateDraft(current => current.queueEdit?.id === edit.id ? { ...current, error: readableError(cause) } : current);
+      updateDraft(current => current.queueEdit?.token === edit.token ? { ...current, error: readableError(cause) } : current);
     } finally {
       setQueueSaving(false);
       textarea.current?.focus({ preventScroll: true });
@@ -453,7 +488,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
         images: attachments.length ? attachments.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
       };
       if (selection) {
-        await window.pideck.invoke('chat:send', { ...input, ...selection, delivery: busy ? 'follow-up' : 'send' });
+        await window.pideck.invoke('chat:send', { ...input, ...selection, delivery: queueing ? 'follow-up' : 'send' });
         updateDraft((current) => completeAttempt(current, attempt));
         jumpToLatest();
         onSent();
@@ -552,7 +587,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
       ? <><span>Selected model unavailable</span><button className="inline-action" type="button"
         onClick={() => onSettings(desiredProvider)}>Connect {desiredProvider ? providerLabel(desiredProvider) : 'provider'}</button></>
       : undefined;
-  const queueing = busy && !agentCompacting;
+  const queueing = (busy || Boolean(view?.queued?.some(item => item.editing))) && !agentCompacting;
   const submitLabel = queueing ? 'Queue next' : 'Send';
   const thinkingOptions = model?.configured && model.thinking.length > 1 ? { level: thinking, labels: thinkingLabels } : undefined;
   const displayedThinking = busy ? view?.thinking ?? (activeKey ? 'off' : undefined) : model?.configured ? thinking : undefined;
@@ -652,11 +687,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             ))}
           </div>}
           <textarea ref={textarea} id="prompt" value={queueEdit?.text ?? text} maxLength={200000} rows={2}
-            aria-label={queueEdit ? 'Edit queued message' : 'Message Pideck'} readOnly={queueSaving}
+            aria-label={queueEdit ? 'Edit queued message' : 'Message Pideck'} readOnly={queueSaving || Boolean(queueEdit && queueReady !== queueEdit.token)}
             placeholder={queueEdit ? 'Edit queued message…' : queueing ? 'Write a follow-up…' : 'Message Pideck…'}
             onChange={(event) => {
               const value = event.target.value;
-              setQueueNotice(undefined);
               updateDraft(current => queueEdit && current.queueEdit?.id === queueEdit.id
                 ? { ...current, queueEdit: { ...current.queueEdit, text: value }, error: undefined }
                 : queueEdit ? current : { ...current, text: value, pendingRequestId: undefined, error: undefined });
@@ -717,19 +751,12 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                       update({ model: key, thinking: model && modelKey(model) === key ? draft.thinking : undefined, error: undefined });
                       onModelChosen(key);
                     }} /> : !modelsError && <span className="composer-current-model">Loading models…</span>}
-              {draft.recoveredDrafts?.length ? <DraftRecoveryPicker current={draft} items={draft.recoveredDrafts}
-                disabled={Boolean(draft.sending || draft.reading)} onRestore={index => {
-                  updateDraft(current => restoreRecoveredDraft(current, index));
-                  setQueueNotice(undefined);
-                  textarea.current?.focus({ preventScroll: true });
-                }} /> : null}
-              {queueNotice && <span className="queue-recovery-note" role="status" title={queueNotice}>{queueNotice}</span>}
               </>}
             </div>
             <div className="composer-actions">
               {queueEdit ? <div className="queue-edit-actions" role="group" aria-label="Queue edit actions">
                 <button className="icon-button" type="button" aria-label="Cancel queue edit" title="Cancel editing (Esc)"
-                  disabled={queueSaving} onClick={cancelQueueEdit}><Icon name="close" /></button>
+                  disabled={queueSaving || queueReady !== queueEdit.token} onClick={() => void cancelQueueEdit()}><Icon name="close" /></button>
                 <button className="button button--primary queue-save-button" type="submit" aria-label="Save queued message"
                   title="Save queued message (Enter)" disabled={!canSaveQueue} aria-busy={queueSaving || undefined}>
                   <Icon name={queueSaving ? 'spinner' : 'check'} />

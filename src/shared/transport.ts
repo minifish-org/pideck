@@ -22,7 +22,7 @@ export type HostInput = {
   "project:add": { directory: string };
   "removal:plan": RemovalTarget;
   "removal:execute": RemovalTarget & { scope: string };
-  "owner:close": undefined;
+  "owner:close": { preserveQueueEdits?: boolean } | undefined;
 };
 export type HostResult = {
   [C in Exclude<Forwarded, "model:auth-open" | "model:auth-copy">]: Commands[C][1];
@@ -35,10 +35,10 @@ export type HostResult = {
   "owner:close": void;
 };
 export type HostRequest = {
-  [C in HostCommand]: { type: "request"; id: number; owner: number; command: C; payload: HostInput[C] }
+  [C in HostCommand]: { type: "request"; id: number; owner: number; windowId?: number; command: C; payload: HostInput[C] }
 }[HostCommand];
 export type ToHost =
-  | { type: "start"; dataDir: string; hasSavedCredentials: boolean }
+  | { type: "start"; dataDir: string; hasSavedCredentials: boolean; lifetimeId: string; closedWindows?: readonly number[] }
   | ({ type: "credential:snapshot"; id: number } & ({ credentials: Record<string, Credential> } | { error: string }))
   | { type: "credential:result"; id: number; error?: string }
   | { type: "shutdown" }

@@ -7,6 +7,16 @@ import { randomUUID } from "node:crypto";
 export async function openSmokeProvider() {
   const requests = [];
   const failures = [];
+  const gates = new Map();
+  function gate(name) {
+    let current = gates.get(name);
+    if (!current) {
+      const release = Promise.withResolvers();
+      current = { entered: 0, waiters: new Set(), released: release.promise, release: release.resolve };
+      gates.set(name, current);
+    }
+    return current;
+  }
   let recoveryRequests = 0;
   const server = createServer(async (request, response) => {
     try {
@@ -20,6 +30,9 @@ export async function openSmokeProvider() {
       requests.push(payload);
       const tools = payload.input.filter(item => item.type === "function_call_output");
       const prompt = JSON.stringify(payload.input.findLast(item => item.role === "user")?.content);
+      const gateName = /Queue hold (?:SAVE|CANCEL|RESTART|STOP|RELOAD|CLOSE)/.exec(prompt ?? "")?.[0];
+      const held = gateName ? gate(gateName) : undefined;
+      const queueExercise = payload.input.some(item => item.role === "user" && JSON.stringify(item.content).includes("Queue hold "));
       const recovering = prompt?.includes("Recover the active request");
       const id = randomUUID().replaceAll("-", "");
       const responseId = "resp_" + id;
@@ -27,7 +40,7 @@ export async function openSmokeProvider() {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
       emit({ type: "response.created", response: { id: responseId } });
       let item;
-      if (!recovering && tools.length < 2) {
+      if (!recovering && !queueExercise && tools.length < 2) {
         const name = tools.length === 0 ? "edit" : "bash";
         const args = JSON.stringify(name === "edit"
           ? { path: "example.ts", edits: [{ oldText: "'before'", newText: "'after'" }] }
@@ -38,11 +51,19 @@ export async function openSmokeProvider() {
         item = { ...item, arguments: args, status: "completed" };
       } else {
         const firstRecoveryAttempt = recovering && ++recoveryRequests === 1;
-        const text = recovering ? "Recovered after host restart." : "Package stream verified with the real coding tools.";
-        const partial = firstRecoveryAttempt ? "Recovery request is in progress." : recovering ? "Recovered" : "Package stream";
+        const text = held ? `${gateName}: current run finished.`
+          : recovering ? "Recovered after host restart." : "Package stream verified with the real coding tools.";
+        const partial = held ? `${gateName}: current run`
+          : firstRecoveryAttempt ? "Recovery request is in progress." : recovering ? "Recovered" : "Package stream";
         item = { type: "message", id: "msg_" + id, role: "assistant", status: "in_progress", content: [] };
         emit({ type: "response.output_item.added", output_index: 0, item });
         emit({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: partial });
+        if (held) {
+          held.entered++;
+          for (const waiter of held.waiters) waiter();
+          await held.released;
+          if (response.destroyed) return;
+        }
         if (firstRecoveryAttempt) return; // The client is terminated while this response is open.
         await delay(650);
         emit({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text.slice(partial.length) });
@@ -67,6 +88,24 @@ export async function openSmokeProvider() {
     endpoint: `http://127.0.0.1:${server.address().port}/openai/v1`,
     requests,
     failures,
+    waitForGate(name, attempts = 1) {
+      const held = gate(name);
+      if (held.entered >= attempts) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          if (held.entered < attempts) return;
+          clearTimeout(timeout);
+          held.waiters.delete(check);
+          resolve();
+        };
+        const timeout = setTimeout(() => {
+          held.waiters.delete(check);
+          reject(new Error(`The local provider did not enter ${name} attempt ${attempts}.`));
+        }, 15_000);
+        held.waiters.add(check);
+      });
+    },
+    releaseGate: name => gate(name).release(),
     close: () => new Promise(resolve => {
       server.close(resolve);
       server.closeAllConnections();

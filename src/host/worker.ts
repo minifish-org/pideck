@@ -50,7 +50,7 @@ function closeReviewWatch(owner: number) {
   watch?.controller.abort();
 }
 
-function closeOwner(owner: number) {
+function closeOwner(owner: number, advance = true, windowId = owner, preserveQueueEdits = false) {
   closedOwners.add(owner);
   for (const id of watches.get(owner)?.keys() ?? []) unwatch(owner, id);
   activityWatches.get(owner)?.dispose();
@@ -61,6 +61,7 @@ function closeOwner(owner: number) {
   }
   terminals.closeOwner(owner);
   auth?.closeOwner(owner);
+  return preserveQueueEdits ? undefined : runtime?.releaseQueueEdits(windowId, advance);
 }
 
 function messageOf(error: unknown): string {
@@ -130,14 +131,14 @@ async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: st
 }
 
 async function handle(request: HostRequest): Promise<unknown> {
-  const { owner, command, payload } = request;
-  if (!runtime || !auth || closing || closedOwners.has(owner)) throw new Error("The workspace host is closed.");
+  const { owner, windowId = owner, command, payload } = request;
+  if (!runtime || !auth || closing || (closedOwners.has(owner) && command !== "owner:close")) throw new Error("The workspace host is closed.");
   if (removing && (command === "chat:watch" || command === "chat:earlier")) {
     throw new Error("The conversation store is finishing a removal.");
   }
   switch (command) {
     case "owner:close":
-      return closeOwner(owner);
+      return closeOwner(owner, true, windowId, payload?.preserveQueueEdits);
     case "project:list":
       return runtime.listProjects();
     case "project:add":
@@ -196,6 +197,10 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.send(payload);
     case "chat:queue-read":
       return runtime.readQueuedInput(payload);
+    case "chat:queue-edit-start":
+      return runtime.startQueueEdit(payload, windowId);
+    case "chat:queue-edit-finish":
+      return runtime.finishQueueEdit(payload, windowId);
     case "chat:queue-update":
       return runtime.updateQueuedInput(payload);
     case "chat:cancel":
@@ -321,7 +326,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
       send({ type: "credential:read", id });
       return result.promise;
     } : undefined);
-    void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1)).then(opened => {
+    void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows).then(opened => {
       runtime = opened;
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
       send({ type: "ready" });
@@ -347,9 +352,11 @@ port.on("message", ({ data }: { data: ToHost }) => {
   } else if (data.type === "shutdown" && !closing) {
     closing = true;
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
-    for (const owner of new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()])) closeOwner(owner);
+    const owners = new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()]);
+    const released = Promise.allSettled([...owners].map(owner => closeOwner(owner, false)));
     terminals.closeAll();
     auth?.close();
-    void Promise.resolve(runtime?.close()).finally(() => process.exit(0));
+    void released.then(() => runtime?.releaseQueueEdits(undefined, false))
+      .then(() => runtime?.close()).finally(() => process.exit(0));
   }
 });

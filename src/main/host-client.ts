@@ -1,6 +1,7 @@
 import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { CredentialVault } from "./credentials";
 import { hostEnvironment } from "./host-env";
 import type { HostEvent } from "../shared/api";
@@ -15,6 +16,8 @@ export class HostClient {
   private nextId = 0;
   private stopping = false;
   private restartAttempts = 0;
+  private readonly lifetimeId = randomUUID();
+  private readonly closedWindows = new Set<number>();
 
   constructor(
     private dataDir: string,
@@ -112,12 +115,14 @@ export class HostClient {
     });
     void this.vault.hasSavedCredentials().then(hasSavedCredentials => {
       if (this.process === child && !this.stopping) {
-        this.post(child, { type: "start", dataDir: this.dataDir, hasSavedCredentials });
+        this.post(child, { type: "start", dataDir: this.dataDir, hasSavedCredentials, lifetimeId: this.lifetimeId,
+          closedWindows: [...this.closedWindows] });
       }
     });
   }
 
-  async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C]): Promise<HostResult[C]> {
+  async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C], windowId = owner): Promise<HostResult[C]> {
+    if (command === "owner:close" && !(payload as HostInput["owner:close"])?.preserveQueueEdits) this.closedWindows.add(windowId);
     await this.ready;
     const child = this.process;
     if (!child || this.stopping) throw new Error("The workspace host is unavailable.");
@@ -125,7 +130,7 @@ export class HostClient {
     const response = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
-        this.post(child, { type: "request", id, owner, command, payload } as HostRequest);
+        this.post(child, { type: "request", id, owner, windowId, command, payload } as HostRequest);
       } catch (error) {
         this.pending.delete(id);
         reject(error);

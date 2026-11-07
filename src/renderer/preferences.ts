@@ -66,9 +66,7 @@ export function savePreferences(value: Preferences) {
 
 export type Attachment = ImageInput & { name: string };
 export type SendAttempt = { text: string; attachments: Attachment[]; requestId: string };
-export type QueuedDraftEdit = { id: number; text: string; original: string; hasImages: boolean };
-type DraftKind = 'draft' | 'queue-edit';
-export type RecoveredDraft = { text: string; attachments: Attachment[]; kind?: DraftKind };
+export type QueuedDraftEdit = { id: number; token: string; text: string; original: string; hasImages: boolean };
 
 export type Draft = {
   text: string;
@@ -81,8 +79,6 @@ export type Draft = {
   reading?: boolean;
   error?: string;
   queueEdit?: QueuedDraftEdit;
-  recoveredDrafts?: RecoveredDraft[];
-  recoveryKind?: DraftKind;
 };
 
 export const emptyDraft: Draft = { text: '', attachments: [] };
@@ -90,23 +86,14 @@ export const newSessionDraft = 'draft';
 
 type Drafts = Record<string, Record<string, Draft>>;
 
-export function recoverQueueEdit(draft: Draft): Draft {
+// A stopped run or an expired editor can leave unsaved text. Keep it in the
+// ordinary message box instead of introducing another list of drafts.
+export function retainQueueEditText(draft: Draft): Draft {
   const edit = draft.queueEdit;
   if (!edit) return draft;
   const next = { ...draft, queueEdit: undefined, error: undefined };
   if (edit.text === edit.original || !edit.text.trim()) return next;
-  if (!draft.text && !draft.attachments.length) return { ...next, text: edit.text, recoveryKind: 'queue-edit', pendingRequestId: undefined };
-  return { ...next, recoveredDrafts: [...(draft.recoveredDrafts ?? []), { text: edit.text, attachments: [], kind: 'queue-edit' }] };
-}
-
-export function restoreRecoveredDraft(draft: Draft, index: number): Draft {
-  const restored = draft.recoveredDrafts?.[index];
-  if (!restored) return draft;
-  const remaining = draft.recoveredDrafts!.filter((_, candidate) => candidate !== index);
-  if (draft.text || draft.attachments.length) remaining.push({ text: draft.text, attachments: draft.attachments, kind: draft.recoveryKind ?? 'draft' });
-  return { ...draft, text: restored.text, attachments: restored.attachments, recoveryKind: restored.kind,
-    recoveredDrafts: remaining.length ? remaining : undefined,
-    pendingRequestId: undefined, error: undefined };
+  return { ...next, text: draft.text === edit.text ? draft.text : [draft.text, edit.text].filter(Boolean).join('\n\n'), pendingRequestId: undefined };
 }
 
 export function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
@@ -116,7 +103,6 @@ export function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
     ...draft,
     text: unchanged ? '' : draft.text,
     attachments: unchanged ? [] : draft.attachments,
-    recoveryKind: unchanged ? undefined : draft.recoveryKind,
     attempt: undefined,
     pendingRequestId: undefined,
     sending: false,
@@ -140,31 +126,44 @@ export function acceptStartedDraft(drafts: Drafts, projectId: string, sessionId:
 export function readDrafts(): Drafts {
   const drafts: Drafts = {};
   try {
-    for (const key of Object.keys(localStorage)) {
+    const keys = new Set<string>();
+    for (const storage of [() => localStorage, () => sessionStorage]) {
+      try { for (const key of Object.keys(storage())) keys.add(key); } catch { /* Storage is optional. */ }
+    }
+    for (const key of keys) {
       if (!key.startsWith(draftKey)) continue;
       const [projectId, sessionId, extra] = key.slice(draftKey.length).split('/');
       if (!projectId || !sessionId || extra !== undefined || !identifier.test(projectId)
         || (sessionId !== newSessionDraft && !identifier.test(sessionId))) continue;
       try {
-        const { text, requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries, recoveryKind } = record(JSON.parse(localStorage.getItem(key) ?? 'null'));
-        if (typeof text !== 'string' || text.length > maxDraftLength) continue;
-        const edit = record(savedEdit);
-        const queueEdit = Number.isSafeInteger(edit.id) && Number(edit.id) > 0
+        let saved: Record<string, unknown> = {};
+        let savedWindowEdit: unknown;
+        try { saved = record(JSON.parse(localStorage.getItem(key) ?? 'null')); } catch { /* Keep the window editor. */ }
+        try { savedWindowEdit = JSON.parse(sessionStorage.getItem(key) ?? 'null'); } catch { /* Keep the ordinary draft. */ }
+        const { text = '', requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries } = saved;
+        // Older alternatives may merge into a longer unsent draft. Keep that
+        // text across reopening; outgoing messages still have their IPC limit.
+        if (typeof text !== 'string') continue;
+        const edit = record(savedWindowEdit);
+        const queueEdit = Number.isSafeInteger(edit.id) && Number(edit.id) > 0 && typeof edit.token === 'string' && identifier.test(edit.token)
           && typeof edit.text === 'string' && edit.text.length <= maxDraftLength
           && typeof edit.original === 'string' && edit.original.length <= maxDraftLength && typeof edit.hasImages === 'boolean'
           ? edit as QueuedDraftEdit : undefined;
-        const recoveredDrafts = Array.isArray(savedRecoveries) ? savedRecoveries.flatMap<RecoveredDraft>(value => {
-          const { text, kind } = record(value);
-          return typeof text === 'string' && text.length > 0 && text.length <= maxDraftLength
-            ? [{ text, attachments: [], kind: kind === 'draft' || kind === 'queue-edit' ? kind : undefined }] : [];
+        // Migrate older saved alternatives into visible, unsent text once. Their
+        // message identity was never stored, so they cannot reserve queue items.
+        const legacyText = Array.isArray(savedRecoveries) ? savedRecoveries.flatMap(value => {
+          const { text } = record(value);
+          return typeof text === 'string' && text.length > 0 && text.length <= maxDraftLength ? [text] : [];
         }) : [];
-        if (!text && !queueEdit && !recoveredDrafts.length) continue;
+        const legacyEdit = record(savedEdit);
+        if (typeof legacyEdit.text === 'string' && legacyEdit.text.length <= maxDraftLength
+          && legacyEdit.text !== legacyEdit.original) legacyText.push(legacyEdit.text);
+        const currentText = [...new Set([text, ...legacyText].filter(Boolean))].join('\n\n');
+        if (!currentText && !queueEdit) continue;
         (drafts[projectId] ??= {})[sessionId] = {
-          ...emptyDraft, text,
-          pendingRequestId: typeof requestId === 'string' && identifier.test(requestId) ? requestId : undefined,
+          ...emptyDraft, text: currentText,
+          pendingRequestId: !legacyText.length && typeof requestId === 'string' && identifier.test(requestId) ? requestId : undefined,
           queueEdit,
-          recoveredDrafts: recoveredDrafts.length ? recoveredDrafts : undefined,
-          recoveryKind: recoveryKind === 'draft' || recoveryKind === 'queue-edit' ? recoveryKind : undefined,
         };
       } catch {
         // One corrupt record need not prevent other drafts from reopening.
@@ -191,17 +190,21 @@ export function saveDrafts(previous: Drafts, current: Drafts) {
       const prior = before[sessionId];
       const requestId = draftRequestId(next);
       if (next?.text === prior?.text && requestId === draftRequestId(prior)
-        && next?.queueEdit === prior?.queueEdit && next?.recoveredDrafts === prior?.recoveredDrafts
-        && next?.recoveryKind === prior?.recoveryKind) continue;
+        && next?.queueEdit === prior?.queueEdit) continue;
       const key = `${draftKey}${projectId}/${sessionId}`;
       try {
-        if (next && (next.text || next.queueEdit || next.recoveredDrafts?.length)) localStorage.setItem(key, JSON.stringify({
-          text: next.text, requestId, queueEdit: next.queueEdit,
-          recoveredDrafts: next.recoveredDrafts?.map(({ text, kind }) => ({ text, kind })), recoveryKind: next.recoveryKind,
-        }));
+        if (next?.text) localStorage.setItem(key, JSON.stringify({ text: next.text, requestId }));
         else localStorage.removeItem(key);
       } catch {
         // Keep the in-memory draft when local storage is unavailable or full.
+      }
+      try {
+        // Editing belongs to this window: reloads reconnect the same reservation,
+        // while closing the window discards it just like Cancel.
+        if (next?.queueEdit) sessionStorage.setItem(key, JSON.stringify(next.queueEdit));
+        else sessionStorage.removeItem(key);
+      } catch {
+        // An unavailable store must not prevent the in-memory editor from working.
       }
     }
   }

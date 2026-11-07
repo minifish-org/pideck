@@ -110,6 +110,9 @@ const validators = {
     && (value.requestId === undefined || match(value.requestId, id))
     && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer"),
   "chat:queue-read": (value) => object(value) && selection(value) && entry(value.id),
+  "chat:queue-edit-start": (value) => object(value) && selection(value) && entry(value.id) && match(value.token, id),
+  "chat:queue-edit-finish": (value) => object(value) && selection(value) && entry(value.id) && match(value.token, id)
+    && (value.text === undefined || string(value.text, 200_000)),
   "chat:queue-update": (value) => object(value) && selection(value) && entry(value.id)
     && (value.action === "steer" || value.action === "remove"
       || (value.action === "edit" && string(value.text, 200_000))

@@ -106,13 +106,16 @@ function openWindow() {
   mainWindow = window;
   desktopMenu?.attach(window);
   let windowOwner = ++owner;
+  const windowId = window.webContents.id;
 
-  const retire = () => { void host?.request(windowOwner, "owner:close", undefined).catch(() => {}); };
+  const retire = (preserveQueueEdits = false) => {
+    void host?.request(windowOwner, "owner:close", { preserveQueueEdits }, windowId).catch(() => {});
+  };
   window.webContents.on("did-navigate", () => {
-    retire();
+    retire(true);
     windowOwner = ++owner;
   });
-  window.webContents.on("render-process-gone", () => retire());
+  window.webContents.on("render-process-gone", () => retire(true));
   window.webContents.on("will-navigate", event => event.preventDefault());
   window.webContents.on("will-frame-navigate", event => event.preventDefault());
   window.webContents.on("will-attach-webview", event => event.preventDefault());
@@ -271,7 +274,7 @@ async function initialize() {
       await shell.openExternal(url.href);
       return;
     }
-    return client.request(requestOwner, command, payload);
+    return client.request(requestOwner, command, payload, window.webContents.id);
   });
 
   openWindow();

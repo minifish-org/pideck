@@ -14,7 +14,7 @@ const workspaceScreens = ["welcome", "first-draft", "providers", "provider-sign-
   "image-attachment", "image-preview", "workspace", "right-sidebar", "wide", "narrow", "sidebar", "terminal", "branches", "project-tree",
   "light-providers", "light-model-menu", "light-workspace", "light-terminal",
   "providers-change", "light-providers-change", "providers-key", "light-providers-key", "light-provider-sign-in", "linked-file", "queue-edit", "light-queue-edit",
-  "file-preview", "light-file-preview", "draft-recovery", "light-draft-recovery"]
+  "file-preview", "light-file-preview"]
   .map(stage => `${output}/pideck-ui-${stage}.png`);
 const log = `${output}/${name}.log`;
 const flowLog = `${output}/${name}-flow.log`;

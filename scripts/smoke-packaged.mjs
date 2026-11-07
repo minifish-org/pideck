@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -905,6 +906,113 @@ try {
     await page.locator("#workspace-tools[data-docked]").waitFor();
   }
 
+  const heldQueue = page.getByRole("list", { name: "Queued messages" });
+  const heldRunningBadge = smokeSession.locator("[data-activity=running]");
+  function lastProviderInput(request) {
+    const content = request.input.findLast(item => item.role === "user")?.content;
+    return typeof content === "string" ? content
+      : (content ?? []).flatMap(block => typeof block.text === "string" ? [block.text] : []).join("\n");
+  }
+  const queueInputRequests = held => modelServer.requests.slice(held.start)
+    .map(lastProviderInput).filter(text => text !== held.marker);
+  async function beginQueueHold(name) {
+    const marker = `Queue hold ${name}`;
+    const original = `${name} original first`;
+    const revised = `${name} revised first`;
+    const following = [`${name} second`, `${name} third`];
+    const ordinaryDraft = `${name} ordinary unsent draft`;
+    const start = modelServer.requests.length;
+    await prompt.fill(marker);
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await modelServer.waitForGate(marker);
+    await page.getByText(`${marker}: current run`, { exact: true }).waitFor();
+    for (const text of [original, ...following]) {
+      await prompt.fill(text);
+      await prompt.press("Enter");
+      await heldQueue.getByText(text, { exact: true }).waitFor();
+    }
+    const ids = await heldQueue.getByRole("listitem").evaluateAll(rows => rows.map(row => row.dataset.queueId));
+    await prompt.fill(ordinaryDraft);
+    await heldQueue.getByRole("listitem").filter({ hasText: original })
+      .getByRole("button", { name: "Edit message", exact: true }).click();
+    const editor = page.getByRole("textbox", { name: "Edit queued message", exact: true });
+    assert.equal(await editor.inputValue(), original);
+    await editor.fill(revised);
+    const row = heldQueue.locator(`[data-queue-id="${ids[0]}"]`);
+    await row.getByRole("status", { name: "Editing queued message", exact: true }).waitFor();
+    return { marker, original, revised, following, ordinaryDraft, start, ids, row, editor };
+  }
+  async function expectHeldAfterMain(held) {
+    modelServer.releaseGate(held.marker);
+    await page.getByText(`${held.marker}: current run finished.`, { exact: true }).waitFor();
+    await heldRunningBadge.waitFor({ state: "hidden" });
+    // The first run has completed for real. Give an incorrectly released queue
+    // a chance to reach the local provider before asserting that it stayed held.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.deepEqual(queueInputRequests(held), [], "An edited queue must not execute after the current run ends.");
+    assert.deepEqual(await heldQueue.getByRole("listitem").evaluateAll(rows => rows.map(row => row.dataset.queueId)), held.ids);
+    assert.equal(await held.editor.inputValue(), held.revised);
+    await held.row.getByRole("status", { name: "Editing queued message", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Save queued message", exact: true }).isEnabled(), true);
+  }
+  async function finishQueueHold(held, save, extra = []) {
+    await page.getByRole("button", { name: save ? "Save queued message" : "Cancel queue edit", exact: true }).click();
+    await heldQueue.waitFor({ state: "detached" });
+    await heldRunningBadge.waitFor({ state: "hidden" });
+    assert.deepEqual(queueInputRequests(held), [save ? held.revised : held.original, ...held.following, ...extra],
+      "Saving or cancelling must release the original queue in order exactly once.");
+    assert.equal(await prompt.inputValue(), held.ordinaryDraft);
+    assert.equal(await page.locator(".composer").getByRole("button", { name: /draft|restore/i }).count(), 0);
+    assert.equal(await page.getByText("Edits saved as a draft", { exact: true }).count(), 0);
+    const submitted = await page.getByRole("article", { name: "You", exact: true }).allTextContents();
+    const omitted = save ? held.original : held.revised;
+    assert.ok(submitted.every(text => !text.includes(omitted)), "Unsubmitted queue text must not become a user message.");
+  }
+  async function restartWorkspaceHost() {
+    await app.evaluate(({ app }) => {
+      const host = app.getAppMetrics().find(metric => metric.name === "Pideck workspace");
+      if (!host) throw new Error("Workspace process was not found.");
+      process.kill(host.pid, "SIGKILL");
+    });
+  }
+
+  const savedHold = await beginQueueHold("SAVE");
+  await expectHeldAfterMain(savedHold);
+  const lateInput = "SAVE added after the first run ended";
+  await command("chat:send", { projectId, sessionId: conversation.id, requestId: randomUUID(), text: lateInput,
+    model: { provider: azure.provider, id: azure.id }, thinking: "off", delivery: "send" });
+  await heldQueue.getByText(lateInput, { exact: true }).waitFor();
+  assert.deepEqual(queueInputRequests(savedHold), [], "An idle send must queue behind an outstanding edit.");
+  await finishQueueHold(savedHold, true, [lateInput]);
+
+  const cancelledHold = await beginQueueHold("CANCEL");
+  await expectHeldAfterMain(cancelledHold);
+  await finishQueueHold(cancelledHold, false);
+
+  const stoppedHold = await beginQueueHold("STOP");
+  await page.getByRole("button", { name: "Stop the run", exact: true }).click();
+  await heldQueue.waitFor({ state: "detached" });
+  await heldRunningBadge.waitFor({ state: "hidden" });
+  assert.deepEqual(queueInputRequests(stoppedHold), [], "Stop must abort held inputs rather than briefly releasing them.");
+  assert.equal(await prompt.inputValue(), `${stoppedHold.ordinaryDraft}\n\n${stoppedHold.revised}`,
+    "Stop keeps unsaved editing text in the ordinary draft without creating another draft list.");
+  assert.equal(await page.locator(".composer").getByRole("button", { name: /draft|restore/i }).count(), 0);
+  const stoppedMessages = await page.getByRole("article", { name: "You", exact: true }).allTextContents();
+  assert.ok(stoppedMessages.every(text => [stoppedHold.original, stoppedHold.revised, ...stoppedHold.following]
+    .every(stopped => !text.includes(stopped))), "Stopped queued inputs must not become transcript messages.");
+  const persistedDrafts = await page.evaluate(() => Object.entries(localStorage)
+    .filter(([key]) => key.startsWith("pideck.draft.v1/")).map(([, value]) => value));
+  assert.ok(persistedDrafts.length > 0);
+  for (const draft of persistedDrafts) assert.doesNotMatch(draft, /"(?:recoveredDrafts|recoveryKind)"/);
+  modelServer.releaseGate(stoppedHold.marker);
+
+  const restartedHold = await beginQueueHold("RESTART");
+  await restartWorkspaceHost();
+  await modelServer.waitForGate(restartedHold.marker, 2);
+  await terminalRegion.getByText("Shell running").waitFor();
+  await expectHeldAfterMain(restartedHold);
+  await finishQueueHold(restartedHold, true);
+
   await page.evaluate(() => {
     window.pideck.onEvent(event => {
       if (event.type === "host:restart") document.documentElement.dataset.hostRestarted = "true";
@@ -943,11 +1051,7 @@ try {
   await queue.getByRole("listitem").nth(1).getByText(movedQueued, { exact: true }).waitFor();
   await queueAction(firstQueued, "Steer current run");
   await queuedRow(firstQueued).getByText("Steering", { exact: true }).waitFor();
-  await app.evaluate(({ app }) => {
-    const host = app.getAppMetrics().find(metric => metric.name === "Pideck workspace");
-    if (!host) throw new Error("Workspace process was not found.");
-    process.kill(host.pid, "SIGKILL");
-  });
+  await restartWorkspaceHost();
   await page.waitForFunction(() => document.documentElement.dataset.hostRestarted === "true");
   await page.getByText("Shell running").waitFor();
   await page.getByText("Recovered after host restart.", { exact: true }).waitFor({ timeout: 35_000 });
@@ -960,6 +1064,13 @@ try {
   assert.deepEqual(queueMessages, [firstQueued, movedQueued, editedQueued]);
   assert.ok(sentQueue.every(message => !message.includes(discardedQueued) && !message.includes(draftQueued)));
   await expectTerminalHistory("PTY_OK");
+  const reloadedHold = await beginQueueHold("RELOAD");
+  await page.reload();
+  await reloadedHold.editor.waitFor();
+  assert.equal(await reloadedHold.editor.inputValue(), reloadedHold.revised,
+    "Reload must retain the unsaved queue edit in this window.");
+  await expectHeldAfterMain(reloadedHold);
+  await finishQueueHold(reloadedHold, false);
   assert.equal((await command("session:list", { projectId }))[0].id, conversation.id);
   await prompt.fill("Resume this draft after reopening.");
   await chooseAppearance(app, page, "light");
@@ -1059,6 +1170,56 @@ try {
   const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
   assert.deepEqual(await restoredPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
+  if (process.platform === "darwin") {
+    const marker = "Queue hold CLOSE";
+    const original = "CLOSE original queued input";
+    const revised = "CLOSE unsaved queue edit";
+    const following = "CLOSE later queued input";
+    const ordinaryDraft = "CLOSE ordinary unsent draft";
+    const requestStart = modelServer.requests.length;
+    const closePrompt = restoredPage.getByRole("textbox", { name: "Message Pideck", exact: true });
+    const closeQueue = restoredPage.getByRole("list", { name: "Queued messages" });
+    await closePrompt.fill(marker);
+    await restoredPage.getByRole("button", { name: "Send", exact: true }).click();
+    await modelServer.waitForGate(marker);
+    for (const text of [original, following]) {
+      await closePrompt.fill(text);
+      await closePrompt.press("Enter");
+      await closeQueue.getByText(text, { exact: true }).waitFor();
+    }
+    await closePrompt.fill(ordinaryDraft);
+    await closeQueue.getByRole("listitem").filter({ hasText: original })
+      .getByRole("button", { name: "Edit message", exact: true }).click();
+    await restoredPage.getByRole("textbox", { name: "Edit queued message", exact: true }).fill(revised);
+    modelServer.releaseGate(marker);
+    await restoredPage.getByText(`${marker}: current run finished.`, { exact: true }).waitFor();
+    await restoredPage.locator(".chat-running").waitFor({ state: "detached" });
+    assert.deepEqual(modelServer.requests.slice(requestStart).map(lastProviderInput), [marker]);
+    // The first did-navigate handler retires the frame while preserving its
+    // window's hold. Close that same window before the new frame can reclaim it.
+    await app.evaluate(({ BrowserWindow }) => new Promise(resolve => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.once("closed", resolve);
+      window.webContents.once("did-navigate", () => window.close());
+      window.webContents.reload();
+    }));
+    const deadline = Date.now() + 15_000;
+    const releasedInputs = () => modelServer.requests.slice(requestStart).map(lastProviderInput).filter(text => text !== marker);
+    while (releasedInputs().length < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.deepEqual(releasedInputs(), [original, following],
+      "Closing a retired frame's window must release the saved queue exactly once, without its unsaved edit.");
+    const opened = app.waitForEvent("window");
+    await clickNativeMenu(app, "open-project");
+    const returned = await opened;
+    await returned.getByRole("textbox", { name: "Message Pideck", exact: true }).waitFor();
+    await returned.getByRole("list", { name: "Queued messages" }).waitFor({ state: "detached" });
+    await returned.locator(".chat-running").waitFor({ state: "detached" });
+    assert.equal(await returned.getByRole("textbox", { name: "Edit queued message", exact: true }).count(), 0);
+    assert.equal(await returned.getByRole("textbox", { name: "Message Pideck", exact: true }).inputValue(), ordinaryDraft);
+    const messages = await returned.getByRole("article", { name: "You", exact: true }).allTextContents();
+    assert.ok(messages.some(text => text.includes(original)) && messages.some(text => text.includes(following)));
+    assert.ok(messages.every(text => !text.includes(revised)));
+  }
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);
   console.log("Packaged Electron verified: native menus, coding and host recovery, native PTY, and permanent workspace and session removal.");

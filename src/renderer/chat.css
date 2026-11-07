@@ -179,23 +179,8 @@
 .queue-actions .queue-action-delete:is(:hover, :focus-visible):not([aria-disabled='true']) { color: var(--control-danger-fgColor-hover); }
 .queue-actions .icon-button[aria-disabled='true'] { color: var(--button-invisible-fgColor-disabled); cursor: default; background: var(--button-invisible-bgColor-disabled); }
 .queue-edit-label { display: inline-flex; align-items: center; gap: 6px; color: var(--fgColor-muted); }
-.queue-recovery-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fgColor-muted); font-size: 11px; }
 .queue-edit-actions { display: flex; align-items: center; gap: 4px; }
 .queue-edit-actions .icon-button, .queue-edit-actions .queue-save-button { width: 34px; height: 34px; padding: 0; }
-.queue-restore { flex: none; anchor-name: --draft-recovery; }
-.chat-popover.draft-recovery-popover {
-  position-anchor: --draft-recovery; left: clamp(16px, anchor(left), calc(100vw - 356px)); bottom: anchor(top); margin-bottom: 6px;
-  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
-  inline-size: min(340px, calc(100vw - 32px)); max-block-size: min(330px, 52vh);
-}
-.draft-recovery-popover:popover-open { display: flex; flex-direction: column; gap: 8px; }
-.draft-recovery-current { display: grid; gap: 4px; padding: 5px 8px 9px; border-bottom: 1px solid var(--borderColor-muted); }
-.draft-recovery-kind { display: flex; align-items: center; gap: 5px; color: var(--fgColor-muted); font-size: 11px; }
-.draft-recovery-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; }
-.draft-recovery-popover small { color: var(--fgColor-muted); font-size: 11px; }
-.draft-recovery-list { min-height: 0; overflow: auto; list-style: none; padding: 3px; margin: -3px; }
-.draft-recovery-option { display: grid; gap: 4px; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 6px; background: transparent; color: var(--fgColor-default); }
-.draft-recovery-option:hover, .draft-recovery-option:focus-visible { background: var(--control-transparent-bgColor-hover); }
 .queued-messages .composer-notice { margin: 6px 0 0; }
 .model-trigger {
   display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 28px; max-width: 320px;

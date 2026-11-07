@@ -94,6 +94,7 @@ export type ChatMessage = {
 };
 export type ChatGap = { after: number; upTo: number; beforeMessageId?: string };
 export type QueuedInputRef = Selection & { id: number };
+export type QueueEditRef = QueuedInputRef & { token: string };
 export type QueueUpdate =
   | { action: "steer" | "remove" }
   | { action: "edit"; text: string }
@@ -109,7 +110,7 @@ export type ChatView = {
   hasEarlier?: boolean;
   gaps?: ChatGap[];
   activity?: { kind: "compacting" | "retrying" | "waiting"; retryAt?: number };
-  queued?: { id: number; requestId?: string; delivery: "follow-up" | "steer"; preview: string }[];
+  queued?: { id: number; requestId?: string; delivery: "follow-up" | "steer"; preview: string; editing?: boolean }[];
   canSteerQueued?: boolean;
 };
 
@@ -160,6 +161,8 @@ export type Commands = {
   "chat:start": [StartChat, Session];
   "chat:send": [SendChat, void];
   "chat:queue-read": [QueuedInputRef, { text: string; hasImages: boolean }];
+  "chat:queue-edit-start": [QueueEditRef, { token: string; text: string; hasImages: boolean }];
+  "chat:queue-edit-finish": [QueueEditRef & { text?: string }, void];
   "chat:queue-update": [QueuedInputRef & QueueUpdate, void];
   "chat:cancel": [Selection, void];
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];

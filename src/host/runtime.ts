@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withCancel, type Context } from "@earendil-works/chord/context";
@@ -7,7 +7,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, section,
-  type Conversation, type ConversationId, type EntryId, type InputSubmissionDraft, type TaskId, type TranscriptView,
+  type Conversation, type ConversationId, type ConversationView, type EntryId, type InputSubmissionDraft, type TaskId, type TranscriptView,
 } from "@earendil-works/pi-durable";
 import { err, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -15,7 +15,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
-  ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
+  ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueEditRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat,
 } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
@@ -24,13 +24,16 @@ import { chatProjection, inputEntryKind, type CompletedRunTiming } from "./chat-
 import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
-import { readQueuedInput, updateQueuedInput } from "./queued-input.js";
+import { advanceReleasedQueue, discardQueueEdit, finishQueueEdit, QueueEditDoc, readQueuedInput, releaseQueueEdit,
+  startQueueEdit, submitQueuedInput, updateQueuedInput } from "./queued-input.js";
+import type { QueueEditState } from "./queued-input.js";
 import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
 import { completedRunTiming } from "./run-timing.js";
 import { reviewWrites } from "./write-review.js";
 
 const context = BACKGROUND_CONTEXT;
+const processLifetime = randomUUID();
 const instructions = [
   "You are Pideck, a coding agent working in the user's selected local project.",
   "Inspect relevant files before editing. Read AGENTS.md in relevant subdirectories for instructions scoped to those files.",
@@ -106,6 +109,8 @@ export class Runtime {
   private readonly admissions = new Set<Promise<unknown>>();
   private readonly starting = new Map<string, { projectId: string; result: Promise<Session> }>();
   private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id));
+  private readonly closedEditOwners = new Set<number>();
+  private editsClosing = false;
 
   private constructor(
     private readonly metadata: Metadata,
@@ -116,6 +121,7 @@ export class Runtime {
     private readonly openHarness: () => Promise<Harness>,
     private readonly savedCredentials?: PersistentCredentials,
     private readonly onStorageFailure?: () => void,
+    private readonly lifetimeId: string = processLifetime,
   ) {}
 
   static async open(
@@ -124,6 +130,8 @@ export class Runtime {
     suppliedModels?: Models,
     credentials: CredentialStore = new InMemoryCredentialStore(),
     onStorageFailure?: () => void,
+    lifetimeId: string = processLifetime,
+    closedWindows: readonly number[] = [],
   ): Promise<Runtime> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const metadata = new Metadata(join(dataDir, "workspace.sqlite"));
@@ -179,15 +187,18 @@ export class Runtime {
         return harness;
       }
       const harness = await openHarness();
-      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, savedCredentials, onStorageFailure);
+      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, savedCredentials, onStorageFailure, lifetimeId);
+      for (const windowId of closedWindows) runtime.closedEditOwners.add(windowId);
       try {
         if (await runtime.recoverSessionStarts()) {
           await harness.close(context);
           metadata.reapUnmapped(durablePath);
           runtime.harness = await openHarness();
         }
+        await runtime.recoverQueueEdits();
         await runtime.activities.attach(runtime.harness);
         await runtime.recoverSessionTitles();
+        await runtime.resumeReleasedQueues();
         runtime.harness.resume();
       } catch (error) {
         runtime.activities.detach();
@@ -379,6 +390,64 @@ export class Runtime {
     });
   }
 
+  startQueueEdit(input: QueueEditRef, owner: number) {
+    return this.admit(async () => {
+      const conversation = await this.conversation(input);
+      return conversation.commit(tx => {
+        if (this.editsClosing || this.closedEditOwners.has(owner)) throw new Error("This editing window has closed.");
+        return startQueueEdit(tx, conversation.id, { ...input, owner, lifetimeId: this.lifetimeId });
+      }, context);
+    });
+  }
+
+  finishQueueEdit(input: QueueEditRef & { text?: string }, owner: number): Promise<void> {
+    return this.admit(async () => {
+      const conversation = await this.conversation(input);
+      return conversation.commit(tx => {
+        if (this.editsClosing || this.closedEditOwners.has(owner)) throw new Error("This editing window has closed.");
+        return finishQueueEdit(tx, conversation, { ...input, owner, lifetimeId: this.lifetimeId }, input.text);
+      }, context);
+    });
+  }
+
+  private conversationRows() {
+    return this.metadata.listProjects().flatMap(project => this.metadata.sessionRows(project.id));
+  }
+
+  private async recoverQueueEdits() {
+    for (const row of this.conversationRows()) {
+      const held = await this.harness.snapshot(QueueEditDoc, row.conversationId, context);
+      if (!held?.edit) continue;
+      const foreignLifetime = held.edit.lifetimeId !== this.lifetimeId;
+      if (!foreignLifetime && !this.closedEditOwners.has(held.edit.owner)) continue;
+      const conversation = await this.harness.conversation(row.conversationId, context);
+      if (conversation) await conversation.commit(tx => releaseQueueEdit(tx, conversation, undefined, this.lifetimeId, false, foreignLifetime), context);
+    }
+  }
+
+  private async resumeReleasedQueues() {
+    for (const row of this.conversationRows()) {
+      if (!(await this.harness.snapshot(QueueEditDoc, row.conversationId, context))?.resume) continue;
+      const conversation = await this.harness.conversation(row.conversationId, context);
+      if (conversation) await conversation.commit(tx => advanceReleasedQueue(tx, conversation), context);
+    }
+  }
+
+  async releaseQueueEdits(owner?: number, advance = true) {
+    if (owner !== undefined) this.closedEditOwners.add(owner);
+    else if (!advance) this.editsClosing = true;
+    await this.removing?.catch(() => {});
+    if (this.closing) return;
+    return this.admit(async () => {
+      for (const row of this.conversationRows()) {
+        const held = await this.harness.snapshot(QueueEditDoc, row.conversationId, context);
+        if (!held?.edit || (owner !== undefined && held.edit.owner !== owner)) continue;
+        const conversation = await this.harness.conversation(row.conversationId, context);
+        if (conversation) await conversation.commit(tx => releaseQueueEdit(tx, conversation, owner, this.lifetimeId, advance), context);
+      }
+    });
+  }
+
   private async validateChatModel(input: StartChat | SendChat) {
     await this.savedCredentials?.unlock();
     const model = this.models.getModel(input.model.provider, input.model.id);
@@ -415,7 +484,8 @@ export class Runtime {
 
     const admitted = await conversation.commit(async tx => {
       if (requestId && await tx.submissionByRequest(conversation.id, requestId)) return false;
-      if (delivery === "send") {
+      const editing = (await tx.doc(QueueEditDoc, conversation.id)).edit;
+      if (delivery === "send" && !editing) {
         await configure(tx, conversation.id, {
           model: { provider: model.provider, modelId: model.id },
           thinkingLevel: input.thinking,
@@ -427,7 +497,7 @@ export class Runtime {
           throw new Error("Queued input uses the model and thinking level of the active run.");
         }
       }
-      await conversation.submit(tx, chatSubmission(input));
+      await submitQueuedInput(tx, conversation, chatSubmission(input));
       return true;
     }, context);
     if (admitted) this.metadata.touchSession(input.sessionId);
@@ -454,6 +524,7 @@ export class Runtime {
   cancel(selection: Selection): Promise<void> {
     return this.admit(async () => {
       const conversation = await this.conversation(selection);
+      await conversation.commit(tx => discardQueueEdit(tx, conversation.id), context);
       await conversation.abort(context, { background: true });
     });
   }
@@ -511,6 +582,7 @@ export class Runtime {
       // Native forks are independent conversations. Each affected run must stop.
       await Promise.all(plan.conversations.map(async id => {
         const conversation = await this.harness.conversation(id, stop.context);
+        if (conversation) await conversation.commit(tx => discardQueueEdit(tx, conversation.id), stop.context);
         await conversation?.abort(stop.context, { background: true });
       }));
     } finally {
@@ -529,7 +601,9 @@ export class Runtime {
     } finally {
       try {
         this.harness = await this.openHarness();
+        await this.recoverQueueEdits();
         await this.activities.attach(this.harness);
+        await this.resumeReleasedQueues();
         this.harness.resume();
       } catch (error) {
         this.onStorageFailure?.();
@@ -562,7 +636,9 @@ export class Runtime {
   ): Promise<ChatWatch> {
     const conversation = await this.conversation(selection);
     const scope = withCancel(context);
-    const watch = await conversation.watch(scope.context);
+    // Conversation views mount built-in documents only. Observe the app's edit
+    // document on the same commit line, then publish their combined state once.
+    await conversation.commit(async tx => { await tx.doc(QueueEditDoc, conversation.id); }, scope.context);
     const transcript = new ConversationTranscript(
       (query, limit, loadContext) => conversation.entries(query, limit, undefined, loadContext),
     );
@@ -570,6 +646,12 @@ export class Runtime {
     const completedRuns = new Map<number, CompletedRunTiming>();
     const timingReads = new Map<number, Promise<void>>();
     const harness = this.harness;
+    const detach = new Set<() => void>();
+    let nativeView: ConversationView | undefined;
+    let queueEdit: Readonly<QueueEditState> | undefined;
+    let editAdvanced = false;
+    let ready = false;
+    let scheduled = false;
     let latest: TranscriptView | undefined;
     let stopped = false;
     async function publishTiming(task: NonNullable<Awaited<ReturnType<typeof harness.getTask>>>) {
@@ -603,8 +685,42 @@ export class Runtime {
       emit(project(view, completedRuns));
       void readTimings(view);
     }
+    function currentView(view: ConversationView) {
+      return { ...view, docs: { ...view.docs, ...(queueEdit ? { [QueueEditDoc.definition.kind]: queueEdit } : {}) } };
+    }
+    function changed() {
+      if (!ready || scheduled || stopped) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        if (!stopped && nativeView) {
+          try { publish(transcript.merge(currentView(nativeView))); }
+          catch { ended(); }
+        }
+      });
+    }
+    function ended() {
+      if (stopped) return;
+      stopped = true;
+      for (const stop of detach) stop();
+      scope.cancel();
+      onError?.("The conversation watch disconnected. Reconnect to refresh.");
+    }
     try {
-      const initial = watch.value;
+      const observed = await harness.observeConversation(conversation.id, {
+        advance(call) { if (call.kind === "value") { nativeView = call.value; changed(); } },
+        end: ended,
+      }, scope.context);
+      detach.add(observed.detach);
+      nativeView ??= observed.value;
+      const observedEdit = await harness.observeDoc(QueueEditDoc, conversation.id, {
+        advance(call) { if (call.kind === "value") { queueEdit = call.value; editAdvanced = true; changed(); } },
+        end: ended,
+      }, scope.context);
+      if (!observedEdit) throw new Error("The queue edit state could not be watched.");
+      detach.add(observedEdit.detach);
+      if (!editAdvanced) queueEdit = observedEdit.value;
+      const initial = currentView(nativeView);
       if (readingEntryId !== undefined && initial.before !== undefined && readingEntryId <= initial.before) {
         const entry = readingEntryId as EntryId;
         const [previous, following] = await Promise.all([
@@ -620,31 +736,23 @@ export class Runtime {
       }
       const first = transcript.merge(initial);
       await readTimings(first);
-      publish(first);
-      watch.start(async call => {
-        if (call.kind === "value") publish(transcript.merge(call.value));
-      });
+      ready = true;
+      publish(transcript.merge(currentView(nativeView)));
     } catch (error) {
       scope.cancel();
-      await watch.stop();
+      for (const stop of detach) stop();
       throw error;
     }
-
-    void watch.closed.then(end => {
-      if (!stopped && end.kind !== "ended") onError?.("The conversation watch disconnected. Reconnect to refresh.");
-      stopped = true;
-      scope.cancel();
-    });
     return {
       dispose() {
         stopped = true;
         scope.cancel();
-        void watch.stop();
+        for (const stop of detach) stop();
       },
       async loadEarlier() {
         if (stopped) return;
         await transcript.loadEarlier(scope.context);
-        publish(transcript.merge(watch.value));
+        if (nativeView) publish(transcript.merge(currentView(nativeView)));
       },
       async fillGap(gap) {
         if (stopped) return;
@@ -652,7 +760,7 @@ export class Runtime {
           && candidate.after < gap.upTo && gap.after < candidate.upTo);
         if (item?.kind !== "gap") return;
         await transcript.fillGap(item, scope.context);
-        publish(transcript.merge(watch.value));
+        if (nativeView) publish(transcript.merge(currentView(nativeView)));
       },
     };
   }

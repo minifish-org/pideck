@@ -1,7 +1,7 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentState, InboxState, LiveState, RunFailure, TranscriptView } from "@earendil-works/pi-durable";
 import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
-import { canSteerQueued } from "./queued-input.js";
+import { canSteerQueued, QueueEditDoc, queueItems, type QueueEditState } from "./queued-input.js";
 
 export const inputEntryKind = "pideck.input";
 
@@ -171,9 +171,10 @@ function liveActivity(live: LiveState | undefined): ChatView["activity"] {
   return undefined;
 }
 
-function queuedInputs(inbox: InboxState | undefined): ChatView["queued"] {
-  if (!inbox?.items.length) return undefined;
-  return inbox.items.flatMap(item => {
+function queuedInputs(inbox: InboxState | undefined, held?: QueueEditState): ChatView["queued"] {
+  const items = queueItems(inbox?.items ?? [], held);
+  if (!items.length) return undefined;
+  return items.flatMap(item => {
     if (item.mode === "write") return [];
     const preview = (typeof item.content === "string" ? item.content
       : item.content.flatMap(block => block.type === "text" ? [block.text] : []).join(" ")).trim();
@@ -183,6 +184,7 @@ function queuedInputs(inbox: InboxState | undefined): ChatView["queued"] {
       delivery: item.mode === "steer" ? "steer" as const : "follow-up" as const,
       preview: preview.length > 200 ? preview.slice(0, 199) + "…" : preview || "Attached image",
       ...(requestId ? { requestId } : {}),
+      ...(held?.edit?.id === item.id ? { editing: true } : {}),
     }];
   });
 }
@@ -206,8 +208,9 @@ export function chatProjection() {
     const live = view.docs["pi.live"] as LiveState | undefined;
     const agent = view.docs["pi.agent"] as AgentState | undefined;
     const inbox = view.docs["pi.inbox"] as InboxState | undefined;
+    const held = view.docs[QueueEditDoc.definition.kind] as QueueEditState | undefined;
     const activity = liveActivity(live);
-    const queued = queuedInputs(inbox);
+    const queued = queuedInputs(inbox, held);
 
     for (const slot of live?.tools ?? []) {
       const position = tools.get(slot.callId);
