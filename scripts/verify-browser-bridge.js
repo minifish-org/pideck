@@ -239,16 +239,20 @@ async page => {
               auth = { flowId, promptId, method, provider, resolve, reject, open: false, copy: false };
               if (method === "oauth") {
                 emit({ type: "auth:notice", flowId, notice: {
+                  type: "auth_url", instructions: "Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.",
+                  link: { id: "auth-url", label: "Browser sign-in", domain: "auth.fixture.invalid" },
+                } });
+                emit({ type: "auth:notice", flowId, notice: {
                   type: "device_code", code: "PIDE-CK99", copyId: "device", link: { id: "sign-in", label: "Provider sign-in", domain: "fixture.invalid" },
                 } });
               }
               emit({ type: "auth:prompt", flowId, promptId, prompt: method === "oauth"
-                ? { type: "manual_code", message: "Authorization code" }
+                ? { type: "manual_code", message: "Complete login in your browser, or paste the final redirect URL here:" }
                 : { type: "secret", message: "API key" } });
             });
           case "model:auth-open":
-            if (auth?.flowId !== payload.flowId || payload.linkId !== "sign-in") throw new Error("Unexpected sign-in link.");
-            auth.open = true;
+            if (auth?.flowId !== payload.flowId || !["sign-in", "auth-url"].includes(payload.linkId)) throw new Error("Unexpected sign-in link.");
+            if (payload.linkId === "sign-in") auth.open = true;
             return;
           case "model:auth-copy":
             if (auth?.flowId !== payload.flowId || payload.copyId !== "device") throw new Error("Unexpected verification code.");

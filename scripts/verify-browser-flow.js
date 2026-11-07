@@ -106,6 +106,15 @@ async page => {
   const settings = page.getByRole("dialog", { name: "Model providers" });
   const provider = settings.getByRole("combobox", { name: "Provider", exact: true });
   const signIn = settings.getByRole("region", { name: "Provider sign-in", exact: true });
+  const browserPrompt = "Complete login in your browser, or paste the final redirect URL here:";
+  async function expectBrowserInstructions() {
+    await settings.getByLabel(browserPrompt, { exact: true }).waitFor();
+    if (await signIn.getByText("Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.", { exact: true }).count()
+      || await signIn.getByText(browserPrompt, { exact: true }).count() !== 1) {
+      throw new Error("OpenAI browser sign-in repeats instructions above its manual redirect input.");
+    }
+    await signIn.getByRole("button", { name: "Open auth.fixture.invalid", exact: true }).waitFor();
+  }
   async function expectSignInActions() {
     const cancel = signIn.getByRole("button", { name: "Cancel", exact: true });
     const proceed = signIn.getByRole("button", { name: "Continue", exact: true });
@@ -146,8 +155,10 @@ async page => {
   await settings.getByText("PIDE-CK99").waitFor();
   await settings.getByRole("button", { name: /Open fixture.invalid/ }).click();
   await settings.getByRole("button", { name: "Copy code" }).click();
-  const authorization = settings.getByLabel("Authorization code");
+  const authorization = settings.getByLabel(browserPrompt, { exact: true });
   const continueSignIn = settings.getByRole("button", { name: "Continue" });
+  await expectBrowserInstructions();
+  await signIn.getByRole("button", { name: "Open auth.fixture.invalid", exact: true }).click();
   await expectSignInActions();
   await expectColors(authorization, { "background-color": canvas });
   await expectColors(continueSignIn, { "background-color": "rgb(16, 88, 35)" });
@@ -218,7 +229,7 @@ async page => {
     await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
     if ((await currentConnection()).credential !== "oauth") throw new Error("Cancelling key replacement changed the saved subscription connection.");
     await subscriptionOption.click();
-    await settings.getByLabel("Authorization code", { exact: true }).waitFor();
+    await expectBrowserInstructions();
     await expectSignInActions();
     await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}provider-sign-in.png` });
     await signIn.getByRole("button", { name: "Cancel", exact: true }).click();

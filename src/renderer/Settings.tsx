@@ -48,6 +48,8 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
   const provider = selected ? providers?.find(({ id }) => id === selected)
     : connected.length === 1 ? connected[0] : providers?.length === 1 ? providers[0] : undefined;
   const busy = working || Boolean(flow);
+  // OpenAI's manual callback prompt repeats the browser sign-in notice.
+  const promptHasBrowserInstructions = provider?.id === 'openai' && prompt?.data.type === 'manual_code';
 
   useLayoutEffect(() => {
     if (dialog.current && !dialog.current.open) {
@@ -315,7 +317,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
           <p>{notice.message}</p>{notice.links?.map(renderLink)}
         </div>;
         if (notice.type === 'auth_url') return <div className="provider-message" key={index}>
-          {notice.instructions && <p>{notice.instructions}</p>}{renderLink(notice.link)}
+          {notice.instructions && !promptHasBrowserInstructions && <p>{notice.instructions}</p>}{renderLink(notice.link)}
         </div>;
         return <div className="provider-message" key={index}>
           <p>Enter this verification code to continue.</p>
