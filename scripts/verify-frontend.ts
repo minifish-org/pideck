@@ -21,7 +21,12 @@ const flowLog = `${output}/${name}-flow.log`;
 const snapshotLog = `${output}/${name}-snapshot.log`;
 const data = await mkdtemp(join(tmpdir(), "pideck-frontend-"));
 const fixture = fauxRuntime(data);
-const runtime = await fixture.open();
+const targetOS = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : process.platform;
+const runtime = await fixture.open(undefined, undefined, {
+  resourcesDirectory: resolve("release", "automation-assets", `${targetOS}-${process.arch}`),
+  stateDirectory: join(data, "automation"),
+  launcherPath: resolve("dist", "automation", "cli.cjs"),
+});
 
 try {
   await mkdir(output, { recursive: true });
@@ -38,7 +43,7 @@ try {
     });
   });
   const url = `http://127.0.0.1:${port}`;
-  const cli = `./node_modules/.bin/playwright-cli -s=${name}`;
+  const cli = `playwright-cli -s=${name}`;
   const command = [
     "set -eu",
     `./node_modules/.bin/vite --host 127.0.0.1 --port ${port} --strictPort > ${log} 2>&1 &`,

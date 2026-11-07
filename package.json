@@ -10,13 +10,14 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "npm run build && electron .",
+    "dev": "npm run prepare:automation && npm run build && electron .",
+    "prepare:automation": "node scripts/package-assets.mjs",
     "build": "node scripts/build.mjs && vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "package": "npm run build && node scripts/package.mjs",
-    "verify:frontend": "tsx scripts/verify-frontend.ts",
+    "verify:frontend": "npm run prepare:automation && npm run build && tsx scripts/verify-frontend.ts",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "smoke:credentials": "node scripts/smoke-credentials.mjs"
   },
@@ -46,6 +47,7 @@
     "react-dom": "19.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "tar": "7.5.22",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "8.3.6"
@@ -56,6 +58,8 @@
     "directories": {
       "output": "release"
     },
+    "beforePack": "scripts/package-assets.mjs",
+    "afterPack": "scripts/publish-assets.mjs",
     "files": [
       "dist/**/*",
       "package.json"
@@ -67,7 +71,8 @@
       }
     ],
     "asarUnpack": [
-      "**/node_modules/node-pty/**/*"
+      "**/node_modules/node-pty/**/*",
+      "dist/automation/cli.cjs"
     ],
     "mac": {
       "category": "public.app-category.developer-tools"

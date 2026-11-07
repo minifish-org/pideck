@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } from "electron";
 import type { IpcMainInvokeEvent, MessageBoxOptions } from "electron";
 import { mkdir } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eventChannel, invokeChannel, menuStateChannel, type RemovalTarget } from "../shared/transport";
 import { safeAuthUrl } from "../host/auth-flows";
@@ -179,13 +179,16 @@ async function initialize() {
 
   windowState = await openWindowState(dataDir);
   const vault = new CredentialVault(dataDir, safeStorage);
+  const targetOS = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : process.platform;
+  const automationDirectory = app.isPackaged ? join(process.resourcesPath, "automation")
+    : fileURLToPath(new URL(`../../release/automation-assets/${targetOS}-${process.arch}/`, import.meta.url));
   const client = new HostClient(dataDir, vault, (target, event) => {
     if (target === owner && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, event);
   }, () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:restart" });
   }, message => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:disconnected", message });
-  });
+  }, automationDirectory);
   host = client;
   client.start();
   const menu = installDesktopMenu(openWindow, showUpdateCheck, appearance);

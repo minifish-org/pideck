@@ -40,7 +40,7 @@ export type HostRequest = {
   [C in HostCommand]: { type: "request"; id: number; owner: number; windowId?: number; command: C; payload: HostInput[C] }
 }[HostCommand];
 export type ToHost =
-  | { type: "start"; dataDir: string; hasSavedCredentials: boolean; lifetimeId: string; closedWindows?: readonly number[] }
+  | { type: "start"; dataDir: string; hasSavedCredentials: boolean; lifetimeId: string; closedWindows?: readonly number[]; automationDirectory?: string }
   | ({ type: "credential:snapshot"; id: number } & ({ credentials: Record<string, Credential> } | { error: string }))
   | { type: "credential:result"; id: number; error?: string }
   | { type: "shutdown" }

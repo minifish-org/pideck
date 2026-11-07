@@ -2,6 +2,7 @@ import { diffRevisions, type JsonValue } from "@earendil-works/chord/delta";
 import type { Credential } from "@earendil-works/pi-ai";
 import { AuthFlows } from "./auth-flows";
 import { PersistentCredentials } from "./credential-store";
+import { join } from "node:path";
 import { Runtime, type ChatWatch } from "./runtime";
 import { listChanges, readPatch, watchChanges } from "./review";
 import { readMessageFile, resolveMessageFile } from "./message-links";
@@ -326,7 +327,8 @@ port.on("message", ({ data }: { data: ToHost }) => {
       send({ type: "credential:read", id });
       return result.promise;
     } : undefined);
-    void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows).then(opened => {
+    void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows,
+      data.automationDirectory ? { resourcesDirectory: data.automationDirectory, stateDirectory: join(data.dataDir, "automation") } : undefined).then(opened => {
       runtime = opened;
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
       send({ type: "ready" });

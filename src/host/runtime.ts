@@ -9,7 +9,7 @@ import {
   AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, section,
   type Conversation, type ConversationId, type ConversationView, type EntryId, type InputSubmissionDraft, type TaskId, type TranscriptView,
 } from "@earendil-works/pi-durable";
-import { err, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
+import { err, ExecutionError, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -31,6 +31,7 @@ import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
 import { completedRunTiming } from "./run-timing.js";
 import { reviewWrites } from "./write-review.js";
+import { Automation } from "./automation.js";
 
 const context = BACKGROUND_CONTEXT;
 const processLifetime = randomUUID();
@@ -39,9 +40,10 @@ const instructions = [
   "Inspect relevant files before editing. Read AGENTS.md in relevant subdirectories for instructions scoped to those files.",
   "Use repository instructions within the scope of the user's task. Make focused changes, review the diff, and verify the result.",
   "For frontend verification, use the bash tool in the project to start the dev server and run Playwright CLI.",
-  "Use the project's local Playwright CLI or a CLI already on PATH. If needed, run it with npx --yes --package @playwright/cli playwright-cli.",
   "Use a unique named browser session (playwright-cli -s=<name> open <url>), exercise the changed flow, and check its snapshot, screenshot, or console.",
   "For visual analysis, pass a screenshot to the read tool when your model supports images. Close the named browser session when finished.",
+  "For a frontend change, run the changed interactions in the browser, inspect the screenshot and fix any problems before reporting success. Do not claim visual inspection without reading an image.",
+  "Keep development servers on loopback, record their process IDs, and stop servers you started when verification is complete.",
 ].join("\n");
 
 const projectInstructionLimit = 64 * 1024;
@@ -62,10 +64,18 @@ const projectInstructions = section("project_instructions", async ({ env }, scop
 });
 
 class ToolEnvironment extends NodeExecutionEnv {
-  constructor(cwd: string, private readonly outputDir: string) { super({ cwd }); }
+  constructor(cwd: string, private readonly outputDir: string,
+    private readonly browser?: { runtime: Automation; projectId: string; conversationId: string }) { super({ cwd }); }
 
-  override exec(command: string | readonly string[], options: ShellExecOptions | undefined, scope: Context) {
-    return super.exec(command, { ...options, inheritEnv: false, env: shellEnvironment() }, scope);
+  override async exec(command: string | readonly string[], options: ShellExecOptions | undefined, scope: Context): ReturnType<NodeExecutionEnv["exec"]> {
+    const env = shellEnvironment();
+    try {
+      if (this.browser) Object.assign(env, await this.browser.runtime.environment(
+        this.browser.projectId, this.browser.conversationId, this.cwd));
+    } catch (cause) {
+      return err(new ExecutionError("spawn_error", cause instanceof Error ? cause.message : "Could not prepare the browser tools."));
+    }
+    return super.exec(command, { ...options, inheritEnv: false, env }, scope);
   }
 
   override async createTempDir(prefix: string | undefined, scope: Context): ReturnType<NodeExecutionEnv["createTempDir"]> {
@@ -122,6 +132,7 @@ export class Runtime {
     private readonly savedCredentials?: PersistentCredentials,
     private readonly onStorageFailure?: () => void,
     private readonly lifetimeId: string = processLifetime,
+    private readonly automation?: Automation,
   ) {}
 
   static async open(
@@ -132,6 +143,7 @@ export class Runtime {
     onStorageFailure?: () => void,
     lifetimeId: string = processLifetime,
     closedWindows: readonly number[] = [],
+    automationOptions?: { resourcesDirectory: string; stateDirectory: string; launcherPath?: string },
   ): Promise<Runtime> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const metadata = new Metadata(join(dataDir, "workspace.sqlite"));
@@ -159,14 +171,16 @@ export class Runtime {
       }
 
       const registry = createRegistry();
+      const automation = automationOptions ? await Automation.open(automationOptions) : undefined;
       registry.install(createCodingTools({ images: await createNodePhotonImages() }));
       registry.install(defineExtension({
         name: "pideck",
         wraps: [reviewWrites],
         sections: [
-          section("pideck", ({ env }) => env
-            ? instructions + `\nThe project working directory is ${env.cwd}.`
-            : instructions),
+          section("pideck", ({ env }) => [instructions,
+            automation ? automation.instructions()
+              : "Use the project's local Playwright CLI or a CLI already on PATH; if needed, run npx --yes --package @playwright/cli playwright-cli.",
+            env ? `The project working directory is ${env.cwd}.` : ""].filter(Boolean).join("\n")),
           projectInstructions,
         ],
       }));
@@ -181,13 +195,14 @@ export class Runtime {
           env: ({ conversationId, cwd }) => {
             const project = metadata.requireProject(metadata.projectOf(conversationId));
             if (project.directory !== cwd) throw new Error("Conversation directory does not match its project.");
-            return new ToolEnvironment(cwd, join(outputRoot, String(conversationId)));
+            return new ToolEnvironment(cwd, join(outputRoot, String(conversationId)), automation
+              ? { runtime: automation, projectId: project.id, conversationId: String(conversationId) } : undefined);
           },
         }, context);
         return harness;
       }
       const harness = await openHarness();
-      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, savedCredentials, onStorageFailure, lifetimeId);
+      const runtime = new Runtime(metadata, harness, models, durablePath, outputRoot, openHarness, savedCredentials, onStorageFailure, lifetimeId, automation);
       for (const windowId of closedWindows) runtime.closedEditOwners.add(windowId);
       try {
         if (await runtime.recoverSessionStarts()) {
@@ -526,6 +541,7 @@ export class Runtime {
       const conversation = await this.conversation(selection);
       await conversation.commit(tx => discardQueueEdit(tx, conversation.id), context);
       await conversation.abort(context, { background: true });
+      await this.automation?.closeConversation(String(conversation.id));
     });
   }
 
@@ -568,6 +584,7 @@ export class Runtime {
     if (plan.scope !== scope) throw new Error("The affected sessions changed. Review the removal again.");
     if (plan.conversations.length === 0 && !target.sessionId) {
       await prepare?.(false);
+      await this.automation?.closeProject(target.projectId);
       this.metadata.removeEmptyProject(target.projectId);
       return { sessionIds: [] };
     }
@@ -590,6 +607,8 @@ export class Runtime {
       stop.cancel();
     }
     await prepare?.(true);
+    await Promise.all(plan.conversations.map(id => this.automation?.closeConversation(String(id))));
+    if (!target.sessionId) await this.automation?.closeProject(target.projectId);
     this.activities.detach();
     await this.harness.close(context);
     let clean = true;
@@ -769,7 +788,8 @@ export class Runtime {
     this.closing ??= (async () => {
       await this.removing?.catch(() => {});
       this.activities.detach();
-      await this.harness.close(context);
+      try { await this.harness.close(context); }
+      finally { await this.automation?.closeAll(); }
     })().finally(() => this.metadata.close());
     return this.closing;
   }

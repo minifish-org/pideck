@@ -10,7 +10,8 @@ export function fauxRuntime(dataDir: string) {
   const model = faux.getModel();
   return {
     faux,
-    open: (lifetimeId?: string, closedWindows?: readonly number[]) => Runtime.open(dataDir, {}, models, undefined, undefined, lifetimeId, closedWindows),
+    open: (lifetimeId?: string, closedWindows?: readonly number[], automation?: Parameters<typeof Runtime.open>[7]) =>
+      Runtime.open(dataDir, {}, models, undefined, undefined, lifetimeId, closedWindows, automation),
     input: (selection: Selection, text: string): SendChat => ({
       ...selection, model: { provider: model.provider, id: model.id }, thinking: "off", text,
     }),

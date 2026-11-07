@@ -20,4 +20,13 @@ await Promise.all([
     bundle: true,
     target: "node22",
   }),
+  build({
+    entryPoints: ["src/automation/cli.ts"],
+    outfile: "dist/automation/cli.cjs",
+    platform: "node",
+    format: "cjs",
+    packages: "external",
+    bundle: true,
+    target: "node22",
+  }),
 ]);

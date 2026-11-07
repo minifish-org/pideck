@@ -11,6 +11,8 @@ npm ci
 npm run dev
 ```
 
+The first development launch prepares the bundled Node.js and browser tools before building the app. This downloads fixed upstream versions into `release/automation-downloads/`; later preparations reuse the verified download cache. `npm run build` only compiles the app and does not download browser tools. To prepare the tools separately, run `npm run prepare:automation`.
+
 Choose a project folder to begin. Opening it allows Pideck to read, edit, and run commands with your user account’s permissions, including outside that folder. Pideck creates the session when you send your first message and keeps unsent text as a draft. Expand a project in the sidebar to browse its sessions. Hover over or focus a project to reveal its plus button and start a session there. The plus button beside **Projects** opens another folder. **Model providers** offers each provider’s available connection methods. These may include an API key, browser sign-in, a device code, or a provider-specific configuration prompt. Choose a model and, when supported, its thinking level in the same composer menu. Connected providers with dynamic catalogs can refresh their model list. Pasted images appear as thumbnails, and images in the composer or conversation open a full preview when clicked.
 
 During a run, the queue icon (**Queue next**) adds the message as a follow-up. Drag a queued message to move it among messages of the same kind, or focus it and use Alt+↑/↓. Its buttons let you edit the text, delete the message, or steer the current run at Durable’s next turn boundary. Editing uses the main composer: save with the check button or Enter, and cancel with × or Esc. Your ordinary draft returns afterward. While you edit, that message and the messages queued behind it wait in place, even when the current task finishes. Saving sends the revised text when its turn arrives; cancelling keeps the original text. Closing the window, restarting the app, or reconnecting its workspace process preserves the edit and queue position. Reopen to continue editing; only Save or Cancel releases the message. Use **Branch from here** on a committed assistant reply to create a separate session. Durable automatically summarizes older context as the model approaches its limit. The full conversation stays in SQLite and **Load earlier** opens more of the transcript.
@@ -28,6 +30,8 @@ Choose **View → Appearance → Follow System, Light, or Dark** to change the w
 Provider credentials are encrypted through the operating system’s credential store. Pideck loads saved credentials on demand when choosing, managing, or using a saved connection. Supported provider environment variables are available to pi-ai in the trusted workspace process. Pideck excludes them from tool, review, and terminal subprocess environments. On Linux, saving credentials requires a system secret store.
 
 On macOS, **Always Allow** in a Keychain access prompt remembers access for that Pideck application to that item; it does not authorize other applications. A local ad-hoc rebuild can change the application's signing identity and require approval again. Changing the packaging configuration does not itself remove prompts for an existing Keychain item.
+
+Packaged Pideck includes Node.js 22.23.4 with npm and npx, Playwright CLI 0.1.23, and its matching Chromium revision 1252 plus FFmpeg. The browser tool uses these bundled executables rather than a system Node installation or an existing browser cache. Each conversation's browser data is separate from your normal browser profile. Upstream Node.js, Playwright, and browser licenses and notices are retained under `resources/automation/` (inside `Contents/Resources/` on macOS).
 
 | Action | Shortcut |
 | --- | --- |
@@ -53,7 +57,9 @@ npm run package
 npm run smoke:packaged
 ```
 
-Install a test browser with `npx playwright-cli install-browser chromium` if needed.
+The frontend check prepares and uses the same bundled Node.js, CLI and browser resources; no separate browser installation is required.
+
+Packaging prepares the automation resources for the actual target, then publishes the complete upstream distributions directly into the app before signing. It verifies the final app's manifest, Node/npm/npx, CLI dependencies, browser executables, and license notices rather than checking only the staging directory. Supported targets are macOS and Linux on x64 or arm64, and Windows on x64. Other targets, including macOS universal and Windows arm64, fail explicitly. Linux still requires the operating-system libraries supported by Chromium; packaging does not install system packages. Node.js downloads are checked against pinned SHA-256 values from the official release, and browser downloads use the pinned Playwright installer's matching revision. Resource publication preserves relative symbolic links and rejects links that are absolute, broken, or escape the resource tree. Runtime profiles and output belong in application data; packaged automation resources are not an install or download cache.
 
 The frontend check starts Vite from Durable’s `bash` tool, drives an isolated Playwright CLI session, and reads the screenshot through Durable’s image input. It uses a deterministic test model and browser fixture. The packaged smoke test opens the real desktop app with a temporary profile and a local Responses endpoint. It uses pi-ai’s Azure adapter, streams output through Durable, runs the coding tools, reviews the result, and tests recovery by terminating the workspace process mid-request. It also checks native terminal input, scrollback, rebuilding, and resizing. The unpacked desktop bundle is written to `release/`.
 
