@@ -50,7 +50,7 @@ function closeReviewWatch(owner: number) {
   watch?.controller.abort();
 }
 
-function closeOwner(owner: number, advance = true, windowId = owner, preserveQueueEdits = false) {
+function closeOwner(owner: number, windowId = owner, preserveQueueEdits = false) {
   closedOwners.add(owner);
   for (const id of watches.get(owner)?.keys() ?? []) unwatch(owner, id);
   activityWatches.get(owner)?.dispose();
@@ -61,7 +61,7 @@ function closeOwner(owner: number, advance = true, windowId = owner, preserveQue
   }
   terminals.closeOwner(owner);
   auth?.closeOwner(owner);
-  return preserveQueueEdits ? undefined : runtime?.releaseQueueEdits(windowId, advance);
+  return preserveQueueEdits ? undefined : runtime?.detachQueueEdits(windowId);
 }
 
 function messageOf(error: unknown): string {
@@ -138,7 +138,7 @@ async function handle(request: HostRequest): Promise<unknown> {
   }
   switch (command) {
     case "owner:close":
-      return closeOwner(owner, true, windowId, payload?.preserveQueueEdits);
+      return closeOwner(owner, windowId, payload?.preserveQueueEdits);
     case "project:list":
       return runtime.listProjects();
     case "project:add":
@@ -353,10 +353,10 @@ port.on("message", ({ data }: { data: ToHost }) => {
     closing = true;
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
     const owners = new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()]);
-    const released = Promise.allSettled([...owners].map(owner => closeOwner(owner, false)));
+    const detached = Promise.allSettled([...owners].map(owner => closeOwner(owner, owner, true)));
     terminals.closeAll();
     auth?.close();
-    void released.then(() => runtime?.releaseQueueEdits(undefined, false))
+    void detached.then(() => runtime?.detachQueueEdits())
       .then(() => runtime?.close()).finally(() => process.exit(0));
   }
 });

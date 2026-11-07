@@ -22,6 +22,8 @@ export type HostInput = {
   "project:add": { directory: string };
   "removal:plan": RemovalTarget;
   "removal:execute": RemovalTarget & { scope: string };
+  // Navigation retains the window's exclusive edit lease; a real close detaches
+  // the lease while keeping the edit and queued inputs held for reopening.
   "owner:close": { preserveQueueEdits?: boolean } | undefined;
 };
 export type HostResult = {

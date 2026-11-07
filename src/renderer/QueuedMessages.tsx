@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef, useState, type DragEvent } from 'react';
 import type { ChatView, QueueUpdate, Selection } from '../shared/api';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
-import type { QueuedDraftEdit } from './preferences';
 
 type Item = NonNullable<ChatView['queued']>[number];
 type Move = Extract<QueueUpdate, { action: 'move' }>;
@@ -43,7 +42,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
   canSteer: boolean;
   enabled: boolean;
   editingId?: number;
-  onEdit: (edit: QueuedDraftEdit) => void;
+  onEdit: (id: number) => void;
   onFocusComposer: () => void;
 }) {
   const [pending, setPending] = useState(false);
@@ -137,10 +136,7 @@ export function QueuedMessages({ selection, items = [], canSteer, enabled, editi
   }
 
   function startEdit(id: number) {
-    const token = crypto.randomUUID();
-    void run(() => window.pideck.invoke('chat:queue-edit-start', { ...selection, id, token }), ({ token, text, hasImages }) => {
-      onEdit({ id, token, text, original: text, hasImages });
-    });
+    if (enabled && !busy.current) onEdit(id);
   }
 
   if (!ordered.length && !error) return null;

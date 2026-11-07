@@ -113,7 +113,7 @@ test("a held input survives host recovery while the interrupted main run continu
   } finally { release.resolve(); await f.close(); }
 });
 
-test("closing an editing window while its claim is in flight cannot leave an orphan hold", async () => {
+test("closing an editing window while its claim is in flight cannot leave an unclaimable hold", async () => {
   const f = await fixture();
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
@@ -128,10 +128,19 @@ test("closing an editing window while its claim is in flight cannot leave an orp
     const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 1);
     const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
     const claim = f.runtime.startQueueEdit(edit, 8);
-    const closed = f.runtime.releaseQueueEdits(8);
+    const closed = f.runtime.detachQueueEdits(8);
     const [result] = await Promise.allSettled([claim, closed]);
     if (result.status === "rejected") assert.match(String(result.reason), /window has closed/);
     release.resolve();
+    await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Main finished."));
+    if (result.status === "fulfilled") {
+      const waiting = await waitForView(f.runtime, f.selection, () => true);
+      assert.equal(waiting.queued?.[0].id, edit.id);
+      assert.equal(waiting.queued?.[0].editing, true);
+      assert.equal(waiting.messages.some(message => message.requestId === target.requestId), false);
+      await f.runtime.startQueueEdit(edit, 9);
+      await f.runtime.finishQueueEdit(edit, 9);
+    }
     const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Original input finished."));
     assert.equal(done.queued, undefined);
     assert.equal(done.messages.filter(message => message.requestId === target.requestId).length, 1);
@@ -152,6 +161,7 @@ for (const removeProject of [false, true]) {
       const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 1);
       const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
       await f.runtime.startQueueEdit(edit, 1);
+      await f.runtime.detachQueueEdits(1);
       release.resolve();
       await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Main finished."));
       const targetRemoval = removeProject ? { projectId: f.project.id } : f.selection;
@@ -166,7 +176,7 @@ for (const removeProject of [false, true]) {
 }
 
 for (const action of ["cancel", "owner-close"] as const) {
-  test(`${action} releases original text and advances the idle native queue`, async () => {
+  test(`${action === "cancel" ? "explicit cancel releases original text" : "closing a window preserves its edit until a new window explicitly cancels"}`, async () => {
     const f = await fixture();
     const release = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
@@ -185,10 +195,23 @@ for (const action of ["cancel", "owner-close"] as const) {
       await f.runtime.startQueueEdit(edit, 4);
       release.resolve();
       await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Main finished."));
-      await f.runtime.releaseQueueEdits(99);
+      await f.runtime.detachQueueEdits(99);
       assert.equal((await waitForView(f.runtime, f.selection, () => true)).queued?.[0].editing, true);
       if (action === "cancel") await f.runtime.finishQueueEdit(edit, 4);
-      else await f.runtime.releaseQueueEdits(4);
+      else {
+        await f.runtime.detachQueueEdits(4);
+        const waiting = await waitForView(f.runtime, f.selection, () => true);
+        assert.deepEqual(waiting.queued?.map(item => item.id), queued.queued?.map(item => item.id));
+        assert.equal(waiting.messages.some(message => message.requestId === target.requestId), false);
+        await assert.rejects(f.runtime.finishQueueEdit(edit, 4), /window has closed/);
+        await assert.rejects(f.runtime.startQueueEdit({ ...edit, id: queued.queued![1].id }, 5), /already being edited/);
+        const freshClaim = { ...edit, token: randomUUID() };
+        assert.deepEqual(await f.runtime.startQueueEdit(freshClaim, 5), { token: edit.token, text: target.text, hasImages: false },
+          'An explicit edit action can recover a detached queue item even if the previous window draft was lost.');
+        await assert.rejects(f.runtime.finishQueueEdit(freshClaim, 5), /no longer active/);
+        await assert.rejects(f.runtime.startQueueEdit(edit, 6), /already being edited/);
+        await f.runtime.finishQueueEdit(edit, 5);
+      }
       const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Tail finished."));
       assert.deepEqual(done.messages.filter(message => message.role === "user").map(message => message.requestId),
         [main.requestId, target.requestId, tail.requestId]);
@@ -245,27 +268,29 @@ test("Stop discards parked submissions and a stale finish or request retry canno
     const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 2);
     const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
     await f.runtime.startQueueEdit(edit, 1);
+    await f.runtime.detachQueueEdits(1);
     release.resolve();
     await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Main finished."));
     await f.runtime.cancel(f.selection);
-    await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Must not run" }, 1), /no longer active/);
+    await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Must not run" }, 2), /no longer active/);
     await f.runtime.send(target); await f.runtime.send(tail);
     const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && !view.queued?.length);
     assert.equal(done.messages.some(message => message.requestId === target.requestId || message.requestId === tail.requestId), false);
   } finally { release.resolve(); await f.close(); }
 });
 
-for (const mode of ["host", "application", "closed-window"] as const) {
+for (const mode of ["host", "application", "closed-window", "shutdown"] as const) {
   const sameLifetime = mode === "host";
-  test(`${mode} recovery ${sameLifetime ? "preserves editing" : "releases the original input"}`, async () => {
+  test(`${mode} recovery keeps input held until the editor explicitly saves or cancels`, async () => {
     const f = await fixture();
     const release = Promise.withResolvers<void>();
     const started = Promise.withResolvers<void>();
     try {
       f.faux.setResponses([async () => { started.resolve(); await release.promise; return fauxAssistantMessage("Main finished."); }]);
+      const main = f.input("Current work");
       const target = { ...f.input("Original after recovery"), delivery: "follow-up" as const };
       const tail = { ...f.input("Tail after recovery"), delivery: "follow-up" as const };
-      await f.runtime.send(f.input("Current work")); await started.promise;
+      await f.runtime.send(main); await started.promise;
       await f.runtime.send(target); await f.runtime.send(tail);
       const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 2);
       const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
@@ -273,20 +298,31 @@ for (const mode of ["host", "application", "closed-window"] as const) {
       release.resolve();
       await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Main finished."));
       f.faux.setResponses([fauxAssistantMessage("Recovered target finished."), fauxAssistantMessage("Recovered tail finished.")]);
-      await f.reopen(mode === "application" ? randomUUID() : f.lifetime, mode === "closed-window" ? [3] : []);
-      if (sameLifetime) {
-        const restored = await waitForView(f.runtime, f.selection, () => true);
-        assert.deepEqual(restored.queued?.map(item => item.id), queued.queued?.map(item => item.id));
-        assert.equal(restored.queued?.[0].editing, true);
-        assert.equal(restored.messages.some(message => message.requestId === target.requestId), false);
-        assert.equal((await f.runtime.startQueueEdit(edit, 3)).token, edit.token);
-        await f.runtime.finishQueueEdit({ ...edit, text: "Saved after recovery" }, 3);
+      if (mode === "shutdown") await f.runtime.detachQueueEdits();
+      await f.reopen(mode === "application" || mode === "shutdown" ? randomUUID() : f.lifetime, mode === "closed-window" ? [3] : []);
+      const restored = await waitForView(f.runtime, f.selection, () => true);
+      assert.deepEqual(restored.queued?.map(item => item.id), queued.queued?.map(item => item.id));
+      assert.equal(restored.queued?.[0].editing, true);
+      assert.equal(restored.messages.some(message => message.requestId === target.requestId), false);
+      const nextOwner = sameLifetime ? 3 : 4;
+      if (sameLifetime) await assert.rejects(f.runtime.startQueueEdit(edit, nextOwner + 1), /already being edited/);
+      else {
+        await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Must claim before finishing" }, nextOwner), /no longer active/);
+        const freshClaim = { ...edit, token: randomUUID() };
+        assert.equal((await f.runtime.startQueueEdit(freshClaim, nextOwner)).token, edit.token);
+        await assert.rejects(f.runtime.finishQueueEdit({ ...freshClaim, text: "New request token is not the edit token" }, nextOwner), /no longer active/);
+        await assert.rejects(f.runtime.startQueueEdit(edit, nextOwner + 1), /already being edited/);
       }
+      assert.equal((await f.runtime.startQueueEdit(edit, nextOwner)).token, edit.token);
+      const save = mode !== "application";
+      await f.runtime.finishQueueEdit({ ...edit, ...(save ? { text: "Saved after recovery" } : {}) }, nextOwner);
       const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Recovered tail finished."));
       assert.equal(done.messages.filter(message => message.requestId === target.requestId).length, 1);
-      assert.ok(textIn(done, sameLifetime ? "Saved after recovery" : target.text));
+      assert.deepEqual(done.messages.filter(message => message.role === "user").map(message => message.requestId),
+        [main.requestId, target.requestId, tail.requestId]);
+      assert.ok(textIn(done, save ? "Saved after recovery" : target.text));
       assert.equal(done.queued, undefined);
-      if (!sameLifetime) await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Old lifetime must not change it" }, 3), /no longer active|window has closed/);
+      if (!sameLifetime) await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Old owner must not change it" }, 3), /no longer active|window has closed/);
     } finally { release.resolve(); await f.close(); }
   });
 }

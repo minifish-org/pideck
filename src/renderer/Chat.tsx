@@ -9,7 +9,7 @@ import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
 import { useReadSessionActivity } from './session-activity';
-import type { Attachment, Draft, QueuedDraftEdit, ReadingPosition, SendAttempt } from './preferences';
+import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import { completeAttempt, retainQueueEditText } from './preferences';
 import './chat.css';
 
@@ -255,6 +255,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [forking, setForking] = useState(false);
   const [queueSaving, setQueueSaving] = useState(false);
   const [queueReady, setQueueReady] = useState<string>();
+  const [queueRetry, setQueueRetry] = useState(0);
   const queueClaim = useRef<string | undefined>(undefined);
   const [toolDisclosure, setToolDisclosure] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const setToolExpanded = useCallback((id: string, expanded: boolean) => {
@@ -333,23 +334,28 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     setQueueReady(undefined);
     void window.pideck.invoke('chat:queue-edit-start', {
       projectId: project.id, sessionId: session.id, id: edit.id, token: edit.token,
-    }).then(({ token }) => {
+    }).then(({ token, text, hasImages }) => {
       if (!active) return;
       queueClaim.current = `${watchId}/${token}`;
       setQueueReady(token);
-      if (token !== edit.token) updateDraft(current => current.queueEdit?.token === edit.token
-        ? { ...current, queueEdit: { ...current.queueEdit, token } } : current);
+      updateDraft(current => current.queueEdit?.token === edit.token
+        ? { ...current, error: undefined, queueEdit: current.queueEdit.loading
+          ? { id: edit.id, token, text, original: text, hasImages }
+          : { ...current.queueEdit, token } } : current);
     }, cause => {
       if (active) updateDraft(current => current.queueEdit?.token === edit.token
-        ? { ...retainQueueEditText(current), error: readableError(cause) } : current);
+        ? { ...current, error: readableError(cause) } : current);
     });
     return () => { active = false; };
-  }, [project.id, queueEdit?.id, queueEdit?.token, session?.id, updateDraft, watchConnected, watchId]);
+  }, [project.id, queueEdit?.id, queueEdit?.token, queueRetry, session?.id, updateDraft, watchConnected, watchId]);
 
-  function editQueuedMessage(edit: QueuedDraftEdit) {
-    queueClaim.current = `${watchId}/${edit.token}`;
-    setQueueReady(edit.token);
-    updateDraft(current => current.queueEdit ? current : { ...current, queueEdit: edit, error: undefined });
+  function editQueuedMessage(id: number) {
+    queueClaim.current = undefined;
+    setQueueReady(undefined);
+    // App persists this intent in its layout effect before the lease effect runs.
+    // A close or lost reply can then reconnect the exact reservation on reopening.
+    updateDraft(current => current.queueEdit ? current : { ...current,
+      queueEdit: { id, token: crypto.randomUUID(), text: '', original: '', hasImages: false, loading: true }, error: undefined });
   }
 
   async function cancelQueueEdit() {
@@ -669,7 +675,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
           onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />}
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
           <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
-          {modelsError && !draft.error
+          {draft.error && queueEdit && queueReady !== queueEdit.token
+            ? <button className="icon-button" type="button" aria-label="Retry queue edit" title="Retry opening queued message"
+              disabled={!connected} onClick={() => { update({ error: undefined }); setQueueRetry(value => value + 1); }}><Icon name="retry" /></button>
+            : modelsError && !draft.error
             ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry models</button>
             : <button className="icon-button" type="button" aria-label="Dismiss chat notice"
               onClick={() => update({ error: undefined })}><Icon name="close" /></button>}
@@ -688,7 +697,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
           </div>}
           <textarea ref={textarea} id="prompt" value={queueEdit?.text ?? text} maxLength={200000} rows={2}
             aria-label={queueEdit ? 'Edit queued message' : 'Message Pideck'} readOnly={queueSaving || Boolean(queueEdit && queueReady !== queueEdit.token)}
-            placeholder={queueEdit ? 'Edit queued message…' : queueing ? 'Write a follow-up…' : 'Message Pideck…'}
+            placeholder={queueEdit ? queueEdit.loading ? 'Opening queued message…' : 'Edit queued message…' : queueing ? 'Write a follow-up…' : 'Message Pideck…'}
             onChange={(event) => {
               const value = event.target.value;
               updateDraft(current => queueEdit && current.queueEdit?.id === queueEdit.id

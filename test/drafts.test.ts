@@ -21,7 +21,7 @@ test('a stopped or expired editor keeps unsaved text in the ordinary draft witho
   assert.equal(retainQueueEditText({ ...empty, queueEdit: { ...original.queueEdit!, text: 'Queued message' } }).text, '');
 });
 
-test('queue edit tokens survive reload and old alternatives migrate into visible unsent text', () => {
+test('queue edits survive a new window and old alternatives migrate into visible unsent text', () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
   const storage = Object.create({
@@ -40,15 +40,28 @@ test('queue edit tokens survive reload and old alternatives migrate into visible
     const serialized = storage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`);
     assert.ok(serialized);
     assert.ok(!serialized.includes(attachment.data));
-    assert.doesNotMatch(serialized, /queueEdit|token/);
-    assert.ok(editorStorage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`).includes(token));
+    assert.deepEqual(JSON.parse(serialized).queueEdit, edited.queueEdit);
+    assert.equal(editorStorage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`), null);
     const reopened = readDrafts()[projectId][sessionId];
     assert.equal(reopened.text, edited.text);
     assert.deepEqual(reopened.queueEdit, edited.queueEdit);
     assert.deepEqual(reopened.attachments, []);
     editorStorage.removeItem(`pideck.draft.v1/${projectId}/${sessionId}`);
-    assert.equal(readDrafts()[projectId][sessionId].queueEdit, undefined);
+    assert.deepEqual(readDrafts()[projectId][sessionId].queueEdit, edited.queueEdit);
     assert.equal(readDrafts()[projectId][sessionId].text, edited.text);
+    const pending: Draft = { text: '', attachments: [],
+      queueEdit: { id: 9, token, original: '', text: '', hasImages: false, loading: true } };
+    saveDrafts(drafts, { [projectId]: { [sessionId]: pending } });
+    assert.deepEqual(readDrafts()[projectId][sessionId].queueEdit, pending.queueEdit,
+      'the pending reservation is durable before its first host response');
+    storage.setItem(`pideck.draft.v1/${projectId}/${sessionId}`, JSON.stringify({ text: edited.text }));
+    editorStorage.setItem(`pideck.draft.v1/${projectId}/${sessionId}`, JSON.stringify(edited.queueEdit));
+    const migrated = readDrafts();
+    assert.deepEqual(migrated[projectId][sessionId].queueEdit, edited.queueEdit);
+    saveDrafts({}, migrated);
+    assert.equal(editorStorage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`), null);
+    assert.deepEqual(JSON.parse(storage.getItem(`pideck.draft.v1/${projectId}/${sessionId}`)).queueEdit, edited.queueEdit,
+      'a previous version window-scoped edit migrates without cancelling it');
     storage.setItem(`pideck.draft.v1/${projectId}/${sessionId}`, JSON.stringify({
       text: 'Legacy current draft', recoveredDrafts: [{ text: 'Legacy saved draft' }, { text: 'Legacy current draft' }],
       queueEdit: { id: 9, original: 'Queued original', text: 'Old unsaved edit', hasImages: false },

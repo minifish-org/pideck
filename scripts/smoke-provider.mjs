@@ -30,7 +30,7 @@ export async function openSmokeProvider() {
       requests.push(payload);
       const tools = payload.input.filter(item => item.type === "function_call_output");
       const prompt = JSON.stringify(payload.input.findLast(item => item.role === "user")?.content);
-      const gateName = /Queue hold (?:SAVE|CANCEL|RESTART|STOP|RELOAD|CLOSE)/.exec(prompt ?? "")?.[0];
+      const gateName = /Queue hold (?:SAVE|CANCEL|RESTART|STOP|RELOAD|CLOSE|QUIT)/.exec(prompt ?? "")?.[0];
       const held = gateName ? gate(gateName) : undefined;
       const queueExercise = payload.input.some(item => item.role === "user" && JSON.stringify(item.content).includes("Queue hold "));
       const recovering = prompt?.includes("Recover the active request");

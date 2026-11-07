@@ -66,7 +66,7 @@ export function savePreferences(value: Preferences) {
 
 export type Attachment = ImageInput & { name: string };
 export type SendAttempt = { text: string; attachments: Attachment[]; requestId: string };
-export type QueuedDraftEdit = { id: number; token: string; text: string; original: string; hasImages: boolean };
+export type QueuedDraftEdit = { id: number; token: string; text: string; original: string; hasImages: boolean; loading?: true };
 
 export type Draft = {
   text: string;
@@ -123,6 +123,15 @@ export function acceptStartedDraft(drafts: Drafts, projectId: string, sessionId:
   return Object.keys(remaining).length ? { ...drafts, [projectId]: remaining } : without(drafts, projectId);
 }
 
+function readQueueEdit(value: unknown): QueuedDraftEdit | undefined {
+  const edit = record(value);
+  if (!Number.isSafeInteger(edit.id) || Number(edit.id) <= 0 || typeof edit.token !== 'string' || !identifier.test(edit.token)
+    || typeof edit.text !== 'string' || edit.text.length > maxDraftLength
+    || typeof edit.original !== 'string' || edit.original.length > maxDraftLength || typeof edit.hasImages !== 'boolean') return;
+  return { id: Number(edit.id), token: edit.token, text: edit.text, original: edit.original, hasImages: edit.hasImages,
+    ...(edit.loading === true ? { loading: true } : {}) };
+}
+
 export function readDrafts(): Drafts {
   const drafts: Drafts = {};
   try {
@@ -144,11 +153,8 @@ export function readDrafts(): Drafts {
         // Older alternatives may merge into a longer unsent draft. Keep that
         // text across reopening; outgoing messages still have their IPC limit.
         if (typeof text !== 'string') continue;
-        const edit = record(savedWindowEdit);
-        const queueEdit = Number.isSafeInteger(edit.id) && Number(edit.id) > 0 && typeof edit.token === 'string' && identifier.test(edit.token)
-          && typeof edit.text === 'string' && edit.text.length <= maxDraftLength
-          && typeof edit.original === 'string' && edit.original.length <= maxDraftLength && typeof edit.hasImages === 'boolean'
-          ? edit as QueuedDraftEdit : undefined;
+        const persistentEdit = readQueueEdit(savedEdit);
+        const queueEdit = persistentEdit ?? readQueueEdit(savedWindowEdit);
         // Migrate older saved alternatives into visible, unsent text once. Their
         // message identity was never stored, so they cannot reserve queue items.
         const legacyText = Array.isArray(savedRecoveries) ? savedRecoveries.flatMap(value => {
@@ -156,7 +162,7 @@ export function readDrafts(): Drafts {
           return typeof text === 'string' && text.length > 0 && text.length <= maxDraftLength ? [text] : [];
         }) : [];
         const legacyEdit = record(savedEdit);
-        if (typeof legacyEdit.text === 'string' && legacyEdit.text.length <= maxDraftLength
+        if (!persistentEdit && typeof legacyEdit.text === 'string' && legacyEdit.text.length <= maxDraftLength
           && legacyEdit.text !== legacyEdit.original) legacyText.push(legacyEdit.text);
         const currentText = [...new Set([text, ...legacyText].filter(Boolean))].join('\n\n');
         if (!currentText && !queueEdit) continue;
@@ -193,18 +199,12 @@ export function saveDrafts(previous: Drafts, current: Drafts) {
         && next?.queueEdit === prior?.queueEdit) continue;
       const key = `${draftKey}${projectId}/${sessionId}`;
       try {
-        if (next?.text) localStorage.setItem(key, JSON.stringify({ text: next.text, requestId }));
+        if (next?.text || next?.queueEdit) localStorage.setItem(key, JSON.stringify({ text: next.text, requestId, queueEdit: next.queueEdit }));
         else localStorage.removeItem(key);
+        // Only remove the older window-scoped copy after the durable copy succeeds.
+        try { sessionStorage.removeItem(key); } catch { /* Storage is optional. */ }
       } catch {
         // Keep the in-memory draft when local storage is unavailable or full.
-      }
-      try {
-        // Editing belongs to this window: reloads reconnect the same reservation,
-        // while closing the window discards it just like Cancel.
-        if (next?.queueEdit) sessionStorage.setItem(key, JSON.stringify(next.queueEdit));
-        else sessionStorage.removeItem(key);
-      } catch {
-        // An unavailable store must not prevent the in-memory editor from working.
       }
     }
   }

@@ -6,6 +6,13 @@ async page => {
   const nav = page.getByRole("complementary", { name: "Workspace navigation" });
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   const queueEdit = page.getByRole("textbox", { name: "Edit queued message" });
+  async function waitForQueueEditor() {
+    await queueEdit.waitFor();
+    await page.waitForFunction(() => {
+      const editor = document.querySelector("#prompt");
+      return editor?.getAttribute("aria-label") === "Edit queued message" && !editor.readOnly;
+    });
+  }
   const canvas = "rgb(13, 17, 23)";
   const panel = "rgb(33, 40, 48)";
   const inputSurface = "rgb(21, 27, 35)";
@@ -548,15 +555,83 @@ async page => {
     const targetRow = secondaryQueue.getByRole("listitem").filter({ hasText: target });
     const targetId = await targetRow.getAttribute("data-queue-id");
     await prompt.fill(secondaryDraft);
+    if (action === "save") await page.evaluate(() => sessionStorage.setItem("pideck-fail-edit-start", "1"));
     await targetRow.getByRole("button", { name: "Edit message", exact: true }).click();
+    if (action === "save") {
+      const lostAcknowledgement = "The fixture lost the queue edit acknowledgement.";
+      await page.getByRole("alert").getByText(lostAcknowledgement, { exact: true }).waitFor();
+      const pending = await page.waitForFunction(({ id, draft }) => {
+        for (const [key, value] of Object.entries(localStorage)) {
+          if (!key.startsWith("pideck.draft.v1/")) continue;
+          const saved = JSON.parse(value);
+          if (saved.queueEdit?.id === Number(id) && saved.queueEdit.loading && saved.text === draft) {
+            return { key, token: saved.queueEdit.token };
+          }
+        }
+      }, { id: targetId, draft: secondaryDraft }).then(handle => handle.jsonValue());
+      const holdCommitted = await page.evaluate(({ id, token }) => Object.values(
+        JSON.parse(localStorage.getItem("pideck-browser-fixture")).queueHolds,
+      ).some(hold => hold.id === Number(id) && hold.token === token), { id: targetId, token: pending.token });
+      if (!holdCommitted || !await queueEdit.evaluate(editor => editor.readOnly)) {
+        throw new Error("A lost edit acknowledgement did not retain the pending token and committed hold.");
+      }
+      await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-second-run")));
+      await page.getByText("Secondary work completed.", { exact: true }).first().waitFor();
+      if (await secondaryQueue.getByRole("listitem").count() !== 2
+        || await secondaryQueue.locator(`[data-queue-id="${targetId}"]`).count() !== 1
+        || await page.getByRole("article", { name: "You", exact: true }).getByText(suffix, { exact: true }).count()) {
+        throw new Error("Losing the edit acknowledgement released its target or let a follow-up pass it.");
+      }
+      await page.getByRole("button", { name: "Retry queue edit", exact: true }).click();
+      await waitForQueueEditor();
+      const resumed = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), pending.key);
+      if (await queueEdit.inputValue() !== target || resumed.queueEdit?.token !== pending.token
+        || resumed.queueEdit.loading || await page.getByText(lostAcknowledgement, { exact: true }).count()) {
+        throw new Error("Retrying a lost edit acknowledgement did not reclaim its token and original text.");
+      }
+    }
     const editedText = action === "save" ? "Save the revised queued message." : "Discard the temporary queued edits.";
+    await waitForQueueEditor();
     await queueEdit.fill(editedText);
-    await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-second-run")));
+    if (action === "cancel") await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-finish-second-run")));
     await page.getByText("Secondary work completed.", { exact: true }).first().waitFor();
     if (await secondaryQueue.getByRole("listitem").count() !== 2 || await queueEdit.inputValue() !== editedText
       || await secondaryQueue.locator(`[data-queue-id="${targetId}"]`).count() !== 1
       || await page.getByRole("article", { name: "You", exact: true }).getByText(suffix, { exact: true }).count()) {
       throw new Error("Finishing the current work consumed an edited queue item or let its follow-up pass it.");
+    }
+    if (action === "save") {
+      const persisted = await page.waitForFunction(({ id, text, draft }) => {
+        for (const [key, value] of Object.entries(localStorage)) {
+          if (!key.startsWith("pideck.draft.v1/")) continue;
+          const saved = JSON.parse(value);
+          if (saved.queueEdit?.id === Number(id) && saved.queueEdit.text === text && saved.text === draft) {
+            return { key, token: saved.queueEdit.token };
+          }
+        }
+      }, { id: targetId, text: editedText, draft: secondaryDraft }).then(handle => handle.jsonValue());
+      async function expectResumedEdit(reason) {
+        await waitForQueueEditor();
+        const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), persisted.key);
+        if (await queueEdit.inputValue() !== editedText || stored.queueEdit?.token !== persisted.token
+          || stored.text !== secondaryDraft || await secondaryQueue.getByRole("listitem").count() !== 2
+          || await secondaryQueue.locator(`[data-queue-id="${targetId}"]`).count() !== 1
+          || await page.getByRole("article", { name: "You", exact: true }).getByText(suffix, { exact: true }).count()) {
+          throw new Error(`${reason} did not preserve the edited text, token, ordinary draft and held queue.`);
+        }
+        if (await page.getByRole("button", { name: "Restore saved draft", exact: true }).count()) {
+          throw new Error("Reopening an edit returned the removed recovery menu.");
+        }
+      }
+      await page.reload();
+      await expectResumedEdit("Reloading");
+      const applicationUrl = page.url();
+      // Replace the document and discard all window-only storage. Native smoke
+      // separately verifies Electron window destruction and process restarts.
+      await page.evaluate(() => sessionStorage.clear());
+      await page.goto("about:blank");
+      await page.goto(applicationUrl);
+      await expectResumedEdit("Reopening with fresh window storage");
     }
     if (action === "save") await page.getByRole("button", { name: "Save queued message", exact: true }).click();
     else await queueEdit.press("Escape");
@@ -647,7 +722,7 @@ async page => {
   await pasteImage(2, 2);
   await attachmentPreview.waitFor();
   await queueEditButton.press("Enter");
-  await queueEdit.waitFor();
+  await waitForQueueEditor();
   if (await queueEdit.inputValue() !== editableText || !await queueEdit.evaluate(editor => editor === document.activeElement)
     || await composer.locator("textarea").count() !== 1 || await queue.locator("textarea").count()
     || await attachmentPreview.count()) {
@@ -674,14 +749,14 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-light-queue-edit.png" });
   await appearance("dark");
   await queueEdit.fill("An edit retained while switching sessions.");
-  await page.waitForFunction(() => Object.entries(sessionStorage).some(([key, value]) => key.startsWith("pideck.draft.v1/")
-    && (JSON.parse(value).queueEdit ?? JSON.parse(value)).text === "An edit retained while switching sessions."
-    && JSON.parse(localStorage.getItem(key) ?? "null")?.text === "Keep this ordinary unsent draft."));
+  await page.waitForFunction(() => Object.entries(localStorage).some(([key, value]) => key.startsWith("pideck.draft.v1/")
+    && JSON.parse(value).queueEdit?.text === "An edit retained while switching sessions."
+    && JSON.parse(value).text === "Keep this ordinary unsent draft."));
   await page.setViewportSize(queueViewport);
   await draftSession.click();
   await prompt.waitFor();
   await runningSession.click();
-  await queueEdit.waitFor();
+  await waitForQueueEditor();
   if (await queueEdit.inputValue() !== "An edit retained while switching sessions.") throw new Error("Session switching lost the pending queue edit.");
   await queueEdit.press("Escape");
   await prompt.waitFor();
@@ -737,6 +812,7 @@ async page => {
   await page.setViewportSize(queueViewport);
   await prompt.fill(parkedDraft);
   await queueEditButton.click();
+  await waitForQueueEditor();
   await queueEdit.fill("Report the final verification.");
   await page.getByRole("button", { name: "Save queued message", exact: true }).click();
   await row("Report the final verification.").waitFor();

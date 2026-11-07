@@ -74,7 +74,8 @@ function Desktop() {
   const savedAtStartup = useRef(preferences);
   const [drafts, setDrafts] = useState(readDrafts);
   const draftsAtStartup = useRef(drafts);
-  const savedDrafts = useRef(drafts);
+  // Persist migrated window-only editors before any passive lease request.
+  const savedDrafts = useRef<typeof drafts>({});
   const [sessionLists, setSessionLists] = useState<Record<string, Session[]>>({});
   const sessionListGeneration = useRef(0);
   const [projectExpansion, setProjectExpansion] = useState<Record<string, boolean>>({});

@@ -17,6 +17,8 @@ export class HostClient {
   private stopping = false;
   private restartAttempts = 0;
   private readonly lifetimeId = randomUUID();
+  // Re-send dead window IDs after a host crash so their edit leases detach even
+  // when the close acknowledgement was lost. Their messages remain held.
   private readonly closedWindows = new Set<number>();
 
   constructor(

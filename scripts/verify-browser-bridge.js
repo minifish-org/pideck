@@ -1,5 +1,6 @@
 async page => {
   await page.addInitScript(() => {
+    if (!["http:", "https:"].includes(location.protocol)) return;
     const listeners = new Set();
     const watches = new Map();
     const activity = new Map();
@@ -39,7 +40,8 @@ async page => {
       ...Array.from({ length: 180 }, (_, index) => `-const old${index} = ${index};`),
       ...Array.from({ length: 180 }, (_, index) => `+const next${index} = ${index};`), "",
     ].join("\n");
-    const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
+    // The trusted host store outlives a renderer document and its session storage.
+    const state = JSON.parse(localStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
     state.queueHolds ??= {};
@@ -55,18 +57,21 @@ async page => {
     let releaseSessionList;
     if (state.projectId) project.id = state.projectId;
     model.configured = state.configured;
-    for (const view of Object.values(state.views)) {
+    for (const [sessionId, view] of Object.entries(state.views)) {
       for (const item of view.queued ?? []) {
         nextQueueId = Math.max(nextQueueId, item.id);
         queuedTexts.set(item.id, item.preview);
       }
       for (const message of view.messages) nextFixtureEntryId = Math.max(nextFixtureEntryId, message.entryId ?? 0);
+      if (view.status === "running") {
+        activity.set(sessionId, { projectId: project.id, sessionId, taskId: ++nextTaskId, state: "running", settled: false });
+      }
     }
 
     const emit = (event) => {
       for (const listener of listeners) listener(event);
     };
-    const persist = () => sessionStorage.setItem("pideck-browser-fixture", JSON.stringify(state));
+    const persist = () => localStorage.setItem("pideck-browser-fixture", JSON.stringify(state));
     const appearance = () => ({ preference: state.appearance,
       resolved: state.appearance === "system" ? systemAppearance.matches ? "dark" : "light" : state.appearance });
     const publishAppearance = () => emit({ type: "appearance:changed", appearance: appearance() });
@@ -127,6 +132,16 @@ async page => {
       }], status: "idle", canSteerQueued: false });
       drainIdleQueue(sessionId);
     }
+
+    window.addEventListener("pideck-fixture-write-result", () => {
+      const sessionId = state.mainSessionId;
+      const [user, reply] = state.views[sessionId].messages;
+      const output = Array.from({ length: 8 }, (_, index) => `Verified step ${index + 1}.`).join("\n");
+      change(sessionId, { messages: [user, { ...reply, blocks: [
+        { ...reply.blocks[0], status: "done", output },
+        { type: "text", text: "Writing the result." },
+      ] }] });
+    }, { once: true });
 
     function addSession(title, view = { messages: [], status: "idle" }, id = crypto.randomUUID()) {
       const session = { id, projectId: project.id, title: title ?? "Untitled session",
@@ -374,14 +389,6 @@ async page => {
             ] }] : [prompt];
             change(session.id, { messages, status: "running", canSteerQueued: first, model: selectedModel, thinking: payload.thinking });
             if (first) {
-              window.addEventListener("pideck-fixture-write-result", () => {
-                const [user, reply] = state.views[session.id].messages;
-                const output = Array.from({ length: 8 }, (_, index) => `Verified step ${index + 1}.`).join("\n");
-                change(session.id, { messages: [user, { ...reply, blocks: [
-                  { ...reply.blocks[0], status: "done", output },
-                  { type: "text", text: "Writing the result." },
-                ] }] });
-              }, { once: true });
               watches.clear();
               emit({ type: "host:disconnected", message: "The fixture workspace disconnected." });
               setTimeout(() => emit({ type: "host:restart" }), 100);
@@ -436,6 +443,10 @@ async page => {
             const token = hold?.token ?? payload.token;
             state.queueHolds[payload.sessionId] = { id: payload.id, token };
             change(payload.sessionId, { queued: view.queued.map(item => ({ ...item, editing: item.id === payload.id || undefined })) });
+            if (sessionStorage.getItem("pideck-fail-edit-start")) {
+              sessionStorage.removeItem("pideck-fail-edit-start");
+              throw new Error("The fixture lost the queue edit acknowledgement.");
+            }
             return { token, text: queuedTexts.get(item.id) ?? item.preview, hasImages: false };
           }
           case "chat:queue-edit-finish": {

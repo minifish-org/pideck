@@ -9,7 +9,7 @@ type EditIdentity = { id: number; token: string; owner: number; lifetimeId: stri
 export type QueueEditState = {
   items: InboxItem[];
   order: number[];
-  edit?: EditIdentity & { mode: "steer" | "followUp" };
+  edit?: EditIdentity & { mode: "steer" | "followUp"; detached?: boolean };
   finished?: EditIdentity;
   resume?: boolean;
 };
@@ -46,11 +46,17 @@ function editText(item: Exclude<InboxItem, { mode: "write" }>, text: string) {
 export async function startQueueEdit(tx: Tx, conversationId: ConversationId, identity: EditIdentity) {
   const held = await tx.doc(QueueEditDoc, conversationId);
   if (held.edit) {
-    if (held.edit.id !== identity.id || held.edit.owner !== identity.owner || held.edit.lifetimeId !== identity.lifetimeId) {
+    const sameOwner = held.edit.owner === identity.owner && held.edit.lifetimeId === identity.lifetimeId;
+    if (held.edit.id !== identity.id || (!held.edit.detached && !sameOwner)) {
       throw new Error("A queued message is already being edited in this session.");
     }
     const item = held.items.find(item => item.id === identity.id);
     if (!item || item.mode === "write") throw new Error("This message is no longer in the queue.");
+    if (held.edit.detached) {
+      held.edit.owner = identity.owner;
+      held.edit.lifetimeId = identity.lifetimeId;
+      delete held.edit.detached;
+    }
     return { token: held.edit.token, ...content(item) };
   }
   if (matches(held.finished, identity)) throw new Error("This queue edit has already ended.");
@@ -94,7 +100,7 @@ export async function advanceReleasedQueue(tx: Tx, conversation: Conversation) {
 export async function finishQueueEdit(tx: Tx, conversation: Conversation, identity: EditIdentity, text?: string) {
   const held = await tx.doc(QueueEditDoc, conversation.id);
   if (matches(held.finished, identity)) return;
-  if (!matches(held.edit, identity)) throw new Error("This queue edit is no longer active in this window.");
+  if (!matches(held.edit, identity) || held.edit?.detached) throw new Error("This queue edit is no longer active in this window.");
   const item = held.items.find(item => item.id === identity.id);
   if (!item || item.mode === "write") throw new Error("This message is no longer in the queue.");
   if (text !== undefined) editText(item, text);
@@ -102,13 +108,14 @@ export async function finishQueueEdit(tx: Tx, conversation: Conversation, identi
   await advanceReleasedQueue(tx, conversation);
 }
 
-export async function releaseQueueEdit(tx: Tx, conversation: Conversation, owner: number | undefined, lifetimeId: string,
-  advance: boolean, foreignLifetime = false) {
-  const held = await tx.doc(QueueEditDoc, conversation.id);
+// Closing a window ends its exclusive lease, never the edit itself. Keep the
+// native submissions parked until the recovered editor explicitly saves/cancels.
+export async function detachQueueEdit(tx: Tx, conversationId: ConversationId, owner: number | undefined, lifetimeId: string,
+  foreignLifetime = false) {
+  const held = await tx.doc(QueueEditDoc, conversationId);
   if (!held.edit || (owner !== undefined && held.edit.owner !== owner)
     || (foreignLifetime ? held.edit.lifetimeId === lifetimeId : held.edit.lifetimeId !== lifetimeId)) return false;
-  await restoreQueue(tx, conversation.id, held);
-  if (advance) await advanceReleasedQueue(tx, conversation);
+  held.edit.detached = true;
   return true;
 }
 

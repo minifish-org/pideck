@@ -24,7 +24,7 @@ import { chatProjection, inputEntryKind, type CompletedRunTiming } from "./chat-
 import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
-import { advanceReleasedQueue, discardQueueEdit, finishQueueEdit, QueueEditDoc, readQueuedInput, releaseQueueEdit,
+import { advanceReleasedQueue, detachQueueEdit, discardQueueEdit, finishQueueEdit, QueueEditDoc, readQueuedInput,
   startQueueEdit, submitQueuedInput, updateQueuedInput } from "./queued-input.js";
 import type { QueueEditState } from "./queued-input.js";
 import { shellEnvironment } from "./shell-env.js";
@@ -421,7 +421,7 @@ export class Runtime {
       const foreignLifetime = held.edit.lifetimeId !== this.lifetimeId;
       if (!foreignLifetime && !this.closedEditOwners.has(held.edit.owner)) continue;
       const conversation = await this.harness.conversation(row.conversationId, context);
-      if (conversation) await conversation.commit(tx => releaseQueueEdit(tx, conversation, undefined, this.lifetimeId, false, foreignLifetime), context);
+      if (conversation) await conversation.commit(tx => detachQueueEdit(tx, conversation.id, undefined, this.lifetimeId, foreignLifetime), context);
     }
   }
 
@@ -433,17 +433,17 @@ export class Runtime {
     }
   }
 
-  async releaseQueueEdits(owner?: number, advance = true) {
+  async detachQueueEdits(owner?: number) {
     if (owner !== undefined) this.closedEditOwners.add(owner);
-    else if (!advance) this.editsClosing = true;
+    else this.editsClosing = true;
     await this.removing?.catch(() => {});
     if (this.closing) return;
     return this.admit(async () => {
       for (const row of this.conversationRows()) {
-        const held = await this.harness.snapshot(QueueEditDoc, row.conversationId, context);
-        if (!held?.edit || (owner !== undefined && held.edit.owner !== owner)) continue;
         const conversation = await this.harness.conversation(row.conversationId, context);
-        if (conversation) await conversation.commit(tx => releaseQueueEdit(tx, conversation, owner, this.lifetimeId, advance), context);
+        // Serialize behind an in-flight claim, rather than missing it in a
+        // snapshot taken just before that claim commits.
+        if (conversation) await conversation.commit(tx => detachQueueEdit(tx, conversation.id, owner, this.lifetimeId), context);
       }
     });
   }
