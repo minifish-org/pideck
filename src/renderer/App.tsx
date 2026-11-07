@@ -782,7 +782,7 @@ function Desktop() {
   }, [api, opening, modalOpen, canCreateSession, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
   return (
-    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${project && canSplitWorkspace ? ' app--can-dock-tools' : ''}`} ref={app}>
+    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools-docked' : ''}`} ref={app}>
       <header className="titlebar" onKeyDown={(event) => {
         if (drawerOpen && event.key === 'Escape') closeDrawer(true);
       }}>

@@ -523,7 +523,6 @@ async page => {
   await page.evaluate(() => sessionStorage.removeItem("pideck-extra-review-file"));
   await forked.click();
   await smallDiff.locator(".workspace-inline [data-diff-type=single]").waitFor();
-  await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
 
   const changes = page.getByRole("button", { name: "Changes", exact: true });
   const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
@@ -548,13 +547,20 @@ async page => {
       throw new Error("Switching the right panel moved the workspace toggles.");
     }
   };
-  const closedTogglePositions = await togglePositions();
-  await page.evaluate(() => {
-    sessionStorage.setItem("pideck-review-list-failure", "1");
-    window.dispatchEvent(new Event("pideck-fixture-review-change"));
-  });
-  await changes.click();
   const review = page.getByRole("complementary", { name: "Review changes" });
+  const expectToolbarEdge = async () => {
+    const aligned = await page.evaluate(() => {
+      const header = document.querySelector(".titlebar-content");
+      const dockedTools = document.querySelector("#workspace-tools[data-docked]");
+      const middleEdge = dockedTools?.getBoundingClientRect().left ?? window.innerWidth;
+      const inset = parseFloat(getComputedStyle(header).paddingInlineEnd);
+      const changes = document.getElementById("toggle-review").getBoundingClientRect();
+      const terminal = document.getElementById("toggle-terminal").getBoundingClientRect();
+      return Math.abs(header.getBoundingClientRect().right - middleEdge) <= 1
+        && changes.right <= terminal.left && Math.abs(terminal.right - (middleEdge - inset)) <= 1;
+    });
+    if (!aligned) throw new Error("The workspace toggles do not align to the visible middle column's right edge.");
+  };
   const expectActiveTool = async (active) => {
     await review.waitFor({ state: active === "changes" ? "visible" : "hidden" });
     await terminal.waitFor({ state: active === "terminal" ? "visible" : "hidden" });
@@ -567,7 +573,15 @@ async page => {
       Math.abs(conversation.getBoundingClientRect().right - window.innerWidth) <= 1)) {
       throw new Error("Collapsing the right sidebar did not return its space to the conversation.");
     }
+    await expectToolbarEdge();
   };
+  await expectActiveTool();
+  await page.screenshot({ path: "output/playwright/pideck-ui-conversation.png" });
+  await page.evaluate(() => {
+    sessionStorage.setItem("pideck-review-list-failure", "1");
+    window.dispatchEvent(new Event("pideck-fixture-review-change"));
+  });
+  await changes.click();
   const retry = review.getByRole("button", { name: "Retry", exact: true });
   const clearReviewErrorAndRetry = key => retry.evaluate((button, storageKey) => {
     sessionStorage.removeItem(storageKey);
@@ -599,7 +613,6 @@ async page => {
   const resizedTogglePositions = await togglePositions();
   await changes.click();
   await expectActiveTool();
-  await expectTogglePositions(resizedTogglePositions);
   await changes.click();
   await expectActiveTool("changes");
   await expectTogglePositions(resizedTogglePositions);
@@ -620,13 +633,10 @@ async page => {
       const sameEdge = (first, second) => Math.abs(first - second) <= 1;
       const sidebarEdge = bounds(".navigation").right;
       const titlebar = bounds(".titlebar");
-      const middleHeaderElement = document.querySelector(".titlebar-content");
-      const middleHeader = middleHeaderElement.getBoundingClientRect();
-      const middleHeaderEnd = middleHeader.right - parseFloat(getComputedStyle(middleHeaderElement).paddingInlineEnd);
+      const middleHeader = bounds(".titlebar-content");
       const sessionTitle = bounds(".workspace-title");
       const right = bounds("#workspace-tools[data-docked]");
       const conversation = bounds(".workspace-conversation");
-      const terminalToggle = bounds("#toggle-terminal");
       const reviewToggle = bounds("#toggle-review");
       const panel = bounds(pane);
       const panelHeader = bounds(pane + " .workspace-panel-header");
@@ -639,15 +649,15 @@ async page => {
         && sameEdge(middleHeader.right, right.left)
         && sessionTitle.left - middleHeader.left <= 24 && sessionTitle.left > middleHeader.left
         && sessionTitle.right <= reviewToggle.left
-        && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, middleHeaderEnd)
         && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
     }, pane);
-    if (!aligned) throw new Error("The active tool must fill the right sidebar and its buttons must align to the middle header's trailing edge.");
+    if (!aligned) throw new Error("The active tool must fill the right sidebar beside the middle header.");
   };
   await expectActiveTool("changes");
   await expectDockedTool("#review-panel");
+  const dockedTogglePositions = await togglePositions();
   if (await tools.locator("[role=separator]").count()) throw new Error("The right sidebar still splits tools vertically.");
   for (const surface of [page.locator(".titlebar"), nav, review]) await expectColors(surface, { "background-color": canvas });
   await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(33, 40, 48)" });
@@ -665,7 +675,7 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectDockedTool("#workspace-terminal");
-  await expectTogglePositions(closedTogglePositions);
+  await expectTogglePositions(dockedTogglePositions);
   await expectColors(terminalToggle, selectedToggleColors);
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
@@ -678,6 +688,7 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-right-sidebar.png" });
   await changes.click();
   await expectActiveTool("changes");
+  await expectTogglePositions(dockedTogglePositions);
   await expectSameShell();
   await changes.click();
   await expectActiveTool();
@@ -701,6 +712,7 @@ async page => {
   await nav.waitFor();
   await divider.waitFor();
   await back.waitFor({ state: "hidden" });
+  await expectToolbarEdge();
   if (!await prompt.isVisible() || await prompt.evaluate(input => Boolean(input.closest("[inert]")))) {
     throw new Error("Changes covered the composer at an intermediate window width.");
   }
@@ -708,6 +720,7 @@ async page => {
   await nav.waitFor({ state: "detached" });
   await divider.waitFor();
   await back.waitFor({ state: "hidden" });
+  await expectToolbarEdge();
   await page.setViewportSize({ width: 760, height: 560 });
   await page.waitForFunction(() => document.querySelector(".workspace-conversation").inert
     && document.querySelector("#review-panel").contains(document.activeElement));
@@ -770,9 +783,11 @@ async page => {
   await changes.click();
   await back.waitFor();
   await expectActiveTool("changes");
+  await expectTogglePositions(compactTogglePositions);
   await expectSameShell();
   await terminalToggle.click();
   await expectActiveTool("terminal");
+  await expectTogglePositions(compactTogglePositions);
   await expectSameShell();
   await page.screenshot({ path: "output/playwright/pideck-ui-terminal.png" });
   await terminalBack.click();

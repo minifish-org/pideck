@@ -321,7 +321,17 @@ try {
   const changesToggle = page.getByRole("button", { name: "Changes", exact: true });
   const terminalToggle = page.getByRole("button", { name: "Terminal", exact: true });
   const toolButtonPositions = () => Promise.all([changesToggle, terminalToggle].map(async button => (await button.boundingBox()).x));
-  const closedToolButtonPositions = await toolButtonPositions();
+  async function verifyClosedToolLayout() {
+    await tools.waitFor({ state: "hidden" });
+    assert.ok(await page.evaluate(() => {
+      const middleHeader = document.querySelector(".titlebar-content");
+      const terminalToggle = document.getElementById("toggle-terminal");
+      const headerRight = middleHeader.getBoundingClientRect().right;
+      const buttonRight = terminalToggle.getBoundingClientRect().right;
+      const inset = parseFloat(getComputedStyle(middleHeader).paddingInlineEnd);
+      return Math.abs(headerRight - window.innerWidth) <= 1 && Math.abs(buttonRight - (window.innerWidth - inset)) <= 1;
+    }), "The middle header and its tool buttons must extend to the window edge while the right sidebar is closed.");
+  }
   async function verifyDockedToolLayout(panelSelector) {
     assert.ok(await page.evaluate(selector => {
       const bounds = target => document.querySelector(target).getBoundingClientRect();
@@ -344,6 +354,7 @@ try {
         && sameEdge(panel.bottom, right.bottom);
     }, panelSelector), "The active tool must fill the right sidebar and its buttons must align to the middle header's trailing edge.");
   }
+  await verifyClosedToolLayout();
   await clickNativeMenu(app, "toggle-review");
   await page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /example.ts/ }).click();
   await page.getByRole("combobox", { name: "Diff layout" }).selectOption("split");
@@ -354,7 +365,7 @@ try {
   assert.ok(page.workers().some(worker => worker.url().includes("/worker-")));
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("toggle-review").checked), true);
   await verifyDockedToolLayout("#review-panel");
-  assert.deepEqual(await toolButtonPositions(), closedToolButtonPositions, "Opening Changes moved its toolbar buttons.");
+  const dockedToolButtonPositions = await toolButtonPositions();
   const externalPath = join(project, "outside-edit.ts");
   const changedFile = review.getByRole("button", { name: /outside-edit\.ts/ });
   assert.equal(await review.getByRole("button", { name: /Refresh/i }).count(), 0);
@@ -384,7 +395,7 @@ try {
   assert.equal(await terminalToggle.getAttribute("aria-pressed"), "true");
   assert.equal(await page.getByRole("separator", { name: "Resize terminal" }).count(), 0);
   await verifyDockedToolLayout("#workspace-terminal");
-  assert.deepEqual(await toolButtonPositions(), closedToolButtonPositions, "Switching to Terminal moved its toolbar buttons.");
+  assert.deepEqual(await toolButtonPositions(), dockedToolButtonPositions, "Switching between docked tools moved their toolbar buttons.");
 
   // Release each stage only once the running process's terminal is hidden.
   await terminal.focus();
@@ -410,7 +421,7 @@ try {
   await review.waitFor({ state: "detached" });
   await terminalRegion.getByText("Shell running").waitFor();
   await terminalToggle.click();
-  await tools.waitFor({ state: "hidden" });
+  await verifyClosedToolLayout();
   assert.equal(await terminalToggle.getAttribute("aria-pressed"), "false");
   await writeFile(join(temporary, "collapse-ready"), "");
   await page.waitForFunction(id => document.documentElement.dataset.collapsedPtyId === id, firstPty);

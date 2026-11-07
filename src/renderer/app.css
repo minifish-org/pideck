@@ -60,8 +60,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background: var(--bgColor-default);
   -webkit-app-region: drag;
 }
-/* Keep the title and its controls in the same space whether the right sidebar is open or closed. */
-.app--can-dock-tools .titlebar { padding-inline-end: var(--tools-width); }
+.app--tools-docked .titlebar { padding-inline-end: var(--tools-width); }
 .titlebar-leading {
   display: flex;
   align-items: center;
