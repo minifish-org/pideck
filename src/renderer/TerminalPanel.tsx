@@ -75,7 +75,7 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       // SearchAddon's match decorations use xterm's registerDecoration API.
       allowProposedApi: true,
       convertEol: false,
-      cursorBlink: true,
+      cursorBlink: false,
       fontFamily: token("--mono"),
       fontSize: 12,
       lineHeight: 1.25,
