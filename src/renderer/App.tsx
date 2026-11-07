@@ -147,7 +147,7 @@ function Desktop() {
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
 
   useEffect(() => {
-    setRenaming(current => current?.source === (showNavigation ? 'titlebar' : 'sidebar') ? undefined : current);
+    if (!showNavigation) setRenaming(current => current?.source === 'sidebar' ? undefined : current);
   }, [showNavigation]);
 
   useEffect(() => {
@@ -782,7 +782,7 @@ function Desktop() {
   }, [api, opening, modalOpen, canCreateSession, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
   return (
-    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools' : ''}`} ref={app}>
+    <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${project && canSplitWorkspace ? ' app--can-dock-tools' : ''}`} ref={app}>
       <header className="titlebar" onKeyDown={(event) => {
         if (drawerOpen && event.key === 'Escape') closeDrawer(true);
       }}>
@@ -794,6 +794,19 @@ function Desktop() {
             onClick={toggleNavigation}><Icon name="sidebar" /></button>}
         </div>
         <div className="titlebar-content">
+          <div className="title-context">
+            {project && <div className="workspace-title">
+              {!showNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
+              {session ? renaming?.sessionId === session.id && renaming.source === 'titlebar'
+                ? <SessionName key={session.id} title={session.title} onFinish={finishRename} />
+                : <button type="button" className="workspace-title-current session-title-button" id="rename-current-session"
+                    title={`Rename session “${session.title}”`} aria-label={`Rename session ${session.title}`}
+                    onClick={() => setRenaming({ projectId: project.id, sessionId: session.id, source: 'titlebar' })}>
+                    {session.title}
+                  </button>
+                : <span className="workspace-title-current" title={project.directory}>{project.name}</span>}
+            </div>}
+          </div>
           {project && <div className="title-panels" role="group" aria-label="Workspace panels">
             <button className="icon-button panel-toggle" id="toggle-review" type="button" aria-label="Changes"
               title={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`} aria-pressed={reviewOpen}
@@ -804,19 +817,6 @@ function Desktop() {
               aria-controls={terminalVisible ? 'workspace-terminal' : undefined}
               disabled={removingProject} onClick={toggleTerminal}><Icon name="terminal" /></button>
           </div>}
-          <div className="title-context">
-            {project && <div className="workspace-title">
-              {!showNavigation && session && <span className="workspace-title-project" title={project.directory}>{project.name}</span>}
-              {!showNavigation && session ? renaming?.sessionId === session.id && renaming.source === 'titlebar'
-                ? <SessionName key={session.id} title={session.title} onFinish={finishRename} />
-                : <button type="button" className="workspace-title-current session-title-button" id="rename-current-session"
-                    title={`Rename session “${session.title}”`} aria-label={`Rename session ${session.title}`}
-                    onClick={() => setRenaming({ projectId: project.id, sessionId: session.id, source: 'titlebar' })}>
-                    {session.title}
-                  </button>
-                : <span className="workspace-title-current" title={project.directory}>{project.name}</span>}
-            </div>}
-          </div>
           {!showNavigation && !toolsOverlay && project && session && <button className="icon-button" type="button"
             data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
             title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}

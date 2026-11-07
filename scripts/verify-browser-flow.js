@@ -37,6 +37,9 @@ async page => {
   await page.screenshot({ path: "output/playwright/pideck-ui-welcome.png" });
   await open.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  if (await page.locator(".workspace-title-current").textContent() !== "Sample project") {
+    throw new Error("The project name is missing before starting a session.");
+  }
   if (await workspace.getByRole("button", { name: /Trust project/i }).count()) {
     throw new Error("Opening a folder still requires a second permission step.");
   }
@@ -417,12 +420,16 @@ async page => {
   await successOutput.waitFor({ state: "hidden" });
   await successfulCommand.press("Enter");
   await successOutput.waitFor();
-  if (await page.locator(".workspace-title-current").textContent() !== "Sample project") {
-    throw new Error("The titlebar duplicates the visible session title.");
+  if ((await page.locator("#rename-current-session").textContent()).trim() !== (await runningSession.textContent()).trim()) {
+    throw new Error("The titlebar does not identify the current session with the sidebar open.");
   }
   await runningSession.dblclick();
+  await sessionName.fill("Status review");
+  await sessionName.press("Enter");
+  await page.getByRole("button", { name: "Rename session Status review", exact: true }).click();
   await sessionName.fill("Verify status");
   await sessionName.press("Enter");
+  await page.getByRole("button", { name: "Rename session Verify status", exact: true }).waitFor();
 
   await page.getByRole("button", { name: "Load earlier messages" }).click();
   await page.getByText("An earlier coding request.").waitFor();
@@ -536,6 +543,11 @@ async page => {
   const screen = terminal.locator(".xterm-helper-textarea");
   const divider = page.getByRole("separator", { name: "Resize right sidebar" });
   const togglePositions = async () => Promise.all([changes, terminalToggle].map(async button => (await button.boundingBox()).x));
+  const expectTogglePositions = async expected => {
+    if ((await togglePositions()).some((position, index) => Math.abs(position - expected[index]) > 1)) {
+      throw new Error("Switching the right panel moved the workspace toggles.");
+    }
+  };
   const closedTogglePositions = await togglePositions();
   await page.evaluate(() => {
     sessionStorage.setItem("pideck-review-list-failure", "1");
@@ -583,6 +595,15 @@ async page => {
   const toolsWidthBefore = (await tools.boundingBox()).width;
   await divider.press("Shift+ArrowLeft");
   await page.waitForFunction(width => document.getElementById("workspace-tools").getBoundingClientRect().width > width + 20, toolsWidthBefore);
+  const resizedWidth = (await tools.boundingBox()).width;
+  const resizedTogglePositions = await togglePositions();
+  await changes.click();
+  await expectActiveTool();
+  await expectTogglePositions(resizedTogglePositions);
+  await changes.click();
+  await expectActiveTool("changes");
+  await expectTogglePositions(resizedTogglePositions);
+  if (Math.abs((await tools.boundingBox()).width - resizedWidth) > 1) throw new Error("Reopening reset the sidebar width.");
   await divider.press("Enter");
   await page.waitForFunction(width => Math.abs(document.getElementById("workspace-tools").getBoundingClientRect().width - width) < 2, toolsWidthBefore);
   if (await layout.inputValue() !== "auto") throw new Error("Diff layout does not start in Auto.");
@@ -600,6 +621,7 @@ async page => {
       const sidebarEdge = bounds(".navigation").right;
       const titlebar = bounds(".titlebar");
       const middleHeader = bounds(".titlebar-content");
+      const sessionTitle = bounds(".workspace-title");
       const right = bounds("#workspace-tools[data-docked]");
       const conversation = bounds(".workspace-conversation");
       const terminalToggle = bounds("#toggle-terminal");
@@ -613,7 +635,8 @@ async page => {
         && sameEdge(bounds(".chat-thread").left, bounds(".composer").left)
         && sameEdge(middleHeader.left, sidebarEdge)
         && sameEdge(middleHeader.right, right.left)
-        && reviewToggle.left - middleHeader.left <= 24 && reviewToggle.left > middleHeader.left
+        && sessionTitle.left - middleHeader.left <= 24 && sessionTitle.left > middleHeader.left
+        && sessionTitle.right <= reviewToggle.left
         && terminalToggle.left >= reviewToggle.right && terminalToggle.right <= middleHeader.right
         && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
@@ -640,9 +663,7 @@ async page => {
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectDockedTool("#workspace-terminal");
-  if ((await togglePositions()).some((position, index) => Math.abs(position - closedTogglePositions[index]) > 1)) {
-    throw new Error("Opening a right panel moved the workspace toggles.");
-  }
+  await expectTogglePositions(closedTogglePositions);
   await expectColors(terminalToggle, selectedToggleColors);
   const liveShell = await page.evaluate(() => document.body.dataset.terminalId);
   await screen.evaluate(element => { element.dataset.workspaceFixture = "same"; });
@@ -696,9 +717,12 @@ async page => {
   await divider.waitFor({ state: "hidden" });
   const reviewWidth = await review.evaluate(panel => panel.getBoundingClientRect().width);
   if (reviewWidth < 755) throw new Error("The compact review does not use the full window.");
+  const compactTogglePositions = await togglePositions();
+  await page.getByRole("button", { name: "Rename session Verify status (fork)", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-narrow.png" });
   await back.click();
   await expectActiveTool();
+  await expectTogglePositions(compactTogglePositions);
   await page.waitForFunction(() => !document.querySelector(".workspace-conversation").inert
     && document.activeElement?.id === "toggle-review");
   await expectTranscriptLayout();

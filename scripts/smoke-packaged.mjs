@@ -298,12 +298,14 @@ try {
   const sessions = await command("session:list", { projectId });
   assert.equal(sessions.length, 1);
   const [conversation] = sessions;
+  await page.getByRole("button", { name: "Rename session Edit example.ts and verify it.", exact: true }).waitFor();
   await projectSessions.getByRole("button", { name: "Edit example.ts and verify it.", exact: true }).press("F2");
   const sessionName = page.getByRole("textbox", { name: "Session name", exact: true });
   await sessionName.fill("Smoke session");
   await sessionName.press("Enter");
   const smokeSession = projectSessions.getByRole("button", { name: "Smoke session", exact: true });
   await smokeSession.waitFor();
+  await page.getByRole("button", { name: "Rename session Smoke session", exact: true }).waitFor();
   await navigation.getByRole("button", { name: "Collapse smoke-project", exact: true }).click();
   await projectSessions.waitFor({ state: "hidden" });
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
@@ -329,6 +331,7 @@ try {
       const panel = bounds(selector);
       return sameEdge(bounds(".workspace-conversation").right, right.left)
         && sameEdge(bounds(".titlebar-content").right, right.left)
+        && bounds(".workspace-title").right < bounds("#toggle-review").left
         && bounds("#toggle-review").right < right.left && bounds("#toggle-terminal").right < right.left
         && sameEdge(panel.top, titlebar.top)
         && sameEdge(bounds(selector + " .workspace-panel-header").bottom, titlebar.bottom)

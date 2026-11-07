@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import './workspace-divider.css';
 
 const widthProperty = '--tools-width';
@@ -19,22 +19,22 @@ export function WorkspaceDivider({ workspace, sizingTarget, visible }: {
   const clamp = (size: number) => Math.min(max, Math.max(min, size));
   const size = clamp(preferred ?? automatic);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const element = workspace.current;
-    if (!element || !visible) return;
+    if (!element) return;
     const measure = () => setAvailable(element.clientWidth);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [workspace, visible]);
+  }, [workspace]);
 
   useLayoutEffect(() => {
     const element = sizingTarget.current;
-    if (!element || !visible || preferred === undefined) return;
+    if (!element || preferred === undefined) return;
     element.style.setProperty(widthProperty, `${size}px`);
     return () => { element.style.removeProperty(widthProperty); };
-  }, [sizingTarget, preferred, size, visible]);
+  }, [sizingTarget, preferred, size]);
 
   function resize(next: number) {
     const bounded = clamp(next);
