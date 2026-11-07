@@ -124,9 +124,9 @@ async page => {
   await expectColors(provider, { "background-color": overlay }, "::picker(select)");
   await provider.getByRole("option", { name: "Fixture provider", exact: true }).click();
   if (await settings.getByRole("combobox", { name: "Sign-in method" }).count()) throw new Error("Connection methods repeat an extra selection step.");
-  await settings.getByRole("button", { name: "Use API key", exact: true }).waitFor();
+  await settings.getByRole("button", { name: "API key", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-providers.png" });
-  await settings.getByRole("button", { name: "Sign in with browser" }).click();
+  await settings.getByRole("button", { name: "ChatGPT subscription", exact: true }).click();
   await settings.getByText("PIDE-CK99").waitFor();
   await settings.getByRole("button", { name: /Open fixture.invalid/ }).click();
   await settings.getByRole("button", { name: "Copy code" }).click();
@@ -142,21 +142,110 @@ async page => {
   const connection = settings.getByRole("region", { name: "Provider connection" });
   await expectColors(connection, { "background-color": canvas });
   await expectColors(connection.locator(".key-status > span"), { "background-color": "rgb(63, 185, 80)" });
-  const alignedConnection = await connection.evaluate(card => {
-    const middle = element => {
-      const bounds = element.getBoundingClientRect();
-      return bounds.top + bounds.height / 2;
-    };
-    const status = middle(card.querySelector(".key-status"));
-    const actions = [...card.querySelectorAll(".provider-connection-header button")];
-    return actions.length === 3 && actions.every(action => Math.abs(middle(action) - status) < 1);
-  });
-  if (!alignedConnection) throw new Error("The connected status and actions do not align.");
+  async function expectAlignedConnection(actionCount) {
+    const aligned = await connection.evaluate((card, actionCount) => {
+      const bounds = card.getBoundingClientRect();
+      const status = card.querySelector(".key-status").getBoundingClientRect();
+      const actions = [...card.querySelectorAll(".provider-connection-header button")];
+      return actions.length === actionCount && actions.every(action => {
+        const button = action.getBoundingClientRect();
+        return Math.abs(button.top + button.height / 2 - status.top - status.height / 2) < 1
+          && button.left >= bounds.left && button.right <= bounds.right
+          && action.scrollWidth <= action.clientWidth + 1;
+      });
+    }, actionCount);
+    if (!aligned) throw new Error("The connected status and complete action labels do not align within the card.");
+  }
+  await expectAlignedConnection(3);
   await connection.getByRole("button", { name: "Refresh models", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/pideck-ui-providers-connected.png" });
-  await connection.getByRole("button", { name: "Disconnect…", exact: true }).click();
-  await connection.getByText("Disconnect Fixture provider from Pideck?", { exact: true }).waitFor();
-  await connection.getByRole("button", { name: "Cancel", exact: true }).click();
+  const currentConnection = () => page.evaluate(async () => (await window.pideck.invoke("model:providers"))
+    .find(item => item.id === "openai"));
+  const originalViewport = page.viewportSize();
+  for (const theme of ["light", "dark"]) {
+    await appearance(theme);
+    await expectAlignedConnection(3);
+    await page.setViewportSize({ width: 420, height: 760 });
+    await expectAlignedConnection(3);
+    await page.setViewportSize(originalViewport);
+    await connection.getByRole("button", { name: "Remove", exact: true }).click();
+    await connection.getByText("Remove the saved connection to Fixture provider?", { exact: true }).waitFor();
+    if (await page.locator("dialog[open]").count() !== 1) throw new Error("Removing a connection opened a second dialog.");
+    await connection.getByRole("button", { name: "Cancel", exact: true }).click();
+    if (!(await currentConnection()).configured) throw new Error("Cancelling removal disconnected the saved provider.");
+    await connection.getByRole("button", { name: "Change", exact: true }).click();
+    const apiKeyOption = connection.getByRole("button", { name: "API key", exact: true });
+    const subscriptionOption = connection.getByRole("button", { name: "ChatGPT subscription", exact: true });
+    await apiKeyOption.waitFor();
+    if (/Choose how|Fixture provider API key|Fixture provider \(ChatGPT/.test(await connection.textContent())) {
+      throw new Error("Connection method choices repeat provider names or explanatory text.");
+    }
+    await page.mouse.move(0, 0);
+    const neutral = theme === "light" ? "rgb(246, 248, 250)" : panel;
+    for (const option of [apiKeyOption, subscriptionOption]) await expectColors(option, { "background-color": neutral });
+    const optionStyle = async option => option.evaluate(button => {
+      const style = getComputedStyle(button);
+      return [style.height, style.borderTopColor, style.borderTopWidth, style.borderRadius, style.color, style.fontSize];
+    });
+    if (JSON.stringify(await optionStyle(apiKeyOption)) !== JSON.stringify(await optionStyle(subscriptionOption))) {
+      throw new Error("Connection method options have inconsistent button styles.");
+    }
+    const back = connection.getByRole("button", { name: "Back", exact: true });
+    if (await back.evaluate(button => getComputedStyle(button).backgroundColor) === neutral) {
+      throw new Error("Back is styled as a connection method instead of a secondary action.");
+    }
+    await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}providers-change.png` });
+    await apiKeyOption.click();
+    await settings.getByLabel("API key", { exact: true }).waitFor();
+    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    if ((await currentConnection()).credential !== "oauth") throw new Error("Cancelling key replacement changed the saved subscription connection.");
+    await subscriptionOption.click();
+    await settings.getByLabel("Authorization code", { exact: true }).waitFor();
+    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    if ((await currentConnection()).credential !== "oauth") throw new Error("Cancelling subscription replacement changed the saved connection.");
+    await back.click();
+    await connection.getByRole("button", { name: "Change", exact: true }).waitFor();
+  }
+
+  // A provider with one method stays neutral on first setup and skips that
+  // method-selection step entirely when changing an already-saved connection.
+  await provider.selectOption("other");
+  const singleKeyOption = connection.getByRole("button", { name: "API key", exact: true });
+  for (const theme of ["light", "dark"]) {
+    await appearance(theme);
+    await page.mouse.move(0, 0);
+    await expectColors(singleKeyOption, { "background-color": theme === "light" ? "rgb(246, 248, 250)" : panel });
+  }
+  await singleKeyOption.click();
+  const keyPrompt = settings.getByLabel("API key", { exact: true });
+  await keyPrompt.fill("test-api-key");
+  await settings.getByRole("button", { name: "Continue", exact: true }).click();
+  await settings.getByText("Another provider connected.", { exact: true }).waitFor();
+  for (const theme of ["light", "dark"]) {
+    await appearance(theme);
+    await expectAlignedConnection(2);
+    await connection.getByRole("button", { name: "Change", exact: true }).click();
+    await keyPrompt.waitFor();
+    if (await connection.count()) throw new Error("Changing a single-method connection still shows an intermediate choice card.");
+    await page.screenshot({ path: `output/playwright/pideck-ui-${theme === "light" ? "light-" : ""}providers-key.png` });
+    await settings.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    await connection.getByRole("button", { name: "Change", exact: true }).waitFor();
+    await expectAlignedConnection(2);
+  }
+  await connection.getByRole("button", { name: "Change", exact: true }).click();
+  await keyPrompt.fill("test-api-key");
+  await settings.getByRole("button", { name: "Continue", exact: true }).click();
+  await settings.getByText("Another provider connected.", { exact: true }).waitFor();
+  await connection.getByRole("button", { name: "Remove", exact: true }).click();
+  await connection.getByText("Remove the saved connection to Another provider?", { exact: true }).waitFor();
+  await connection.getByRole("button", { name: "Remove", exact: true }).click();
+  await singleKeyOption.waitFor();
+  const removed = await page.evaluate(async () => (await window.pideck.invoke("model:providers")).find(item => item.id === "other"));
+  if (removed.configured || removed.credential) throw new Error("Removing the saved single-method connection left credential state behind.");
+  if (!(await currentConnection()).configured) throw new Error("Removing another connection affected the primary provider.");
+  await provider.selectOption("openai");
+  await connection.getByRole("button", { name: "Change", exact: true }).waitFor();
+  await appearance("dark");
   await settings.getByRole("button", { name: "Close settings" }).click();
 
   await prompt.fill("Update and verify the status.");

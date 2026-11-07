@@ -224,17 +224,19 @@ async page => {
             return { models: [{ ...model, configured }, { ...fixedModel, configured }, unavailableModel], savedConnectionsPending };
           }
           case "model:providers": return [{
-            id: model.provider, name: "Fixture provider", configured: state.configured, credential: state.configured ? "oauth" : undefined,
-            dynamic: true, methods: [{ type: "api_key", name: "API key" }, { type: "oauth", name: "Sign in with browser" }],
+            id: model.provider, name: "Fixture provider", configured: state.configured,
+            credential: state.configured ? state.credential ?? "oauth" : undefined,
+            dynamic: true, methods: [{ type: "api_key", name: "Fixture provider API key" }, { type: "oauth", name: "Fixture provider (ChatGPT subscription)" }],
           }, {
-            id: "other", name: "Another provider", configured: false, dynamic: false,
-            methods: [{ type: "api_key", name: "API key" }],
+            id: "other", name: "Another provider", configured: Boolean(state.otherConfigured),
+            credential: state.otherConfigured ? "api_key" : undefined, dynamic: false,
+            methods: [{ type: "api_key", name: "Another provider API key" }],
           }];
           case "model:login":
             return new Promise((resolve, reject) => {
-              const { flowId, method } = payload;
+              const { flowId, method, provider } = payload;
               const promptId = crypto.randomUUID();
-              auth = { flowId, promptId, resolve, reject, open: false, copy: false };
+              auth = { flowId, promptId, method, provider, resolve, reject, open: false, copy: false };
               if (method === "oauth") {
                 emit({ type: "auth:notice", flowId, notice: {
                   type: "device_code", code: "PIDE-CK99", copyId: "device", link: { id: "sign-in", label: "Provider sign-in", domain: "fixture.invalid" },
@@ -254,10 +256,14 @@ async page => {
             return;
           case "model:auth-answer":
             if (auth?.flowId !== payload.flowId || auth.promptId !== payload.promptId
-              || payload.value !== "test-authorization" || !auth.open || !auth.copy) throw new Error("Unexpected authorization response.");
+              || (auth.method === "oauth" ? payload.value !== "test-authorization" || !auth.open || !auth.copy
+                : payload.value !== "test-api-key")) throw new Error("Unexpected authorization response.");
             emit({ type: "auth:prompt-closed", flowId: auth.flowId, promptId: auth.promptId });
-            model.configured = state.configured = true;
-            state.savedConnectionsPending = true;
+            if (auth.provider === model.provider) {
+              model.configured = state.configured = true;
+              state.credential = auth.method;
+              state.savedConnectionsPending = true;
+            } else state.otherConfigured = true;
             persist();
             auth.resolve();
             auth = undefined;
@@ -267,6 +273,11 @@ async page => {
               auth.reject(new Error("Sign-in cancelled."));
               auth = undefined;
             }
+            return;
+          case "model:logout":
+            if (payload.provider === model.provider) throw new Error("The primary fixture connection must remain configured for the coding flow.");
+            state.otherConfigured = false;
+            persist();
             return;
           case "model:refresh": return;
           case "chat:watch": {

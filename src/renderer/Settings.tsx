@@ -7,6 +7,13 @@ import { Icon } from './Icons';
 
 type Prompt = { id: string; data: AuthPrompt };
 
+function methodLabel(provider: ModelProvider, name: string) {
+  const prefix = `${provider.name} `;
+  if (!name.startsWith(prefix)) return name;
+  const label = name.slice(prefix.length).trim();
+  return label.startsWith('(') && label.endsWith(')') ? label.slice(1, -1) : label;
+}
+
 export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
   initialProvider?: string;
   onClose: () => void;
@@ -33,7 +40,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [working, setWorking] = useState(false);
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [changeConnection, setChangeConnection] = useState(false);
 
   const connected = providers?.filter(({ configured }) => configured) ?? [];
@@ -196,8 +203,16 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
     }
   }
 
-  async function disconnect() {
-    if (!provider || busy || !confirmDisconnect) return;
+  function change() {
+    if (!provider || busy) return;
+    setStatus(undefined);
+    setError(undefined);
+    if (provider.methods.length === 1) void login(provider.methods[0]!.type);
+    else setChangeConnection(true);
+  }
+
+  async function removeConnection() {
+    if (!provider || busy || !confirmRemove) return;
     setWorking(true);
     setError(undefined);
     setStatus(undefined);
@@ -205,13 +220,13 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
       await api.invoke('model:logout', { provider: provider.id });
       onModelsChanged();
       await readProviders();
-      if (mounted.current) setStatus(`${provider.name} disconnected.`);
+      if (mounted.current) setStatus(`${provider.name} connection removed.`);
     } catch (cause) {
       if (mounted.current) setError(readableError(cause));
     } finally {
       if (mounted.current) {
         setWorking(false);
-        setConfirmDisconnect(false);
+        setConfirmRemove(false);
       }
     }
   }
@@ -240,7 +255,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
           setSelected(event.target.value);
           setError(undefined);
           setStatus(undefined);
-          setConfirmDisconnect(false);
+          setConfirmRemove(false);
           setChangeConnection(false);
         }}>
           <option value="" disabled>{loading ? 'Loading providers…' : providers?.length ? 'Choose a provider…' : 'No providers available'}</option>
@@ -261,33 +276,32 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
           <div className="provider-manage">
             {provider.dynamic && <button type="button" className="icon-button" aria-label="Refresh models"
               title="Refresh models" disabled={busy} onClick={refresh}><RefreshCw size={16} aria-hidden="true" /></button>}
-            {!confirmDisconnect && <>
+            {!confirmRemove && <>
               {provider.methods.length > 0 && <button type="button" className="button provider-quiet" disabled={busy}
-                onClick={() => { setChangeConnection(true); setStatus(undefined); setError(undefined); }}>
-                {provider.credential ? 'Change connection' : 'Add a connection'}
+                onClick={change}>
+                {provider.credential ? 'Change' : 'Add'}
               </button>}
               {provider.credential && <button type="button" className="button provider-quiet provider-danger" disabled={busy}
-                onClick={() => { setConfirmDisconnect(true); setStatus(undefined); setError(undefined); }}>Disconnect…</button>}
+                onClick={() => { setConfirmRemove(true); setStatus(undefined); setError(undefined); }}>Remove</button>}
             </>}
           </div>
         </div>
-        {confirmDisconnect && <div className="provider-confirm">
-          <p className="provider-message">Disconnect {provider.name} from Pideck?</p>
+        {confirmRemove && <div className="provider-confirm">
+          <p className="provider-message">Remove the saved connection to {provider.name}?</p>
           <div className="provider-manage">
-            <button type="button" className="button provider-quiet" disabled={busy} onClick={() => setConfirmDisconnect(false)}>Cancel</button>
-            <button type="button" className="button provider-danger" disabled={busy} onClick={disconnect}>Disconnect</button>
+            <button type="button" className="button provider-quiet" disabled={busy} onClick={() => setConfirmRemove(false)}>Cancel</button>
+            <button type="button" className="button provider-danger" disabled={busy} onClick={removeConnection}>Remove</button>
           </div>
         </div>}
       </>}
       {(!provider.configured || changeConnection) && <>
         {provider.methods.length > 0
           ? <div className="provider-methods">
-              {provider.methods.length > 1 && <p className="provider-message">{changeConnection ? 'Choose how to reconnect.' : 'Choose how to connect.'}</p>}
               <div className="provider-manage">
                 {changeConnection && <button type="button" className="button provider-quiet" onClick={() => setChangeConnection(false)}>Back</button>}
                 {provider.methods.map((method) => <button key={method.type} type="button"
-                  className={`button${provider.methods.length === 1 ? ' button--primary' : ''}`}
-                  disabled={busy || loading} onClick={() => void login(method.type)}>{method.name === 'API key' ? 'Use API key' : method.name}</button>)}
+                  className="button"
+                  disabled={busy || loading} onClick={() => void login(method.type)}>{methodLabel(provider, method.name)}</button>)}
               </div>
             </div>
           : <p className="provider-message">This provider reads credentials from the environment where Pideck starts.</p>}
