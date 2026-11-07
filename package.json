@@ -15,9 +15,10 @@
     "start": "electron .",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "package": "npm run build && electron-builder --dir",
+    "package": "npm run build && node scripts/package.mjs",
     "verify:frontend": "tsx scripts/verify-frontend.ts",
-    "smoke:packaged": "node scripts/smoke-packaged.mjs"
+    "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "smoke:credentials": "node scripts/smoke-credentials.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.5.0",
@@ -69,8 +70,7 @@
       "**/node_modules/node-pty/**/*"
     ],
     "mac": {
-      "category": "public.app-category.developer-tools",
-      "identity": "-"
+      "category": "public.app-category.developer-tools"
     },
     "win": {
       "target": "nsis"

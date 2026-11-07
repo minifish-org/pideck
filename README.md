@@ -27,6 +27,8 @@ Choose **View → Appearance → Follow System, Light, or Dark** to change the w
 
 Provider credentials are encrypted through the operating system’s credential store. Pideck loads saved credentials on demand when choosing, managing, or using a saved connection. Supported provider environment variables are available to pi-ai in the trusted workspace process. Pideck excludes them from tool, review, and terminal subprocess environments. On Linux, saving credentials requires a system secret store.
 
+On macOS, **Always Allow** in a Keychain access prompt remembers access for that Pideck application to that item; it does not authorize other applications. A local ad-hoc rebuild can change the application's signing identity and require approval again. Changing the packaging configuration does not itself remove prompts for an existing Keychain item.
+
 | Action | Shortcut |
 | --- | --- |
 | Open folder | ⌘/Ctrl+O |
@@ -54,3 +56,7 @@ npm run smoke:packaged
 Install a test browser with `npx playwright-cli install-browser chromium` if needed.
 
 The frontend check starts Vite from Durable’s `bash` tool, drives an isolated Playwright CLI session, and reads the screenshot through Durable’s image input. It uses a deterministic test model and browser fixture. The packaged smoke test opens the real desktop app with a temporary profile and a local Responses endpoint. It uses pi-ai’s Azure adapter, streams output through Durable, runs the coding tools, reviews the result, and tests recovery by terminating the workspace process mid-request. It also checks native terminal input, scrollback, rebuilding, and resizing. The unpacked desktop bundle is written to `release/`.
+
+On macOS, packaging lets electron-builder select an available signing certificate and respects explicit signing configuration and supported `CSC_*` inputs. With no signing configuration and no usable macOS application identity, the local packaging script explicitly selects ad-hoc signing, including on Apple Silicon; electron-builder 26.18 does not provide that fallback itself. It uses the pinned builder's identity filtering, so an iOS-only certificate does not suppress the fallback. A failed identity lookup stops packaging. An ad-hoc development bundle is not a Developer ID signed or notarized release. Rebuilding it may require a new Keychain approval; reuse the same bundle when checking whether **Always Allow** persists across launches.
+
+For an opt-in macOS Keychain acceptance check, run `npm run smoke:credentials -- --allow-system-keychain`. It uses the actual packaged Pideck identity with a disposable profile and a dummy key. A person must handle any native authorization and observe each of three complete quit/relaunch cycles; the check verifies real decryption, not a cached or mocked credential. It never removes the shared Keychain item. Follow the printed commands and finish with `cleanup` to remove the disposable profile.
