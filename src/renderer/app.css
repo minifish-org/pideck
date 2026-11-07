@@ -1,10 +1,18 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
+  --message-bgColor: var(--bgColor-emphasis);
+  --navigation-bgColor-selected: var(--bgColor-emphasis);
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   background: var(--bgColor-default);
   color: var(--fgColor-default);
   font: 14px/1.5 var(--font);
+}
+:root[data-color-mode='dark'] { color-scheme: dark; }
+:root[data-color-mode='light'] {
+  color-scheme: light;
+  --message-bgColor: var(--control-bgColor-active);
+  --navigation-bgColor-selected: var(--control-bgColor-active);
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -180,7 +188,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-item .nav-remove:hover:not([aria-disabled='true']), .nav-item .nav-remove:focus-visible { color: var(--fgColor-danger); }
 .nav-item .nav-remove[aria-disabled='true'] { color: var(--fgColor-disabled); cursor: default; }
 .nav-row:hover:not(:disabled) { background: var(--control-transparent-bgColor-hover); color: var(--fgColor-default); }
-.nav-row[aria-current='true'] { background: var(--bgColor-emphasis); color: var(--fgColor-default); }
+.nav-row[aria-current='true'] { background: var(--navigation-bgColor-selected); color: var(--fgColor-default); }
 .nav-row svg { flex: none; }
 .nav-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
 .nav-footer { flex: none; margin-top: auto; padding: 8px 12px; }

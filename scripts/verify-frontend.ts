@@ -11,9 +11,12 @@ const name = `pideck-${randomUUID().slice(0, 12)}`;
 const output = "output/playwright";
 const screenshot = `${output}/${name}.png`;
 const workspaceScreens = ["welcome", "first-draft", "providers", "provider-sign-in", "providers-connected", "model-menu", "model-thinking", "running", "queue", "queue-narrow", "background", "tool-logs", "conversation",
-  "image-attachment", "image-preview", "workspace", "right-sidebar", "wide", "narrow", "sidebar", "terminal", "branches", "project-tree"]
+  "image-attachment", "image-preview", "workspace", "right-sidebar", "wide", "narrow", "sidebar", "terminal", "branches", "project-tree",
+  "light-providers", "light-model-menu", "light-workspace", "light-terminal"]
   .map(stage => `${output}/pideck-ui-${stage}.png`);
 const log = `${output}/${name}.log`;
+const flowLog = `${output}/${name}-flow.log`;
+const snapshotLog = `${output}/${name}-snapshot.log`;
 const data = await mkdtemp(join(tmpdir(), "pideck-frontend-"));
 const fixture = fauxRuntime(data);
 const runtime = await fixture.open();
@@ -48,9 +51,10 @@ try {
     `${cli} open about:blank`,
     `${cli} run-code --filename scripts/verify-browser-bridge.js`,
     `${cli} goto ${url}`,
-    `${cli} snapshot`,
-    `${cli} run-code --filename scripts/verify-browser-flow.js || { ${cli} snapshot; ${cli} console error; exit 1; }`,
-    `${cli} snapshot`,
+    `${cli} snapshot > ${snapshotLog} 2>&1`,
+    `${cli} run-code --filename scripts/verify-browser-flow.js > ${flowLog} 2>&1 || { tail -n 60 ${flowLog}; ${cli} snapshot > ${snapshotLog} 2>&1; ${cli} console error; exit 1; }`,
+    `tail -n 60 ${flowLog}`,
+    `${cli} snapshot > ${snapshotLog} 2>&1`,
     `${cli} screenshot --filename ${screenshot}`,
     `${cli} console error`,
   ].join("\n");

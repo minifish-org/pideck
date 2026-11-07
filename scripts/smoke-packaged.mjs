@@ -29,6 +29,76 @@ async function clickNativeMenu(app, id) {
   }, id);
 }
 
+async function chooseAppearance(app, page, preference) {
+  await clickNativeMenu(app, `appearance-${preference}`);
+  const state = await page.evaluate(() => window.pideck.invoke("appearance:get"));
+  assert.equal(state.preference, preference);
+  await page.waitForFunction(resolved => document.documentElement.dataset.colorMode === resolved, state.resolved);
+  const menu = await app.evaluate(({ Menu, nativeTheme, BrowserWindow }) => ({
+    source: nativeTheme.themeSource,
+    selected: ["system", "light", "dark"].filter(value => Menu.getApplicationMenu().getMenuItemById(`appearance-${value}`).checked),
+    background: BrowserWindow.getAllWindows()[0].getBackgroundColor().toLowerCase(),
+  }));
+  assert.equal(menu.source, preference);
+  assert.deepEqual(menu.selected, [preference]);
+  assert.ok((state.resolved === "light" ? ["#ffffff", "#ffffffff"] : ["#0d1117", "#ff0d1117"]).includes(menu.background));
+  return state;
+}
+
+async function expectPaint(target, expected) {
+  await target.evaluate((element, expected) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const color = getComputedStyle(element).backgroundColor;
+    context.fillStyle = color;
+    context.fillRect(0, 0, 1, 1);
+    const actual = [...context.getImageData(0, 0, 1, 1).data];
+    const wanted = [...expected.matchAll(/[a-f\d]{2}/gi)].map(([pair]) => parseInt(pair, 16)).concat(255);
+    if (actual.some((channel, index) => Math.abs(channel - wanted[index]) > 1)) {
+      throw new Error(`Diff paint expected ${expected}, received ${color} (${actual.join(",")}).`);
+    }
+  }, expected);
+}
+
+async function verifyAppearanceMenu(app, page) {
+  const initial = await page.evaluate(() => window.pideck.invoke("appearance:get"));
+  assert.equal(initial.preference, "system", "A fresh profile should follow the system.");
+  const controls = await app.evaluate(({ Menu, nativeTheme }) => {
+    const menu = Menu.getApplicationMenu();
+    const appearance = menu.getMenuItemById("appearance");
+    const section = menu.items.find(item => item.submenu?.items.includes(appearance));
+    return { section: section?.label.replace("&", ""), label: appearance?.label,
+      source: nativeTheme.themeSource,
+      items: appearance?.submenu.items.map(item => ({ label: item.label, type: item.type, enabled: item.enabled })) };
+  });
+  assert.equal(controls.section, "View");
+  assert.equal(controls.label, "Appearance");
+  assert.equal(controls.source, "system");
+  assert.deepEqual(controls.items, ["Follow System", "Light", "Dark"].map(label => ({ label, type: "radio", enabled: true })));
+  await chooseAppearance(app, page, "light");
+  await page.reload();
+  await page.getByRole("button", { name: /^Open (?:a project )?folder$/i }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.pideck.invoke("appearance:get")), { preference: "light", resolved: "light" });
+  assert.equal(await page.locator("html").getAttribute("data-color-mode"), "light");
+  await chooseAppearance(app, page, "system");
+  try {
+    // Drive the app-local native color signal; do not change the OS preference.
+    for (const resolved of ["dark", "light"]) {
+      await app.evaluate(({ nativeTheme }, resolved) => {
+        nativeTheme.themeSource = resolved;
+        nativeTheme.emit("updated");
+      }, resolved);
+      await page.waitForFunction(resolved => document.documentElement.dataset.colorMode === resolved, resolved);
+      assert.deepEqual(await page.evaluate(() => window.pideck.invoke("appearance:get")), { preference: "system", resolved });
+      assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("appearance-system").checked), true);
+    }
+  } finally {
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = "system"; nativeTheme.emit("updated"); });
+  }
+  await chooseAppearance(app, page, "dark");
+}
+
 async function mockProjectPicker(app, directory) {
   await app.evaluate(({ dialog }, directory) => {
     dialog.showOpenDialog = async () => directory
@@ -207,7 +277,7 @@ try {
 
   assert.equal(await page.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await page.evaluate(() => typeof globalThis.process), "undefined");
-  assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), "dark");
+  await verifyAppearanceMenu(app, page);
   const nativeMenu = await app.evaluate(({ Menu }) => {
     const menu = Menu.getApplicationMenu();
     return {
@@ -227,6 +297,7 @@ try {
   });
   assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("new-session").enabled), false);
   const command = (name, payload) => page.evaluate(([name, payload]) => window.pideck.invoke(name, payload), [name, payload]);
+  await assert.rejects(command("appearance:get", {}), /Invalid appearance request/);
   for (const name of ["project:open", "project:add", "project:inspect", "project:trust"]) {
     await assert.rejects(command(name, { directory: "/" }), /Invalid workspace request/);
   }
@@ -552,6 +623,60 @@ try {
   await page.keyboard.insertText(print);
   await page.keyboard.press("Enter");
   await page.locator(".xterm-rows").getByText("PTY_OK", { exact: true }).waitFor();
+  const ansiOutput = terminalRows.getByText("PTY_OK", { exact: true });
+  const darkAnsiColor = await ansiOutput.evaluate(element => getComputedStyle(element).color);
+  await terminal.evaluate(element => { element.dataset.appearanceFixture = "same"; });
+  await changesToggle.click();
+  await review.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: /long-change\.ts/ }).click();
+  const themeLayout = review.getByRole("combobox", { name: "Diff layout" });
+  await themeLayout.selectOption("split");
+  await highlighted.locator("[data-diff-type=split]").waitFor();
+  const reviewTop = await review.locator(".workspace-review-scroll").evaluate(async element => {
+    element.scrollTop = 900;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return element.scrollTop;
+  });
+  assert.ok(reviewTop > 800);
+  const darkToken = await highlighted.locator('[data-line] span[style]').filter({ hasText: "export" }).first()
+    .evaluate(element => getComputedStyle(element).color);
+  await chooseAppearance(app, page, "light");
+  assert.equal(await themeLayout.inputValue(), "split");
+  await page.waitForFunction(top => Math.abs(document.querySelector('#review-panel .workspace-review-scroll').scrollTop - top) <= 2, reviewTop);
+  await page.waitForFunction(dark => [...document.querySelectorAll('#review-panel diffs-container')]
+    .flatMap(container => [...container.shadowRoot.querySelectorAll('[data-line] span[style]')])
+    .some(element => element.textContent.includes("export") && getComputedStyle(element).color !== dark), darkToken);
+  assert.equal(await navigation.evaluate(element => getComputedStyle(element).backgroundColor), "rgb(246, 248, 250)");
+  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).backgroundColor), "rgb(230, 234, 239)");
+  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).color), "rgb(31, 35, 40)");
+  for (const [type, line, gutter] of [["addition", "#dafbe1", "#aceebb"], ["deletion", "#ffebe9", "#ffcecb"]]) {
+    await expectPaint(review.locator(`[data-line][data-line-type="change-${type}"]`).first(), line);
+    await expectPaint(review.locator(`[data-column-number][data-line-type="change-${type}"]`).first(), gutter);
+  }
+  await mkdir("output/playwright", { recursive: true });
+  await page.screenshot({ path: "output/playwright/pideck-native-light-workspace.png" });
+  await terminalToggle.click();
+  await terminalRows.getByText("PTY_OK", { exact: true }).waitFor();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
+    .backgroundColor === "rgb(246, 248, 250)");
+  assert.ok(await terminalRegion.evaluate(region => [...region.querySelectorAll(".xterm, .xterm-viewport")]
+    .every(element => getComputedStyle(element).backgroundColor === "rgb(246, 248, 250)")),
+  "Light terminal roots and unused viewport space must not expose xterm's default black background.");
+  assert.equal(await terminal.getAttribute("data-appearance-fixture"), "same");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
+  assert.notEqual(await ansiOutput.evaluate(element => getComputedStyle(element).color), darkAnsiColor);
+  await findInTerminal.click();
+  const appearanceSearch = terminalRegion.getByRole("searchbox", { name: "Find in terminal output" });
+  await appearanceSearch.fill("PTY_OK");
+  await page.screenshot({ path: "output/playwright/pideck-native-light-terminal.png" });
+  await chooseAppearance(app, page, "dark");
+  assert.equal(await appearanceSearch.inputValue(), "PTY_OK");
+  assert.equal(await terminal.getAttribute("data-appearance-fixture"), "same");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);
+  await appearanceSearch.press("Escape");
+  await changesToggle.click();
+  assert.equal(await themeLayout.inputValue(), "split");
+  await page.waitForFunction(top => Math.abs(document.querySelector('#review-panel .workspace-review-scroll').scrollTop - top) <= 2, reviewTop);
+  await terminalToggle.click();
   await findInTerminal.click();
   await page.getByRole("searchbox", { name: "Find in terminal output" }).fill("PTY_OK");
   const match = page.locator(".workspace-search-results");
@@ -802,6 +927,7 @@ try {
   });
   assert.equal((await command("session:list", { projectId }))[0].id, conversation.id);
   await prompt.fill("Resume this draft after reopening.");
+  await chooseAppearance(app, page, "light");
   const savedWindow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
   await app.close();
   app = undefined;
@@ -809,6 +935,10 @@ try {
   const reopened = await launch();
   app = reopened.running;
   const reopenedPage = reopened.window;
+  assert.deepEqual(await reopenedPage.evaluate(() => window.pideck.invoke("appearance:get")), { preference: "light", resolved: "light" });
+  await reopenedPage.waitForFunction(() => document.documentElement.dataset.colorMode === "light");
+  assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById("appearance-light").checked), true);
+  await chooseAppearance(app, reopenedPage, "dark");
   const restoredWindow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
   assert.equal(restoredWindow.width, savedWindow.width);
   assert.equal(restoredWindow.height, savedWindow.height);

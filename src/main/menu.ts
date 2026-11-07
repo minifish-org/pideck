@@ -1,6 +1,6 @@
 import { app, Menu } from "electron";
 import type { BrowserWindow, MenuItemConstructorOptions } from "electron";
-import type { MenuAction, MenuState } from "../shared/api";
+import type { AppearancePreference, AppearanceState, MenuAction, MenuState } from "../shared/api";
 import { menuActionChannel } from "../shared/transport";
 
 const idle: MenuState = {
@@ -20,7 +20,10 @@ export function isMenuState(value: unknown): value is MenuState {
     && Object.keys(idle).every(key => typeof (value as Record<string, unknown>)[key] === "boolean");
 }
 
-export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?: BrowserWindow) => Promise<void>) {
+export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?: BrowserWindow) => Promise<void>, appearance: {
+  get: () => AppearanceState;
+  set: (preference: AppearancePreference) => Promise<void>;
+}) {
   const mac = process.platform === "darwin";
   let window: BrowserWindow | undefined;
   let state: MenuState | undefined;
@@ -83,6 +86,13 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
       command("toggle-terminal", "Terminal", "CommandOrControl+`", "checkbox"),
       command("focus-composer", "Focus Message", "CommandOrControl+L"),
       separator,
+      { id: "appearance", label: "Appearance", submenu: ([
+        ["system", "Follow System"], ["light", "Light"], ["dark", "Dark"],
+      ] as const).map(([preference, label]) => ({
+        id: `appearance-${preference}`, label, type: "radio", checked: appearance.get().preference === preference,
+        click() { void appearance.set(preference).catch(() => {}); },
+      })) },
+      separator,
       { role: "zoomIn" }, { role: "zoomOut" }, { role: "resetZoom", label: "Actual Size" },
       separator,
       { role: "togglefullscreen" },
@@ -92,6 +102,10 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   const menu = Menu.buildFromTemplate(template);
 
   function refresh() {
+    // Electron's radio setter selects the item even when assigned false.
+    // Selecting the current preference lets the native group clear the rest.
+    const selectedAppearance = menu.getMenuItemById(`appearance-${appearance.get().preference}`);
+    if (selectedAppearance) selectedAppearance.checked = true;
     const current = state ?? idle;
     const commands = {
       "open-project": { enabled: current.canOpenProject },
@@ -120,6 +134,7 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   Menu.setApplicationMenu(menu);
 
   return {
+    refreshAppearance: refresh,
     attach(target: BrowserWindow) {
       window = target;
       reset();

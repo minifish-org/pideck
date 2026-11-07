@@ -8,6 +8,14 @@ const projectId = randomUUID();
 const sessionId = randomUUID();
 const terminalId = randomUUID();
 
+test("appearance snapshots accept only empty renderer requests", () => {
+  assert.equal(isCommand("appearance:get"), true);
+  assert.equal(validPayload("appearance:get", undefined), true);
+  assert.equal(validPayload("appearance:get", {}), false);
+  assert.equal(validPayload("appearance:get", { preference: "light" }), false);
+  assert.equal(isCommand("appearance:set"), false);
+});
+
 test("clipboard writes accept bounded plain text and reject malformed native input", () => {
   assert.equal(isCommand("clipboard:write"), true);
   assert.equal(validPayload("clipboard:write", { text: "A message\nwith code and 中文." }), true);

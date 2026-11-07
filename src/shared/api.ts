@@ -1,5 +1,8 @@
 import type { Op } from "@earendil-works/chord/delta";
 
+export type AppearancePreference = "system" | "light" | "dark";
+export type AppearanceState = { preference: AppearancePreference; resolved: "light" | "dark" };
+
 export type Project = {
   id: string;
   name: string;
@@ -127,6 +130,7 @@ export type TerminalEvent =
 type WatchRef = Selection & { subscriptionId: string };
 
 export type Commands = {
+  "appearance:get": [undefined, AppearanceState];
   "clipboard:write": [{ text: string }, void];
   "project:list": [undefined, Project[]];
   "project:open": [undefined, Project | null];
@@ -180,6 +184,7 @@ export type MenuState = {
   terminalVisible: boolean;
 };
 export type HostEvent =
+  | { type: "appearance:changed"; appearance: AppearanceState }
   | { type: "session:activity"; subscriptionId: string; items: SessionActivity[] }
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))
   | ({ type: "chat:error"; subscriptionId: string; message: string } & Selection)

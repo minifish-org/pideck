@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ReactNode } from "react";
 import type { Project, ReviewFile, ReviewPatch } from "../shared/api";
 import { Icon } from "./Icons";
+import { useAppearance } from "./appearance";
 import "./workspace.css";
 
 type DiffStyle = "unified" | "split";
@@ -13,11 +14,14 @@ type DiffLayout = "auto" | DiffStyle;
 const splitMinimumWidth = 700;
 const workerOptions = { workerFactory: () => new DiffWorker(), poolSize: 1, mainThreadMaxCharacters: 12_000 };
 const highlighterOptions = {
-  theme: "github-dark-default", preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
+  theme: { dark: "github-dark-default", light: "github-light-default" },
+  preferredHighlighter: "shiki-js", lineDiffType: "word-alt", tokenizeMaxLineLength: 2_000,
 } as const;
 const diffOptions: FileDiffOptions<undefined, undefined> = {
   ...highlighterOptions,
-  themeType: "dark",
+  // Primer Light already supplies complete line and gutter backgrounds.
+  // Keep Pierre's dark blend, but use the light backgrounds directly.
+  unsafeCSS: '[data-line-type="change-addition"], [data-line-type="change-deletion"] { --mix-light: 0%; }',
   enableLineSelection: true,
   hunkSeparators: "line-info",
   maxLineDiffLength: 300,
@@ -40,11 +44,13 @@ function usePatch(patch: string | null | undefined) {
 }
 
 function PatchView({ patch, files, style, wrap }: { patch: string; files: FileDiffMetadata[]; style: DiffStyle; wrap: boolean }) {
+  const appearance = useAppearance();
   if (files.length === 0 || files.every(file => file.hunks.length === 0)) {
     return <pre className="workspace-raw-patch">{patch}</pre>;
   }
   return files.map((file, index) => <FileDiff key={file.cacheKey ?? index} fileDiff={file} className="workspace-diff" options={{
     ...diffOptions,
+    themeType: appearance,
     diffStyle: style,
     overflow: wrap ? "wrap" : "scroll",
     disableFileHeader: files.length === 1,

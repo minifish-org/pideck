@@ -2,10 +2,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
 import { ArrowLeft, RotateCw, Search } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Project } from "../shared/api";
 import { Icon } from "./Icons";
+import { useAppearance } from "./appearance";
 import { connectTerminal, type TerminalStatus } from "./terminal-connection";
 import "@xterm/xterm/css/xterm.css";
 import "./workspace.css";
@@ -20,6 +21,35 @@ type TerminalProps = {
   onExit(projectId: string): void;
 };
 const opening: TerminalStatus = { type: "opening", message: "Starting shell…" };
+
+function terminalPalette(container: HTMLElement) {
+  const tokens = getComputedStyle(container);
+  const token = (name: string) => tokens.getPropertyValue(name).trim();
+  const accent = token("--fgColor-accent");
+  const background = token("--bgColor-inset");
+  return {
+    fontFamily: token("--mono"),
+    theme: {
+      background, foreground: token("--fgColor-default"), cursor: accent, cursorAccent: background,
+      overviewRulerBorder: "#0000", scrollbarSliderBackground: token("--borderColor-default"),
+      scrollbarSliderHoverBackground: token("--borderColor-emphasis"),
+      scrollbarSliderActiveBackground: token("--fgColor-muted"),
+      selectionBackground: token("--selection-bgColor"),
+      selectionInactiveBackground: token("--control-transparent-bgColor-selected"),
+      black: token("--ansi-black"), red: token("--ansi-red"), green: token("--ansi-green"),
+      yellow: token("--ansi-yellow"), blue: token("--ansi-blue"), magenta: token("--ansi-magenta"),
+      cyan: token("--ansi-cyan"), white: token("--ansi-white"),
+      brightBlack: token("--ansi-blackBright"), brightRed: token("--ansi-redBright"), brightGreen: token("--ansi-greenBright"),
+      brightYellow: token("--ansi-yellowBright"), brightBlue: token("--ansi-blueBright"), brightMagenta: token("--ansi-magentaBright"),
+      brightCyan: token("--ansi-cyanBright"), brightWhite: token("--ansi-whiteBright"),
+    },
+    searchOptions: { decorations: {
+      matchBackground: token("--control-bgColor-active"), matchOverviewRuler: token("--fgColor-muted"),
+      activeMatchBorder: accent, activeMatchColorOverviewRuler: accent,
+    } } satisfies ISearchOptions,
+  };
+}
+
 function announceNewShell(terminal: Terminal, notice: string) {
   const normal = terminal.buffer.normal;
   let row = terminal.rows - 1;
@@ -51,6 +81,7 @@ function ProjectTerminal(props: TerminalProps) {
 }
 
 function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit, panelControls }: TerminalProps) {
+  const appearance = useAppearance();
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void; search: SearchAddon; searchOptions: ISearchOptions } | null>(null);
   const stopConnection = useRef<(() => void) | undefined>(undefined);
@@ -64,49 +95,23 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
   const searchWasOpen = useRef(finding);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ISearchResultChangeEvent>();
+  const appearanceViewport = useRef<{ top: number; following: boolean } | undefined>(undefined);
 
   useEffect(() => {
     const container = element.current;
     if (!container) return;
-    const tokens = getComputedStyle(container);
-    const token = (name: string) => tokens.getPropertyValue(name).trim();
-    const accent = token("--fgColor-accent");
-    const background = token("--bgColor-inset");
-    const border = token("--borderColor-default");
+    const palette = terminalPalette(container);
     const terminal = new Terminal({
       // SearchAddon's match decorations use xterm's registerDecoration API.
       allowProposedApi: true,
       convertEol: false,
       cursorBlink: false,
-      fontFamily: token("--mono"),
+      fontFamily: palette.fontFamily,
       fontSize: 12,
       lineHeight: 1.25,
       scrollback: 5_000,
       overviewRuler: { width: 8 },
-      theme: {
-        background, foreground: token("--fgColor-default"), cursor: accent, cursorAccent: background,
-        overviewRulerBorder: "#0000", scrollbarSliderBackground: border,
-        scrollbarSliderHoverBackground: token("--borderColor-emphasis"),
-        scrollbarSliderActiveBackground: token("--fgColor-muted"),
-        selectionBackground: token("--selection-bgColor"),
-        selectionInactiveBackground: token("--control-transparent-bgColor-selected"),
-        black: token("--ansi-black"),
-        red: token("--ansi-red"),
-        green: token("--ansi-green"),
-        yellow: token("--ansi-yellow"),
-        blue: token("--ansi-blue"),
-        magenta: token("--ansi-magenta"),
-        cyan: token("--ansi-cyan"),
-        white: token("--ansi-white"),
-        brightBlack: token("--ansi-blackBright"),
-        brightRed: token("--ansi-redBright"),
-        brightGreen: token("--ansi-greenBright"),
-        brightYellow: token("--ansi-yellowBright"),
-        brightBlue: token("--ansi-blueBright"),
-        brightMagenta: token("--ansi-magentaBright"),
-        brightCyan: token("--ansi-cyanBright"),
-        brightWhite: token("--ansi-whiteBright"),
-      },
+      theme: palette.theme,
     });
     const addon = new FitAddon();
     const search = new SearchAddon();
@@ -120,10 +125,7 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       if (size.cols > 500 || size.rows > 300) terminal.resize(Math.min(size.cols, 500), Math.min(size.rows, 300));
       else addon.fit();
     };
-    screen.current = { terminal, fit, search, searchOptions: { decorations: {
-      matchBackground: token("--control-bgColor-active"), matchOverviewRuler: token("--fgColor-muted"),
-      activeMatchBorder: accent, activeMatchColorOverviewRuler: accent,
-    } } };
+    screen.current = { terminal, fit, search, searchOptions: palette.searchOptions };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(container);
@@ -140,6 +142,18 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       terminal.dispose();
     };
   }, []);
+
+  useLayoutEffect(() => {
+    const active = screen.current;
+    const container = element.current;
+    if (!active || !container) return;
+    const palette = terminalPalette(container);
+    active.terminal.options.theme = palette.theme;
+    active.searchOptions = palette.searchOptions;
+    const buffer = active.terminal.buffer.active;
+    appearanceViewport.current = { top: buffer.viewportY, following: buffer.viewportY === buffer.baseY };
+    active.search.clearDecorations();
+  }, [appearance]);
 
   useEffect(() => {
     const terminal = screen.current?.terminal;
@@ -193,12 +207,16 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
 
   useEffect(() => {
     const active = screen.current;
+    const viewport = appearanceViewport.current;
+    appearanceViewport.current = undefined;
     if (finding && query) active?.search.findNext(query, { ...active.searchOptions, incremental: true });
     else {
       active?.search.clearDecorations();
       setMatches(undefined);
     }
-  }, [finding, query]);
+    if (viewport?.following) active?.terminal.scrollToBottom();
+    else if (viewport) active?.terminal.scrollToLine(viewport.top);
+  }, [finding, query, appearance]);
 
   const failed = status.type === "failed" || (status.type === "exited" && status.exitCode !== 0);
   const statusMessage = host.disconnected ?? (failed ? `${status.message} · Restart the shell to try again.` : status.message);

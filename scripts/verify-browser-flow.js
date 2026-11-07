@@ -25,9 +25,35 @@ async page => {
     if (!differences) throw new Error(`${target} detached while reading its colors.`);
     if (differences.length) throw new Error(`${target}: ${differences.join(", ")}`);
   }
+  async function expectPaint(target, expected) {
+    await target.evaluate((element, expected) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      const color = getComputedStyle(element).backgroundColor;
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      const actual = [...context.getImageData(0, 0, 1, 1).data];
+      const wanted = [...expected.matchAll(/[a-f\d]{2}/gi)].map(([pair]) => parseInt(pair, 16)).concat(255);
+      if (actual.some((channel, index) => Math.abs(channel - wanted[index]) > 1)) {
+        throw new Error(`Diff paint expected ${expected}, received ${color} (${actual.join(",")}).`);
+      }
+    }, expected);
+  }
+  const appearance = async (preference, resolved = preference) => {
+    await page.evaluate(preference => window.dispatchEvent(new CustomEvent("pideck-fixture-appearance", { detail: preference })), preference);
+    await page.waitForFunction(resolved => document.documentElement.dataset.colorMode === resolved, resolved);
+  };
 
   const open = page.getByRole("button", { name: /^Open (?:a project )?folder$/i });
   await open.waitFor();
+  await page.emulateMedia({ colorScheme: "light" });
+  await appearance("system", "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(() => document.documentElement.dataset.colorMode === "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => document.documentElement.dataset.colorMode === "light");
+  await appearance("dark");
   if (await open.count() !== 1 || await nav.count()) throw new Error("Welcome has duplicate workspace navigation.");
   await expectColors(page.locator("html"), {
     "--bgColor-default": "#0d1117",
@@ -83,6 +109,11 @@ async page => {
   await expectColors(settings, { "background-color": overlay, "border-top-color": "rgba(61, 68, 77, 0.7)", "color": foreground });
   await expectColors(settings, { "background-color": "rgba(33, 40, 48, 0.4)" }, "::backdrop");
   await expectColors(provider, { "background-color": canvas, "border-top-color": "rgb(61, 68, 77)", "color": foreground });
+  await appearance("light");
+  await expectColors(settings, { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
+  await expectColors(provider, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-providers.png" });
+  await appearance("dark");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
   if (!await connect.evaluate(button => button === document.activeElement)) throw new Error("Closing the provider dialog did not restore focus.");
@@ -161,6 +192,11 @@ async page => {
   await model.getByText("Off", { exact: true }).waitFor();
   await expectColors(picker, { "background-color": overlay, "color": foreground });
   await expectColors(modelSearch, { "background-color": canvas });
+  await appearance("light");
+  await expectColors(picker, { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
+  await expectColors(modelSearch, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-model-menu.png" });
+  await appearance("dark");
   if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
     throw new Error("The picker still offers unconfigured models.");
   }
@@ -1009,8 +1045,66 @@ async page => {
     await expectActiveTool("changes");
     if (await layout.inputValue() !== "split") throw new Error("Reopening Changes reset the review layout.");
     await page.waitForFunction(top =>
-      Math.abs(document.querySelector("#review-panel .workspace-review-scroll")?.scrollTop - top) <= 2, reviewScrollTop);
+      Math.abs(document.querySelector("#review-panel .workspace-review-scroll")?.scrollTop - top) <= 2, reviewScrollTop)
+      .catch(async error => { throw new Error(`Review scroll changed: expected ${reviewScrollTop}, received ${await review.locator(".workspace-review-scroll").evaluate(element => element.scrollTop)}.`, { cause: error }); });
   };
+  const reviewCode = review.locator('[data-line] span[style]').filter({ hasText: "const" }).first();
+  await reviewCode.waitFor();
+  const darkSyntax = await reviewCode.evaluate(element => getComputedStyle(element).color);
+  await appearance("light");
+  await expectRetainedReview();
+  await expectColors(page.locator("html"), { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
+  await expectColors(nav, { "background-color": "rgb(246, 248, 250)" });
+  await expectColors(review.locator(".workspace-review-scroll"), { "background-color": "rgb(246, 248, 250)" });
+  await expectColors(userMessage.locator(".message-content"), {
+    "background-color": "rgb(230, 234, 239)", "color": "rgb(31, 35, 40)", "border-width": "0px",
+  });
+  await page.waitForFunction(dark => [...document.querySelectorAll('#review-panel diffs-container')]
+    .flatMap(container => [...container.shadowRoot.querySelectorAll('[data-line] span[style]')])
+    .some(element => element.textContent.includes("const") && getComputedStyle(element).color !== dark), darkSyntax)
+    .catch(async error => { throw new Error(`Light diff syntax did not update: ${JSON.stringify(await review.evaluate((element, dark) => ({
+      mode: document.documentElement.dataset.colorMode, dark,
+      tokens: [...element.querySelectorAll('diffs-container')].flatMap(container => [...container.shadowRoot.querySelectorAll('[data-line] span[style]')])
+        .filter(span => span.textContent.includes("const"))
+        .slice(0, 3).map(span => ({ color: getComputedStyle(span).color, style: span.getAttribute("style") })),
+    }), darkSyntax))}`, { cause: error }); });
+  await expectColors(page.locator('.workspace-inline [data-line-type="change-addition"] [data-diff-span]').first(), {
+    "background-color": "rgb(172, 238, 187)",
+  });
+  await expectColors(page.locator('.workspace-inline [data-line-type="change-deletion"] [data-diff-span]').first(), {
+    "background-color": "rgb(255, 206, 203)",
+  });
+  for (const [type, line, gutter] of [["addition", "#dafbe1", "#aceebb"], ["deletion", "#ffebe9", "#ffcecb"]]) {
+    await expectPaint(review.locator(`[data-line][data-line-type="change-${type}"]`).first(), line);
+    await expectPaint(review.locator(`[data-column-number][data-line-type="change-${type}"]`).first(), gutter);
+  }
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-workspace.png" });
+  await terminalToggle.click();
+  await expectActiveTool("terminal");
+  await expectSameShell();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
+    .backgroundColor === "rgb(246, 248, 250)")
+    .catch(async error => { throw new Error(`Light terminal background did not update: ${await terminal.locator('.xterm-scrollable-element').evaluate(element => getComputedStyle(element).backgroundColor)}.`, { cause: error }); });
+  await expectColors(terminal.locator(".xterm"), { "background-color": "rgb(246, 248, 250)" });
+  const lightViewport = terminal.locator(".xterm-viewport");
+  if (await lightViewport.count()) await expectColors(lightViewport, { "background-color": "rgb(246, 248, 250)" });
+  const composition = terminal.locator(".composition-view");
+  if (await composition.count()) await expectColors(composition, {
+    "background-color": "rgb(246, 248, 250)", "color": "rgb(31, 35, 40)",
+  });
+  await findTerminal.click();
+  const lightSearch = terminal.getByRole("searchbox", { name: "Find in terminal output" });
+  await lightSearch.fill("Fixture");
+  await expectColors(lightSearch, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await page.screenshot({ path: "output/playwright/pideck-ui-light-terminal.png" });
+  await appearance("dark");
+  await expectSameShell();
+  if (await lightSearch.inputValue() !== "Fixture") throw new Error("Changing appearance reset terminal search.");
+  await lightSearch.press("Escape");
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
+    .backgroundColor === "rgb(1, 4, 9)");
+  await changes.click();
+  await expectRetainedReview();
   await terminalToggle.click();
   await expectActiveTool("terminal");
   await changes.click();

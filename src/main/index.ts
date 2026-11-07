@@ -11,6 +11,7 @@ import { installDesktopMenu, isMenuState } from "./menu";
 import { checkForUpdate, releasesPage } from "./update-check";
 import { isCommand, validPayload } from "./validation";
 import { minimumWindow, openWindowState } from "./window-state";
+import { appearanceBackground, appearanceDocument, openAppearance } from "./appearance";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -35,6 +36,7 @@ app.enableSandbox();
 let mainWindow: BrowserWindow | undefined;
 let desktopMenu: ReturnType<typeof installDesktopMenu> | undefined;
 let windowState: Awaited<ReturnType<typeof openWindowState>>;
+let appearance: Awaited<ReturnType<typeof openAppearance>>;
 let owner = 0;
 let host: HostClient | undefined;
 let exiting = false;
@@ -84,7 +86,7 @@ function openWindow() {
     ...initial.bounds,
     minWidth: minimumWindow.width,
     minHeight: minimumWindow.height,
-    backgroundColor: "#0d1117", // Primer Dark Default canvas before the renderer loads.
+    backgroundColor: appearanceBackground(appearance.get()),
     ...(process.platform === "darwin" ? {
       titleBarStyle: "hidden",
       trafficLightPosition: { x: 20, y: 21 },
@@ -137,7 +139,16 @@ function openWindow() {
 }
 
 async function initialize() {
-  nativeTheme.themeSource = "dark";
+  const dataDir = app.getPath("userData");
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  appearance = await openAppearance(dataDir, nativeTheme);
+  appearance.subscribe(state => {
+    desktopMenu?.refreshAppearance();
+    const window = mainWindow;
+    if (!window || window.isDestroyed()) return;
+    window.setBackgroundColor(appearanceBackground(state));
+    window.webContents.send(eventChannel, { type: "appearance:changed", appearance: state });
+  });
   protocol.handle("pideck", async request => {
     try {
       const url = new URL(request.url);
@@ -148,6 +159,11 @@ async function initialize() {
       const headers = new Headers(file.headers);
       headers.set("Content-Security-Policy", csp);
       headers.set("X-Content-Type-Options", "nosniff");
+      if (url.pathname === "/index.html" && file.ok) {
+        headers.delete("Content-Length");
+        headers.set("Cache-Control", "no-store");
+        return new Response(appearanceDocument(await file.text(), appearance.get()), { status: file.status, headers });
+      }
       return new Response(file.body, { status: file.status, headers });
     } catch {
       return new Response(null, { status: 404 });
@@ -157,8 +173,6 @@ async function initialize() {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false));
   session.defaultSession.on("will-download", event => event.preventDefault());
 
-  const dataDir = app.getPath("userData");
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
   windowState = await openWindowState(dataDir);
   const vault = new CredentialVault(dataDir, safeStorage);
   const client = new HostClient(dataDir, vault, (target, event) => {
@@ -170,7 +184,7 @@ async function initialize() {
   });
   host = client;
   client.start();
-  const menu = installDesktopMenu(openWindow, showUpdateCheck);
+  const menu = installDesktopMenu(openWindow, showUpdateCheck, appearance);
   desktopMenu = menu;
   ipcMain.on(menuStateChannel, (event, state: unknown) => {
     const window = mainWindow;
@@ -202,6 +216,11 @@ async function initialize() {
     const requestOwner = owner;
     if (!window || window.isDestroyed() || !ownsFrame(event, window)) throw new Error("Unauthorized window.");
     if (!isCommand(command)) throw new Error("Invalid workspace request.");
+
+    if (command === "appearance:get") {
+      if (!validPayload(command, payload)) throw new Error("Invalid appearance request.");
+      return appearance.get();
+    }
 
     if (command === "clipboard:write") {
       if (!validPayload(command, payload)) throw new Error("Invalid clipboard text.");
@@ -260,7 +279,10 @@ else {
     exiting = true;
     event.preventDefault();
     if (mainWindow) windowState.capture(mainWindow);
-    void Promise.allSettled([host.close(), windowState.flush()]).finally(() => app.quit());
+    void Promise.allSettled([host.close(), windowState.flush(), appearance.flush()]).finally(() => {
+      appearance.dispose();
+      app.quit();
+    });
   });
   void app.whenReady().then(initialize).catch(error => {
     dialog.showErrorBox("Pideck could not start", error instanceof Error ? error.message : "Startup failed.");

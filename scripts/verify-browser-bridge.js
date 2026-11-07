@@ -25,6 +25,8 @@ async page => {
     const state = JSON.parse(sessionStorage.getItem("pideck-browser-fixture") || "null")
       ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
+    state.appearance ??= "dark";
+    const systemAppearance = matchMedia("(prefers-color-scheme: dark)");
     let savedConnectionsPending = Boolean(state.savedConnectionsPending);
     let unlockCancelled = false;
     let auth;
@@ -40,6 +42,16 @@ async page => {
       for (const listener of listeners) listener(event);
     };
     const persist = () => sessionStorage.setItem("pideck-browser-fixture", JSON.stringify(state));
+    const appearance = () => ({ preference: state.appearance,
+      resolved: state.appearance === "system" ? systemAppearance.matches ? "dark" : "light" : state.appearance });
+    const publishAppearance = () => emit({ type: "appearance:changed", appearance: appearance() });
+    window.addEventListener("pideck-fixture-appearance", event => {
+      if (!["system", "light", "dark"].includes(event.detail)) throw new Error("Invalid fixture appearance.");
+      state.appearance = event.detail;
+      persist();
+      publishAppearance();
+    });
+    systemAppearance.addEventListener("change", () => { if (state.appearance === "system") publishAppearance(); });
     const update = (watch, payload) => emit({ type: "chat:update", ...watch.payload, sequence: ++watch.sequence, ...payload });
     const publishActivity = () => {
       if (activityWatch) emit({ type: "session:activity", subscriptionId: activityWatch, items: [...activity.values()] });
@@ -117,6 +129,7 @@ async page => {
         }
         if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
+          case "appearance:get": return appearance();
           case "project:list": return [...(state.opened ? [project] : []), ...(state.secondOpened ? [secondProject] : [])];
           case "project:open":
             if (state.opened) {

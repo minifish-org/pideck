@@ -149,7 +149,7 @@
 .workspace-file-list button:hover { color: var(--fgColor-default); background: var(--control-transparent-bgColor-hover); }
 .workspace-file-list button[aria-current="true"] {
   color: var(--fgColor-default);
-  background: var(--bgColor-emphasis);
+  background: var(--navigation-bgColor-selected);
 }
 
 .workspace-file-icon { flex: none; color: var(--fgColor-muted); }
@@ -301,7 +301,9 @@
   overflow: hidden;
   padding: 6px 6px 2px var(--workspace-inset, 16px);
 }
-.workspace-terminal-body > .xterm { height: 100%; }
+.workspace-terminal-body > .xterm { height: 100%; background-color: var(--bgColor-inset); }
+.workspace-terminal-body .xterm .xterm-viewport { background-color: var(--bgColor-inset); }
+.workspace-terminal-body .xterm .composition-view { background: var(--bgColor-inset); color: var(--fgColor-default); }
 .workspace-terminal-body .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   /* Keep xterm's full hit area for dragging. */
   border-inline: 2px solid transparent;

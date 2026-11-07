@@ -34,7 +34,7 @@
 }
 .chat-entry--user > .message-content {
   max-inline-size: 100%; padding: 8px var(--chat-inset);
-  border: 0; border-radius: 9px; background: var(--bgColor-emphasis);
+  border: 0; border-radius: 9px; background: var(--message-bgColor);
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .message-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 24px; margin-top: 5px; color: var(--fgColor-muted); font-size: 11px; }
