@@ -18,7 +18,7 @@ async function fixture(workspace = true) {
   const projectDirectory = join(root, 'project');
   await Promise.all([mkdir(resourcesDirectory), mkdir(projectDirectory)]);
   if (workspace) await mkdir(join(projectDirectory, '.playwright'));
-  const node = join(root, 'electron');
+  const node = join(resourcesDirectory, 'node');
   await writeFile(node, `#!/bin/sh\nexec ${quote(process.execPath)} "$@"\n`, { mode: 0o700 });
   const chromium = join(resourcesDirectory, 'chromium');
   await writeFile(chromium, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
@@ -29,7 +29,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 const defaults=JSON.parse(fs.readFileSync(path.join(process.env.HOME,'.playwright','cli.config.json')));
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args,cwd:process.cwd(),home:process.env.HOME,runtime:process.env.XDG_RUNTIME_DIR,username:process.env.USERNAME,nodePath:process.env.PATH,executable:defaults.browser.launchOptions.executablePath,noUpdate:process.env.NO_UPDATE_NOTIFIER,runAsNode:process.env.ELECTRON_RUN_AS_NODE,defaultApp:process.defaultApp,nodeOptions:process.env.NODE_OPTIONS})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args,cwd:process.cwd(),home:process.env.HOME,runtime:process.env.XDG_RUNTIME_DIR,username:process.env.USERNAME,nodePath:process.env.PATH,executable:defaults.browser.launchOptions.executablePath,noUpdate:process.env.NO_UPDATE_NOTIFIER})+'\\n');
 const state = path.join(process.env.HOME, 'browser.json');
 const workspace = fs.existsSync(path.join(process.cwd(), '.playwright')) ? process.cwd() : '0123456789abcdef';
 if (args[0] === 'open') fs.writeFileSync(state, JSON.stringify({workspace}));
@@ -37,25 +37,18 @@ if (args[0] === 'close-all') { try { if (JSON.parse(fs.readFileSync(state)).work
 if (args[0] === 'list') console.log(JSON.stringify({browsers:fs.existsSync(state)?[JSON.parse(fs.readFileSync(state))]:[]}));
 else console.log(JSON.stringify({args,home:process.env.HOME}));
 `);
-  const npm = join(resourcesDirectory, 'npm-cli.js');
-  const npx = join(resourcesDirectory, 'npx-cli.js');
-  for (const file of [npm, npx]) await writeFile(file, `console.log(JSON.stringify({args:process.argv.slice(2),home:process.env.HOME,runAsNode:process.env.ELECTRON_RUN_AS_NODE,defaultApp:process.defaultApp===true}));`);
-  await writeFile(join(resourcesDirectory, 'manifest.json'), JSON.stringify({ schema: 2, platform: process.platform, arch: process.arch,
-    runtime: 'electron', electronVersion: '45.2.3', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
-    npm: 'npm-cli.js', cli: 'upstream.cjs', chromium: 'chromium' }));
+  await writeFile(join(resourcesDirectory, 'manifest.json'), JSON.stringify({ schema: 1, platform: process.platform, arch: process.arch,
+    nodeVersion: '22.23.4', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
+    node: 'node', cli: 'upstream.cjs', chromium: 'chromium' }));
   const launcherPath = join(root, 'cli.cjs');
-  const preludePath = join(root, 'node prelude "quoted".cjs');
-  await Promise.all([
-    build({ entryPoints: ['src/automation/cli.ts'], outfile: launcherPath, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' }),
-    build({ entryPoints: ['src/automation/node-prelude.ts'], outfile: preludePath, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' }),
-  ]);
-  const options = { resourcesDirectory, stateDirectory, electronExecutable: node, launcherPath, preludePath };
+  await build({ entryPoints: ['src/automation/cli.ts'], outfile: launcherPath, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' });
+  const options = { resourcesDirectory, stateDirectory, launcherPath };
   let automation = await Automation.open(options);
   const call = async (environment: Record<string, string>, args: string[]) => {
     const shim = join(environment.PATH.split(delimiter)[0], 'playwright-cli');
     return execute(shim, args, { cwd: projectDirectory, env: { ...process.env, ...environment } });
   };
-  return { root, options, resourcesDirectory, stateDirectory, projectDirectory, call, upstreamSource: await readFile(cli, 'utf8'), get automation() { return automation; },
+  return { root, options, resourcesDirectory, stateDirectory, projectDirectory, call, get automation() { return automation; },
     async reopen(resources = resourcesDirectory) { automation = await Automation.open({ ...options, resourcesDirectory: resources }); },
     async calls() { return (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)); },
     async close() { await automation.closeAll(); await rm(root, { recursive: true, force: true }); },
@@ -74,7 +67,7 @@ test('browser CLI preserves argv and cwd while isolating its profile and socket 
     assert.deepEqual(a, duplicate);
     assert.deepEqual(Object.keys(a), ['PATH'], 'Project Node/npm keep the real HOME and do not inherit CLI-only overrides.');
     const argv = ['open', 'data:text/html,a b', '-s=shared', '--config', 'config with spaces.json'];
-    await f.call({ ...a, NODE_OPTIONS: '--no-warnings' }, argv); await f.call(b, argv);
+    await f.call(a, argv); await f.call(b, argv);
     const calls = await f.calls();
     assert.deepEqual(calls[0].args, argv);
     assert.equal(calls[0].cwd, f.projectDirectory);
@@ -84,11 +77,7 @@ test('browser CLI preserves argv and cwd while isolating its profile and socket 
     assert.notEqual(calls[0].username, calls[1].username);
     assert.ok(Buffer.byteLength(join(calls[0].runtime, 'playwright', 'cli', '1234567890123456.sock')) < 104);
     assert.equal(calls[0].noUpdate, '1');
-    assert.equal(calls[0].runAsNode, '1');
-    assert.equal(calls[0].defaultApp, true, 'CLI-only preload is loaded even when its path contains spaces, apostrophes and quotes.');
-    assert.ok(calls[0].nodeOptions.startsWith('--no-warnings '), 'Caller Node options survive the additional CLI preload.');
     assert.equal(calls[0].executable, join(f.resourcesDirectory, 'chromium'));
-    assert.equal(await readFile(join(f.resourcesDirectory, 'upstream.cjs'), 'utf8'), f.upstreamSource, 'The original CLI is never rewritten.');
     await assert.rejects(f.automation.environment('other-project', '1', f.projectDirectory), /another project/);
   } finally { await f.close(); }
 });
@@ -107,7 +96,6 @@ test('native close-all only closes owned project profiles, including profiles re
     const calls = await f.calls();
     assert.ok(calls.some(call => call.args[0] === 'close-all' && call.cwd === f.projectDirectory && call.home === homes[0]));
     assert.ok(calls.every(call => !call.args.includes('kill-all')));
-    assert.ok(calls.every(call => call.runAsNode === '1' && call.defaultApp === true), 'Cleanup uses the same Electron CLI-only environment.');
     await f.automation.closeAll();
     assert.deepEqual((await readdir(f.stateDirectory)).filter(name => name !== '.owner'), []);
     await assert.rejects(readFile(join(homes[1], 'browser.json')), { code: 'ENOENT' });
@@ -117,13 +105,13 @@ test('native close-all only closes owned project profiles, including profiles re
 test('an absent or invalid bundled manifest does not fall back to a system browser or Node', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pideck-automation-unavailable-'));
   try {
-    const options = { resourcesDirectory: root, stateDirectory: join(root, 'state'), electronExecutable: process.execPath };
+    const options = { resourcesDirectory: root, stateDirectory: join(root, 'state') };
     const absent = await Automation.open(options);
     assert.equal(absent.availability().available, false);
     assert.deepEqual(await absent.environment('project', '1'), {});
-    await writeFile(join(root, 'manifest.json'), JSON.stringify({ schema: 2, platform: process.platform, arch: process.arch,
-      runtime: 'electron', electronVersion: '45.2.3', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
-      npm: '../outside', cli: '../outside', chromium: '../outside' }));
+    await writeFile(join(root, 'manifest.json'), JSON.stringify({ schema: 1, platform: process.platform, arch: process.arch,
+      nodeVersion: '22.23.4', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
+      node: '../outside', cli: '../outside', chromium: '../outside' }));
     assert.equal((await Automation.open(options)).availability().available, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -147,7 +135,7 @@ test('resource relocation and OS temporary-directory reclamation preserve owned 
   } finally { await f.close(); }
 });
 
-test('the executable shim loads its unpacked launcher and CLI preload beside an ASAR archive', { skip: process.platform === 'win32' }, async () => {
+test('the standard Node shim executes the unpacked launcher beside an ASAR archive', { skip: process.platform === 'win32' }, async () => {
   const f = await fixture();
   try {
     const archive = join(f.root, 'app.asar');
@@ -155,44 +143,13 @@ test('the executable shim loads its unpacked launcher and CLI preload beside an 
     const unpacked = join(f.root, 'app.asar.unpacked', 'dist', 'automation');
     await mkdir(unpacked, { recursive: true });
     await rename(f.options.launcherPath, join(unpacked, 'cli.cjs'));
-    await rename(f.options.preludePath, join(unpacked, 'node-prelude.cjs'));
     f.options.launcherPath = join(archive, 'dist', 'automation', 'cli.cjs');
-    f.options.preludePath = join(archive, 'dist', 'automation', 'node-prelude.cjs');
     await f.reopen();
     const env = await f.automation.environment('project', '1', f.projectDirectory);
     const result = await f.call(env, ['--help']);
     assert.deepEqual(JSON.parse(result.stdout).args, ['--help']);
     assert.deepEqual((await f.calls())[0].args, ['--help']);
   } finally { await f.close(); }
-});
-
-test('existing project Node/npm/npx take precedence and fallback commands keep HOME without the CLI preload', { skip: process.platform === 'win32' }, async () => {
-  const f = await fixture();
-  const originalPath = process.env.PATH;
-  try {
-    const existing = join(f.root, 'existing-bin');
-    await mkdir(existing);
-    for (const command of ['node', 'npm', 'npx']) {
-      await writeFile(join(existing, command), `#!/bin/sh\nprintf 'existing-${command}'\n`, { mode: 0o700 });
-    }
-    process.env.PATH = [existing, '/usr/bin', '/bin'].join(delimiter);
-    const env = await f.automation.environment('project', '1', f.projectDirectory);
-    const fallback = env.PATH.split(delimiter).at(-1)!;
-    for (const command of ['node', 'npm', 'npx']) {
-      const actual = await execute('/bin/sh', ['-c', command], { env: { ...process.env, ...env } });
-      assert.equal(actual.stdout, `existing-${command}`);
-    }
-    const fallbackEnv = { ...process.env, PATH: [fallback, '/usr/bin', '/bin'].join(delimiter) };
-    const node = JSON.parse((await execute(join(fallback, 'node'), ['-p', 'JSON.stringify({home:process.env.HOME,runAsNode:process.env.ELECTRON_RUN_AS_NODE,defaultApp:process.defaultApp===true})'], { env: fallbackEnv })).stdout);
-    assert.deepEqual(node, { home: process.env.HOME, runAsNode: '1', defaultApp: false });
-    for (const command of ['npm', 'npx']) {
-      const actual = JSON.parse((await execute(join(fallback, command), ['argument with spaces', 'a"b'], { env: fallbackEnv })).stdout);
-      assert.deepEqual(actual, { args: ['argument with spaces', 'a"b'], home: process.env.HOME, runAsNode: '1', defaultApp: false });
-    }
-  } finally {
-    process.env.PATH = originalPath;
-    await f.close();
-  }
 });
 
 test('native cleanup handles the workspace hash of projects without a .playwright directory', { skip: process.platform === 'win32' }, async () => {
@@ -223,20 +180,61 @@ test('cleanup after host recovery succeeds when the OS already reclaimed the run
   } finally { await f.close(); }
 });
 
-test('profiles from the standalone Node version retain their native session and cleanup after an upgrade', { skip: process.platform === 'win32' }, async () => {
+async function savedElectronProfile(f: Awaited<ReturnType<typeof fixture>>, env: Record<string, string>) {
+  const directory = join(env.PATH.split(delimiter)[0], '..');
+  const descriptor = join(directory, 'cli.json');
+  const old = JSON.parse(await readFile(descriptor, 'utf8'));
+  old.node = join(f.root, 'removed-Pideck.app', 'Contents', 'MacOS', 'Pideck');
+  old.prelude = join(f.root, 'removed-node-prelude.cjs');
+  old.npm = join(f.root, 'removed-npm-cli.js');
+  old.npx = join(f.root, 'removed-npx-cli.js');
+  await writeFile(descriptor, JSON.stringify(old));
+  await writeFile(join(directory, 'bin', 'playwright-cli'),
+    `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 NODE_OPTIONS=${quote(`--require=${old.prelude}`)} exec ${quote(old.node)} "$@"\n`, { mode: 0o700 });
+  const fallback = join(directory, 'fallback-bin');
+  await mkdir(fallback);
+  for (const command of ['node', 'npm', 'npx']) {
+    await writeFile(join(fallback, command), '#!/bin/sh\nexit 91\n', { mode: 0o700 });
+  }
+  return { old, descriptor, fallback };
+}
+
+test('an Electron-generation profile resumes its next command with standalone Node and keeps its native session', { skip: process.platform === 'win32' }, async () => {
   const f = await fixture();
+  try {
+    const initial = await f.automation.environment('project', '1', f.projectDirectory);
+    await f.call(initial, ['open']);
+    const { old, descriptor, fallback } = await savedElectronProfile(f, initial);
+    await f.reopen();
+    const resumed = await f.automation.environment('project', '1', f.projectDirectory);
+    const result = JSON.parse((await f.call(resumed, ['snapshot', '-s=existing-session'])).stdout);
+    assert.deepEqual(result, { args: ['snapshot', '-s=existing-session'], home: old.home });
+    const current = JSON.parse(await readFile(descriptor, 'utf8'));
+    assert.equal(current.node, join(f.resourcesDirectory, 'node'));
+    assert.equal(current.session, old.session);
+    assert.equal(current.runtime, old.runtime);
+    const projectNode = JSON.parse((await execute('/bin/sh', ['-c', 'node -p "JSON.stringify({electron:Boolean(process.versions.electron),defaultApp:Boolean(process.defaultApp),runAsNode:Boolean(process.env.ELECTRON_RUN_AS_NODE)})"'],
+      { cwd: f.projectDirectory, env: { HOME: process.env.HOME, PATH: resumed.PATH } })).stdout);
+    assert.deepEqual(projectNode, { electron: false, defaultApp: false, runAsNode: false });
+    await f.automation.closeConversation('1');
+    await assert.rejects(readFile(join(fallback, 'node')), { code: 'ENOENT' });
+    assert.deepEqual((await readdir(f.stateDirectory)).filter(name => name !== '.owner'), []);
+  } finally { await f.close(); }
+});
+
+test('an Electron-generation profile cleans up directly after reopen without preparing or invoking its old shim', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture(false);
   try {
     const env = await f.automation.environment('project', '1', f.projectDirectory);
     await f.call(env, ['open']);
-    const descriptor = join(env.PATH.split(delimiter)[0], '..', 'cli.json');
-    const old = JSON.parse(await readFile(descriptor, 'utf8'));
-    old.node = join(f.root, 'removed-standalone-node');
-    delete old.prelude;
-    await writeFile(descriptor, JSON.stringify(old));
+    const { old, fallback } = await savedElectronProfile(f, env);
     await f.reopen();
     await f.automation.closeConversation('1');
-    const cleanup = (await f.calls()).slice(1);
-    assert.ok(cleanup.length > 0 && cleanup.every(call => call.runAsNode === '1' && call.defaultApp === true));
+    await assert.rejects(readFile(join(old.home, 'browser.json')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(fallback, 'node')), { code: 'ENOENT' });
+    const calls = await f.calls();
+    assert.equal(calls.filter(call => call.args[0] === 'open').length, 1);
+    assert.ok(calls.some(call => call.args[0] === 'close-all' && call.home === old.home));
     assert.deepEqual((await readdir(f.stateDirectory)).filter(name => name !== '.owner'), []);
   } finally { await f.close(); }
 });

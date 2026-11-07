@@ -1,13 +1,25 @@
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import { access, cp, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { Arch } from "builder-util";
+import { x as extractTar } from "tar";
+import { utils } from "playwright-core/lib/coreBundle";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
-const electronVersion = "45.2.3";
-const npmVersion = "10.9.9";
-const supportedTargets = new Set(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"]);
+const nodeVersion = "22.23.4";
+// Official https://nodejs.org/dist/v22.23.4/SHASUMS256.txt, pinned with the runtime.
+const nodeChecksums = {
+  "darwin-arm64": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428",
+  "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819",
+  "linux-arm64": "f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9",
+  "linux-x64": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
+  "win32-x64": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
+};
 const targetNames = { darwin: "mac", linux: "linux", win32: "win" };
 
 function run(command, args, options = {}) {
@@ -20,6 +32,39 @@ function run(command, args, options = {}) {
       ? resolve(output)
       : reject(new Error(`${command} failed (${signal ?? code}).`)));
   });
+}
+
+async function sha256(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function nodeArchive(cache, platform, arch) {
+  const target = `${platform}-${arch}`;
+  const checksum = nodeChecksums[target];
+  const archive = `node-v${nodeVersion}-${platform === "win32" ? "win" : platform}-${arch}.${platform === "win32" ? "zip" : "tar.gz"}`;
+  const path = join(cache, archive);
+  try {
+    await access(path);
+  } catch {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    console.log(`Preparing automation: downloading official Node.js ${nodeVersion} (${target}).`);
+    try {
+      const response = await fetch(`https://nodejs.org/dist/v${nodeVersion}/${archive}`, { signal: AbortSignal.timeout(120_000) });
+      if (!response.ok || !response.body) throw new Error(`Node.js download returned HTTP ${response.status}.`);
+      const hash = createHash("sha256");
+      await pipeline(Readable.fromWeb(response.body), new Transform({
+        transform(chunk, _encoding, callback) { hash.update(chunk); callback(null, chunk); },
+      }), createWriteStream(temporary, { flags: "wx" }));
+      if (hash.digest("hex") !== checksum) throw new Error(`Node.js ${target} archive checksum does not match the pinned release.`);
+      await rename(temporary, path);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+  if (await sha256(path) !== checksum) throw new Error(`Cached Node.js ${target} archive checksum does not match the pinned release.`);
+  return path;
 }
 
 export async function validateAutomationLinks(root) {
@@ -48,13 +93,12 @@ export async function validateAutomationLinks(root) {
 export async function validateAutomationResources(root, expected = {}) {
   await validateAutomationLinks(root);
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
-  if (manifest.schema !== 2 || manifest.runtime !== "electron" || manifest.electronVersion !== electronVersion
-    || manifest.npmVersion !== npmVersion || !supportedTargets.has(`${manifest.platform}-${manifest.arch}`)
+  if (manifest.schema !== 1 || !Object.hasOwn(nodeChecksums, `${manifest.platform}-${manifest.arch}`)
+    || manifest.nodeVersion !== nodeVersion
     || (expected.platform && manifest.platform !== expected.platform)
     || (expected.arch && manifest.arch !== expected.arch)) {
-    throw new Error("Published automation manifest does not match the package target or pinned Electron runtime.");
+    throw new Error("Published automation manifest does not match the package target or pinned Node.js version.");
   }
-  if (await stat(join(root, "node")).catch(() => undefined)) throw new Error("An independent Node runtime must not be packaged.");
   async function requiredFile(entry) {
     if (typeof entry !== "string" || isAbsolute(entry) || !entry || entry.split(/[\\/]/).includes("..")) {
       throw new Error("Published automation manifest contains an invalid resource path.");
@@ -64,15 +108,15 @@ export async function validateAutomationResources(root, expected = {}) {
     if (!info?.isFile() || info.size === 0) throw new Error(`Published automation resource is missing or empty: ${entry}`);
   }
   const windows = manifest.platform === "win32";
-  for (const entry of [manifest.npm, manifest.cli, manifest.chromium, "NOTICE.txt",
-    "node_modules/npm/bin/npm-cli.js", "node_modules/npm/bin/npx-cli.js", "node_modules/npm/LICENSE",
+  const npm = windows ? "node/node_modules/npm" : "node/lib/node_modules/npm";
+  for (const entry of [manifest.node, manifest.cli, manifest.chromium, "node/LICENSE", "NOTICE.txt",
+    `${npm}/bin/npm-cli.js`, `${npm}/bin/npx-cli.js`,
+    windows ? "node/npm.cmd" : "node/bin/npm", windows ? "node/npx.cmd" : "node/bin/npx",
     "node_modules/@playwright/cli/playwright-cli.js", "node_modules/@playwright/cli/skillCheck.js",
     "node_modules/playwright/cli.js", "node_modules/playwright-core/lib/coreBundle.js",
     "node_modules/playwright-core/lib/utilsBundle.js", "node_modules/playwright-core/lib/entry/cliDaemon.js",
     "node_modules/playwright-core/lib/tools/cli-client/program.js"]) await requiredFile(entry);
   const packages = {};
-  const npm = JSON.parse(await readFile(join(root, "node_modules", "npm", "package.json"), "utf8"));
-  if (npm.version !== npmVersion) throw new Error("Published npm does not match the pinned version.");
   for (const name of ["@playwright/cli", "playwright", "playwright-core"]) {
     await requiredFile(`node_modules/${name}/LICENSE`);
     await requiredFile(`node_modules/${name}/package.json`);
@@ -117,7 +161,7 @@ export async function publishAutomation(context) {
 }
 
 export async function prepareAutomation(platform = process.platform, arch = process.arch, root = projectDirectory) {
-  if (!supportedTargets.has(`${platform}-${arch}`)) {
+  if (!Object.hasOwn(nodeChecksums, `${platform}-${arch}`)) {
     throw new Error(`Bundled browser automation does not support ${platform}-${arch}; use macOS/Linux x64 or arm64, or Windows x64.`);
   }
   const os = targetNames[platform];
@@ -129,19 +173,27 @@ export async function prepareAutomation(platform = process.platform, arch = proc
   const destination = join(assetRoot, `${os}-${arch}`);
   try {
     const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-    const npmPackage = JSON.parse(await readFile(join(root, "node_modules", "npm", "package.json"), "utf8"));
     const cliPackage = JSON.parse(await readFile(join(root, "node_modules", "@playwright", "cli", "package.json"), "utf8"));
     const playwrightPackage = JSON.parse(await readFile(join(root, "node_modules", "playwright", "package.json"), "utf8"));
     const corePackage = JSON.parse(await readFile(join(root, "node_modules", "playwright-core", "package.json"), "utf8"));
-    if (rootPackage.devDependencies.electron !== electronVersion || rootPackage.devDependencies.npm !== npmVersion
-      || npmPackage.version !== npmVersion || cliPackage.version !== rootPackage.devDependencies["@playwright/cli"]
+    if (cliPackage.version !== rootPackage.devDependencies["@playwright/cli"]
       || playwrightPackage.version !== rootPackage.devDependencies.playwright
       || cliPackage.dependencies.playwright !== playwrightPackage.version
       || cliPackage.dependencies["playwright-core"] !== corePackage.version
       || playwrightPackage.dependencies["playwright-core"] !== corePackage.version) {
       throw new Error("The installed Playwright CLI and browser installer do not match the pinned package versions; run npm ci.");
     }
-    for (const name of ["@playwright/cli", "playwright", "playwright-core", "npm"]) {
+    const archive = await nodeArchive(cache, platform, arch);
+    if (platform === "win32") {
+      const unpacked = join(staging, ".node-unpack");
+      await utils.extractZip(archive, { dir: unpacked });
+      await rename(join(unpacked, `node-v${nodeVersion}-win-${arch}`), join(staging, "node"));
+      await rm(unpacked, { recursive: true });
+    } else {
+      await mkdir(join(staging, "node"));
+      await extractTar({ file: archive, cwd: join(staging, "node"), strip: 1, strict: true });
+    }
+    for (const name of ["@playwright/cli", "playwright", "playwright-core"]) {
       await cp(join(root, "node_modules", name), join(staging, "node_modules", name), { recursive: true, verbatimSymlinks: true });
     }
 
@@ -169,13 +221,13 @@ export async function prepareAutomation(platform = process.platform, arch = proc
       await cp(browser.directory, join(staging, "browsers", relative(browserCache, browser.directory)), { recursive: true, verbatimSymlinks: true });
     }
     const chromium = metadata.find(browser => browser.name === "chromium");
-    const manifest = { schema: 2, platform, arch, runtime: "electron", electronVersion, npmVersion, cliVersion: cliPackage.version,
+    const manifest = { schema: 1, platform, arch, nodeVersion, cliVersion: cliPackage.version,
       playwrightVersion: playwrightPackage.version, browserRevision: chromium.revision,
-      npm: "node_modules/npm/bin/npm-cli.js",
+      node: platform === "win32" ? "node/node.exe" : "node/bin/node",
       cli: "node_modules/@playwright/cli/playwright-cli.js",
       chromium: `browsers/${relative(browserCache, chromium.executable).split("\\").join("/")}` };
     await writeFile(join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    await writeFile(join(staging, "NOTICE.txt"), `Pideck browser automation\n\nThe Node runtime is reused from Electron ${electronVersion}; no independent Node distribution is included.\nnpm ${npmVersion}: node_modules/npm/LICENSE and its bundled dependency notices.\nPlaywright CLI ${cliPackage.version}, Playwright ${playwrightPackage.version}: LICENSE and NOTICE files in node_modules/@playwright/cli, node_modules/playwright and node_modules/playwright-core.\nChromium ${chromium.revision} and FFmpeg: upstream distribution license/credit files under browsers/.\n`);
+    await writeFile(join(staging, "NOTICE.txt"), `Pideck browser automation\n\nNode.js ${nodeVersion}: node/LICENSE and the notices in the complete Node.js distribution.\nPlaywright CLI ${cliPackage.version}, Playwright ${playwrightPackage.version}: LICENSE and NOTICE files in node_modules/@playwright/cli, node_modules/playwright and node_modules/playwright-core.\nChromium ${chromium.revision} and FFmpeg: upstream distribution license/credit files under browsers/.\n`);
     await validateAutomationResources(staging, { platform, arch });
     await rm(destination, { recursive: true, force: true });
     await rename(staging, destination);

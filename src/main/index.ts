@@ -188,7 +188,7 @@ async function initialize() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:restart" });
   }, message => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:disconnected", message });
-  }, { resourcesDirectory: automationDirectory, electronExecutable: process.execPath });
+  }, automationDirectory);
   host = client;
   client.start();
   const menu = installDesktopMenu(openWindow, showUpdateCheck, appearance);

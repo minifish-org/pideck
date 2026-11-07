@@ -143,7 +143,7 @@ export class Runtime {
     onStorageFailure?: () => void,
     lifetimeId: string = processLifetime,
     closedWindows: readonly number[] = [],
-    automationOptions?: { resourcesDirectory: string; stateDirectory: string; electronExecutable: string; launcherPath?: string; preludePath?: string },
+    automationOptions?: { resourcesDirectory: string; stateDirectory: string; launcherPath?: string },
   ): Promise<Runtime> {
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     const metadata = new Metadata(join(dataDir, "workspace.sqlite"));

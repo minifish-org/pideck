@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -10,15 +10,14 @@ import { shellEnvironment } from './shell-env.js';
 import { cliEnvironment, type AutomationProfile } from '../automation/profile.js';
 
 const execute = promisify(execFile);
-const manifestVersion = { schema: 2, runtime: 'electron', electronVersion: '45.2.3', cliVersion: '0.1.23',
+const manifestVersion = { schema: 1, nodeVersion: '22.23.4', cliVersion: '0.1.23',
   playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252' };
-type Manifest = typeof manifestVersion & { platform: string; arch: string; npm: string; cli: string; chromium: string };
-type Options = { resourcesDirectory: string; stateDirectory: string; electronExecutable: string; launcherPath?: string; preludePath?: string };
+type Manifest = typeof manifestVersion & { platform: string; arch: string; node: string; cli: string; chromium: string };
+type Options = { resourcesDirectory: string; stateDirectory: string; launcherPath?: string };
 type Profile = { directory: string; descriptor: string; value: AutomationProfile };
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const unpacked = (path: string) => path.replace(/([\\/])app\.asar(?=[\\/])/, '$1app.asar.unpacked');
 const unavailable = 'Bundled browser tools are unavailable. Rebuild or reinstall Pideck before browser verification.';
 
 async function ownedDirectory(path: string) {
@@ -48,7 +47,7 @@ export class Automation {
   private readonly closing = new Map<string, Promise<void>>();
 
   private constructor(private readonly options: Options, private readonly owner: string,
-    private readonly paths?: { node: string; prelude: string; cli: string; npm: string; npx: string; chromium: string; browsers: string }, private readonly reason?: string) {}
+    private readonly paths?: { node: string; cli: string; chromium: string; browsers: string }, private readonly reason?: string) {}
 
   static async open(options: Options): Promise<Automation> {
     let paths: Automation['paths'];
@@ -57,15 +56,9 @@ export class Automation {
       const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8')) as Manifest;
       if (Object.entries(manifestVersion).some(([key, value]) => manifest[key as keyof Manifest] !== value)
         || manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(unavailable);
-      const [node, prelude, cli, npm, npx, chromium] = await Promise.all([
-        realpath(options.electronExecutable),
-        realpath(unpacked(options.preludePath ?? fileURLToPath(new URL('../automation/node-prelude.cjs', import.meta.url)))),
-        resource(root, manifest.cli), resource(root, manifest.npm),
-        resource(root, join(dirname(manifest.npm), 'npx-cli.js')), resource(root, manifest.chromium),
-      ]);
-      if (!(await lstat(node)).isFile() || !(await lstat(prelude)).isFile()) throw new Error(unavailable);
+      const [node, cli, chromium] = await Promise.all([resource(root, manifest.node), resource(root, manifest.cli), resource(root, manifest.chromium)]);
       await Promise.all([access(node, constants.X_OK), access(chromium, constants.X_OK)]);
-      paths = { node, prelude, cli, npm, npx, chromium, browsers: join(root, 'browsers') };
+      paths = { node, cli, chromium, browsers: join(root, 'browsers') };
     } catch { return new Automation(options, '', undefined, unavailable); }
     await ownedDirectory(options.stateDirectory);
     const ownerFile = join(options.stateDirectory, '.owner');
@@ -91,7 +84,7 @@ export class Automation {
 
   instructions() {
     return this.paths
-      ? 'Pideck provides playwright-cli with a bundled Chromium using its Electron runtime; no browser-tool installation is needed. Browser sessions and output are isolated to this conversation. Project commands prefer the existing Node/npm on PATH. If those are absent, an Electron Node/npm fallback supports common JavaScript and Node-API tools but is not a standard Node replacement for V8-native addons or OpenSSL-specific options; do not rebuild project addons for Electron. Read screenshot paths with the read tool when the model supports images. Close browsers with playwright-cli close when finished; never use kill-all.'
+      ? 'Pideck provides playwright-cli and Node/npm on PATH, with a bundled Chromium. Use playwright-cli directly; no installation is needed. Browser sessions and output are isolated to this conversation. Read screenshot paths with the read tool when the model supports images. Close browsers with playwright-cli close when finished; never use kill-all.'
       : unavailable;
   }
 
@@ -106,7 +99,7 @@ export class Automation {
     }
     const profile = await pending;
     if (profile.value.projectId !== projectId) throw new Error('Browser session belongs to another project.');
-    return { PATH: [join(profile.directory, 'bin'), shellEnvironment().PATH ?? '', join(profile.directory, 'fallback-bin')].filter(Boolean).join(delimiter) };
+    return { PATH: [join(profile.directory, 'bin'), dirname(this.paths.node), shellEnvironment().PATH ?? ''].filter(Boolean).join(delimiter) };
   }
 
   private async prepare(projectId: string, conversationId: string, projectDirectory: string): Promise<Profile> {
@@ -131,8 +124,7 @@ export class Automation {
       profile.value.runtime = await mkdtemp(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'pideck-browser-'));
       await writeFile(join(profile.value.runtime, '.owner'), this.owner, { mode: 0o600 });
     });
-    const fallback = join(profile.directory, 'fallback-bin');
-    await Promise.all([ownedDirectory(profile.value.home), ownedDirectory(profile.value.output), ownedDirectory(join(profile.directory, 'bin')), ownedDirectory(fallback)]);
+    await Promise.all([ownedDirectory(profile.value.home), ownedDirectory(profile.value.output), ownedDirectory(join(profile.directory, 'bin'))]);
     const configDirectory = join(profile.value.home, '.playwright');
     await ownedDirectory(configDirectory);
     await atomicWrite(join(configDirectory, 'cli.config.json'), JSON.stringify({
@@ -140,21 +132,15 @@ export class Automation {
       outputDir: profile.value.output, filePaths: 'absolute',
     }));
     await atomicWrite(profile.descriptor, JSON.stringify(profile.value));
-    const launcher = unpacked(this.options.launcherPath ?? fileURLToPath(new URL('../automation/cli.cjs', import.meta.url)));
-    const shim = `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(this.paths!.node)} ${quote(launcher)} ${quote(profile.descriptor)} "$@"\n`;
+    // This shim uses standard Node, which cannot traverse Electron's virtual
+    // ASAR filesystem. The packaged launcher is explicitly unpacked at build.
+    const launcher = (this.options.launcherPath ?? fileURLToPath(new URL('../automation/cli.cjs', import.meta.url)))
+      .replace(/([\\/])app\.asar(?=[\\/])/, '$1app.asar.unpacked');
+    const shim = `#!/bin/sh\nexec ${quote(this.paths!.node)} ${quote(launcher)} ${quote(profile.descriptor)} "$@"\n`;
     await atomicWrite(join(profile.directory, 'bin', 'playwright-cli'), shim, 0o700);
-    await atomicWrite(join(fallback, 'node'), `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(this.paths!.node)} "$@"\n`, 0o700);
-    for (const command of ['npm', 'npx'] as const) {
-      await atomicWrite(join(fallback, command), `#!/bin/sh\nexec node ${quote(this.paths![command])} "$@"\n`, 0o700);
-    }
     if (process.platform === 'win32') {
       const cmdQuote = (value: string) => `"${value.replaceAll('%', '%%')}"`;
-      const electron = '@setlocal\r\n@set "ELECTRON_RUN_AS_NODE=1"\r\n';
-      await atomicWrite(join(profile.directory, 'bin', 'playwright-cli.cmd'), `${electron}@${[this.paths!.node, launcher, profile.descriptor].map(cmdQuote).join(' ')} %*\r\n`, 0o700);
-      await atomicWrite(join(fallback, 'node.cmd'), `${electron}@${cmdQuote(this.paths!.node)} %*\r\n`, 0o700);
-      for (const command of ['npm', 'npx'] as const) {
-        await atomicWrite(join(fallback, `${command}.cmd`), `@node ${cmdQuote(this.paths![command])} %*\r\n`, 0o700);
-      }
+      await atomicWrite(join(profile.directory, 'bin', 'playwright-cli.cmd'), `@${[this.paths!.node, launcher, profile.descriptor].map(cmdQuote).join(' ')} %*\r\n`, 0o700);
     }
     return profile;
   }
