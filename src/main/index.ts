@@ -201,7 +201,14 @@ async function initialize() {
     const window = mainWindow;
     const requestOwner = owner;
     if (!window || window.isDestroyed() || !ownsFrame(event, window)) throw new Error("Unauthorized window.");
-    if (!isCommand(command) || !validPayload(command, payload)) throw new Error("Invalid workspace request.");
+    if (!isCommand(command)) throw new Error("Invalid workspace request.");
+
+    if (command === "clipboard:write") {
+      if (!validPayload(command, payload)) throw new Error("Invalid clipboard text.");
+      clipboard.writeText(payload.text);
+      return;
+    }
+    if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
 
     if (command === "project:open") {
       if (choosingProject) return null;

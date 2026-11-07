@@ -182,7 +182,7 @@ test("first send creates one durable session and recovers interrupted admissions
     assert.equal(started.id, input.requestId);
     assert.equal(started.title, input.text);
     const selection = { projectId: project.id, sessionId: started.id };
-    const view = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Done."));
+    const view = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Done.")));
     assert.equal(view.messages.filter(message => message.requestId === input.requestId).length, 1);
     assert.ok(view.messages.some(message => message.blocks.some(block =>
       block.type === "tool" && block.name === "bash" && block.output === "Started in the project")));
@@ -294,6 +294,63 @@ test("an unfinished generation resumes after closing and reopening the SQLite st
 function textIn(view: ChatView, text: string): boolean {
   return view.messages.some(message => message.blocks.some(block => block.type === "text" && block.text === text));
 }
+
+function answerWithTiming(view: ChatView, text: string) {
+  return view.messages.find(message => message.durationMs !== undefined
+    && message.blocks.some(block => block.type === "text" && block.text === text));
+}
+
+test("message timestamps and whole-run timing survive reopen and respect the selected fork boundary", async () => {
+  const fixture = await openFixture();
+  const { root, project, selection, input, faux } = fixture;
+  let runtime = fixture.runtime;
+  const generating = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    faux.setResponses([
+      () => toolResponse("bash", { command: "sleep 0.08; printf 'timed tool'" }),
+      () => toolResponse("bash", { command: "printf 'second timed tool'" }),
+      async () => {
+        generating.resolve();
+        await release.promise;
+        return fauxAssistantMessage("Timed work finished.");
+      },
+    ]);
+    const finished = waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Timed work finished.")));
+    void finished.catch(() => {});
+    await runtime.send({ ...input, requestId: randomUUID() });
+    await generating.promise;
+    const running = await waitForView(runtime, selection, view => view.status === "running");
+    assert.ok(running.messages.every(message => message.durationMs === undefined));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    release.resolve();
+    const view = await finished;
+    const answer = answerWithTiming(view, "Timed work finished.")!;
+    assert.ok(answer.durationMs! >= 120, "Whole-run time includes earlier tools and the final generation wait.");
+    const firstInput = view.messages.find(message => message.role === "user")!;
+    assert.ok(answer.durationMs! >= answer.timestamp! - firstInput.timestamp!);
+    assert.equal(view.messages.filter(message => message.durationMs !== undefined).length, 1);
+    assert.ok(view.messages.every(message => typeof message.timestamp === "number" && Number.isFinite(message.timestamp)));
+    const tool = view.messages.find(message => message.blocks.some(block => block.type === "tool"));
+    assert.ok(tool?.entryId && answer.entryId);
+
+    const before = await runtime.fork(selection, tool.entryId);
+    const beforeView = await waitForView(runtime, { projectId: project.id, sessionId: before.id }, () => true);
+    assert.ok(beforeView.messages.every(message => message.durationMs === undefined));
+    const after = await runtime.fork(selection, answer.entryId);
+    const afterView = await waitForView(runtime, { projectId: project.id, sessionId: after.id }, () => true);
+    assert.equal(answerWithTiming(afterView, "Timed work finished.")?.durationMs, answer.durationMs);
+
+    await runtime.close();
+    runtime = await fixture.open();
+    const reopened = await waitForView(runtime, selection, () => true);
+    assert.deepEqual(reopened.messages, view.messages);
+  } finally {
+    release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("native transcript retains watched entries, loads earlier history, and forks a selected entry", async () => {
   const { root, runtime, project, selection, input, faux } = await openFixture();
@@ -417,6 +474,7 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
   const { root, runtime, project, selection, input, faux } = await openFixture();
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
+  const first = { ...input, requestId: randomUUID() };
   try {
     faux.setResponses([
       async () => {
@@ -427,8 +485,9 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
       fauxAssistantMessage("Current run finished."),
       fauxAssistantMessage("Follow-up finished."),
     ]);
-    await runtime.send(input);
+    await runtime.send(first);
     await started.promise;
+    const queuedAt = Date.now();
     const followUp = { ...input, delivery: "follow-up" as const, requestId: randomUUID(), text: "Next run." };
     const steer = { ...input, delivery: "steer" as const, requestId: randomUUID(), text: "Steer this run." };
     await runtime.send(followUp);
@@ -436,12 +495,22 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
     await runtime.send(steer);
     const queued = await waitForView(runtime, selection, view => view.queued?.length === 2);
     assert.deepEqual(queued.queued?.map(item => item.delivery), ["follow-up", "steer"]);
+    await new Promise(resolve => setTimeout(resolve, 80));
     release.resolve();
-    const completed = await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Follow-up finished."));
+    const completed = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Follow-up finished.")));
     assert.deepEqual(
       completed.messages.filter(message => message.role === "user").map(message => message.requestId),
-      [undefined, steer.requestId, followUp.requestId],
+      [first.requestId, steer.requestId, followUp.requestId],
     );
+    const firstMessage = completed.messages.find(message => message.requestId === first.requestId)!;
+    const steerMessage = completed.messages.find(message => message.requestId === steer.requestId)!;
+    const followUpMessage = completed.messages.find(message => message.requestId === followUp.requestId)!;
+    const currentAnswer = answerWithTiming(completed, "Current run finished.")!;
+    const followUpAnswer = answerWithTiming(completed, "Follow-up finished.")!;
+    assert.ok(currentAnswer.durationMs! >= steerMessage.timestamp! - firstMessage.timestamp!, "Steering does not reset the interaction's start.");
+    assert.ok(followUpMessage.timestamp! - queuedAt >= 60, "A queued message gets its native timestamp when placed.");
+    assert.ok(followUpAnswer.durationMs! < followUpMessage.timestamp! - queuedAt, "Follow-up timing excludes its queue wait.");
+    assert.equal(completed.messages.filter(message => message.durationMs !== undefined).length, 2);
     assert.equal(completed.queued, undefined);
     await assert.rejects(runtime.send({ ...steer, requestId: randomUUID() }), /idle/i);
   } finally {

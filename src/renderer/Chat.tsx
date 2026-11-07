@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { ImagePreview } from './ImagePreview';
+import { MessageFooter } from './MessageFooter';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
@@ -133,10 +134,7 @@ const Message = memo(function Message({ message, onReview, onFork, toolDisclosur
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
-      {message.role === 'assistant' && onFork && entryId !== undefined && <button type="button" className="icon-button message-fork"
-        onClick={() => onFork(entryId)} title="Start a new session from this message" aria-label="Branch from here">
-        <Icon name="fork" width={14} height={14} />
-      </button>}
+      <MessageFooter message={message} onFork={onFork} />
     </article>
   );
 });

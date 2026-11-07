@@ -6,8 +6,8 @@ import { InMemoryCredentialStore, type CredentialStore } from "@earendil-works/p
 import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
-  AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, Harness, section,
-  type Conversation, type ConversationId, type EntryId, type InputSubmissionDraft, type TranscriptView,
+  AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, section,
+  type Conversation, type ConversationId, type EntryId, type InputSubmissionDraft, type TaskId, type TranscriptView,
 } from "@earendil-works/pi-durable";
 import { err, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -20,13 +20,14 @@ import type {
 } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
-import { chatProjection, inputEntryKind } from "./chat-view.js";
+import { chatProjection, inputEntryKind, type CompletedRunTiming } from "./chat-view.js";
 import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
 import { readQueuedInput, updateQueuedInput } from "./queued-input.js";
 import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
+import { completedRunTiming } from "./run-timing.js";
 import { reviewWrites } from "./write-review.js";
 
 const context = BACKGROUND_CONTEXT;
@@ -566,12 +567,41 @@ export class Runtime {
       (query, limit, loadContext) => conversation.entries(query, limit, undefined, loadContext),
     );
     const project = chatProjection();
-    let latest: TranscriptView;
+    const completedRuns = new Map<number, CompletedRunTiming>();
+    const timingReads = new Map<number, Promise<void>>();
+    const harness = this.harness;
+    let latest: TranscriptView | undefined;
     let stopped = false;
+    async function publishTiming(task: NonNullable<Awaited<ReturnType<typeof harness.getTask>>>) {
+      if (stopped) return;
+      const timing = await completedRunTiming(harness, task, scope.context);
+      if (stopped || !timing) return;
+      completedRuns.set(task.id, timing);
+      if (latest) emit(project(latest, completedRuns));
+    }
+    function readTimings(view: TranscriptView) {
+      const reads = [];
+      for (const item of view.items) {
+        if (item.kind !== "entry" || item.entry.kind !== "pi.assistant" || item.entry.byTaskId === undefined) continue;
+        const id = item.entry.byTaskId;
+        let read = timingReads.get(id);
+        if (!read) {
+          read = harness.getTask(id as TaskId, scope.context).then(async task => {
+            if (!task || task.kind !== GenerationTask.definition.name) return;
+            if (task.state.status === "terminal") await publishTiming(task);
+            else void harness.waitForTask(id as TaskId, scope.context).then(publishTiming).catch(() => {});
+          }).catch(() => {});
+          timingReads.set(id, read);
+        }
+        reads.push(read);
+      }
+      return Promise.all(reads);
+    }
     function publish(view: TranscriptView) {
       if (stopped || view === latest) return;
       latest = view;
-      emit(project(view));
+      emit(project(view, completedRuns));
+      void readTimings(view);
     }
     try {
       const initial = watch.value;
@@ -588,7 +618,9 @@ export class Runtime {
           transcript.merge({ ...initial, before, entries: [...preceding, ...following.items] });
         }
       }
-      publish(transcript.merge(initial));
+      const first = transcript.merge(initial);
+      await readTimings(first);
+      publish(first);
       watch.start(async call => {
         if (call.kind === "value") publish(transcript.merge(call.value));
       });
@@ -616,7 +648,7 @@ export class Runtime {
       },
       async fillGap(gap) {
         if (stopped) return;
-        const item = latest.items.find(candidate => candidate.kind === "gap"
+        const item = latest?.items.find(candidate => candidate.kind === "gap"
           && candidate.after < gap.upTo && gap.after < candidate.upTo);
         if (item?.kind !== "gap") return;
         await transcript.fillGap(item, scope.context);

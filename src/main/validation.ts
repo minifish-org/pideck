@@ -71,6 +71,7 @@ function chatInput(value: Record<string, unknown>): boolean {
 }
 
 const validators = {
+  "clipboard:write": (value) => object(value) && string(value.text, 2_000_000),
   "project:list": empty,
   "project:open": empty,
   "project:remove": (value) => object(value) && project(value),

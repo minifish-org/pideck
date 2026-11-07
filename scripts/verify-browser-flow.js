@@ -47,6 +47,24 @@ async page => {
   }
   const projectRow = nav.getByRole("button", { name: "Sample project", exact: true });
   const newSession = nav.getByRole("button", { name: "New session in Sample project", exact: true });
+  const leftDivider = page.getByRole("separator", { name: "Resize left sidebar", exact: true });
+  const originalNavigationWidth = (await nav.boundingBox()).width;
+  const leftHandle = await leftDivider.boundingBox();
+  await page.mouse.move(leftHandle.x + leftHandle.width / 2, leftHandle.y + leftHandle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(leftHandle.x + leftHandle.width / 2 + 48, leftHandle.y + leftHandle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForFunction(width => document.getElementById("workspace-navigation").getBoundingClientRect().width > width + 30, originalNavigationWidth);
+  const draggedNavigationWidth = (await nav.boundingBox()).width;
+  await leftDivider.press("ArrowLeft");
+  await page.waitForFunction(width => Math.abs(document.getElementById("workspace-navigation").getBoundingClientRect().width - width) <= 1,
+    draggedNavigationWidth - 16);
+  const preferredNavigationWidth = (await nav.boundingBox()).width;
+  if (!await nav.evaluate(navigation => {
+    const edge = navigation.getBoundingClientRect().right;
+    return Math.abs(document.querySelector(".titlebar-leading").getBoundingClientRect().right - edge) <= 1
+      && Math.abs(document.querySelector(".workspace").getBoundingClientRect().left - edge) <= 1;
+  })) throw new Error("Resizing the left sidebar misaligned its header or workspace.");
   await projectRow.hover();
   await newSession.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
@@ -113,6 +131,13 @@ async page => {
   await prompt.fill("Update and verify the status.");
   await page.reload();
   await page.waitForFunction(() => document.querySelector("#prompt")?.value === "Update and verify the status.");
+  if (Math.abs((await nav.boundingBox()).width - preferredNavigationWidth) > 1) throw new Error("Reloading lost the left sidebar width.");
+  await leftDivider.press("Enter");
+  await page.waitForFunction(width => Math.abs(document.getElementById("workspace-navigation").getBoundingClientRect().width - width) <= 1,
+    originalNavigationWidth);
+  if (await page.evaluate(() => JSON.parse(localStorage.getItem("pideck.workspace.v1")).navigationWidth) !== undefined) {
+    throw new Error("Resetting the left sidebar kept its saved manual width.");
+  }
   if (await sessionCount() !== 0) throw new Error("Writing an unsent draft created a session.");
 
   const model = page.getByRole("button", { name: "Model", exact: true });
@@ -485,6 +510,7 @@ async page => {
   await queue.getByRole("listitem").nth(1).getByText("List follow-up work.", { exact: true }).waitFor();
   if (await page.locator(".queued-messages [role=alert]").count()) throw new Error("An invalid drop reached the host.");
   const successfulCommand = page.locator(".tool-card summary").filter({ hasText: "npm test" });
+  if (await page.locator(".message-duration").count()) throw new Error("A running interaction already displays a completed working time.");
   await successfulCommand.press("Enter");
   await page.getByText("Running the status check…", { exact: true }).waitFor({ state: "hidden" });
   await successfulCommand.press("Enter");
@@ -566,7 +592,33 @@ async page => {
     if (!aligned) throw new Error("User messages should sit on the right and assistant output should start on the left.");
   }
   await expectTranscriptLayout();
-  await expectColors(userMessage, { "background-color": "rgb(61, 68, 77)", "border-width": "0px" });
+  await expectColors(userMessage.locator(".message-content"), { "background-color": "rgb(61, 68, 77)", "border-width": "0px" });
+  for (const [message, timestamp] of [[userMessage, Date.parse("2026-11-07T05:04:00Z")],
+    [assistantMessage, Date.parse("2026-11-07T05:05:35Z")]]) {
+    const time = message.locator(".message-footer time");
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test((await time.textContent()).trim())
+      || await time.getAttribute("datetime") !== new Date(timestamp).toISOString()) {
+      throw new Error("Message timestamps must retain their source time and display only 24-hour HH:mm.");
+    }
+    if (!await message.evaluate(article => {
+      const content = article.querySelector(".message-content").getBoundingClientRect();
+      const footer = article.querySelector(".message-footer").getBoundingClientRect();
+      return footer.top >= content.bottom - 1;
+    })) throw new Error("Message controls and timestamp do not sit on a separate row below the content.");
+    await message.getByRole("button", { name: "Copy message", exact: true }).click();
+    await message.getByRole("button", { name: "Message copied", exact: true }).waitFor();
+    const copied = await page.evaluate(() => document.body.dataset.copiedText);
+    if (message === userMessage ? copied !== "Update and verify the status."
+      : !copied?.includes("I updated the status and checked the result.") || !copied.includes("Checks passed.") || copied.includes("Worked for")) {
+      throw new Error("Copying a message included controls or lost its text/tool result.");
+    }
+  }
+  const duration = assistantMessage.locator(".message-duration");
+  if (await page.locator(".message-duration").count() !== 1
+    || await duration.getAttribute("aria-label") !== "Total working time"
+    || (await duration.textContent()).trim() !== "Worked for 1m 35s") {
+    throw new Error("The finished interaction should display its total working time exactly once.");
+  }
   await userMessage.hover();
   if (await page.getByRole("article", { name: "You", exact: true })
     .getByRole("button", { name: "Branch from here" }).count()) {
@@ -574,8 +626,9 @@ async page => {
   }
   const branchMessage = assistantMessage.getByRole("button", { name: "Branch from here" });
   await page.mouse.move(0, 0);
-  if (!await branchMessage.evaluate(button => getComputedStyle(button).opacity === "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
-    throw new Error("The message branch action should be a hidden icon until hover or focus.");
+  if (!await branchMessage.evaluate(button => Boolean(button.closest(".message-footer"))
+    && getComputedStyle(button).opacity !== "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
+    throw new Error("The assistant branch action should be a visible icon in the footer below its output.");
   }
   await branchMessage.focus();
   if (await branchMessage.evaluate(button => getComputedStyle(button).opacity) !== "1") {

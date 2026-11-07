@@ -1,0 +1,4 @@
+.workspace-divider.navigation-divider {
+  inset-inline-start: calc(var(--nav-width) - 5px);
+  inset-inline-end: auto;
+}

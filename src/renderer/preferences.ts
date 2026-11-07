@@ -6,6 +6,7 @@ type Preferences = {
   projectId?: string;
   sessions: Record<string, string>;
   navigation: boolean;
+  navigationWidth?: number;
   model?: string;
   reading: Record<string, Record<string, ReadingPosition>>;
   reviewPaths: Record<string, string>;
@@ -39,6 +40,8 @@ export function readPreferences(): Preferences {
       projectId: typeof value.projectId === 'string' ? value.projectId : undefined,
       sessions,
       navigation: value.navigation !== false,
+      navigationWidth: typeof value.navigationWidth === 'number' && Number.isFinite(value.navigationWidth)
+        && value.navigationWidth >= 180 && value.navigationWidth <= 400 ? value.navigationWidth : undefined,
       model: typeof value.model === 'string' ? value.model : undefined,
       reading: Object.fromEntries(Object.entries(record(value.reading))
         .filter(([id]) => identifier.test(id))

@@ -8,6 +8,7 @@ import { SessionName } from './SessionName';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
 import { WorkspaceDivider } from './WorkspaceDivider';
+import { NavigationDivider } from './NavigationDivider';
 import { WorkspacePanelButtons } from './WorkspacePanelButtons';
 import { acceptStartedDraft, emptyDraft, newSessionDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
 import type { Draft, ReadingPosition } from './preferences';
@@ -155,7 +156,8 @@ function Desktop() {
   useEffect(() => {
     const viewport = window.matchMedia(compactNavigationQuery);
     function update() {
-      if (viewport.matches && navigationPanel.current?.contains(document.activeElement)) {
+      if (viewport.matches && (navigationPanel.current?.contains(document.activeElement)
+        || document.activeElement?.classList.contains('navigation-divider'))) {
         document.getElementById('toggle-navigation')?.focus();
       }
       setCompactNavigation(viewport.matches);
@@ -344,7 +346,7 @@ function Desktop() {
       setDrawerRequested(true);
       return;
     }
-    if (showNavigation && document.activeElement?.closest('.navigation')) {
+    if (showNavigation && document.activeElement?.closest('.navigation, .navigation-divider')) {
       document.getElementById('toggle-navigation')?.focus();
     }
     setPreferences((current) => ({ ...current, navigation: !current.navigation }));
@@ -943,6 +945,9 @@ function Desktop() {
             </div>}
           </aside>
         )}
+        <NavigationDivider sizingTarget={app} visible={dockedNavigation} preferred={preferences.navigationWidth}
+          onResize={navigationWidth => setPreferences(current => current.navigationWidth === navigationWidth
+            ? current : { ...current, navigationWidth })} />
         <section className={`workspace${toolsDocked ? ' workspace--tools-docked' : ''}${toolsOverlay ? ' workspace--tools-overlay' : ''}`} aria-label="Workspace"
           ref={workspace} inert={drawerOpen}>
           {error && <div className="notice" id="workspace-notice" tabIndex={-1} role="alert"><Icon name="alert" /><span>{error}</span>

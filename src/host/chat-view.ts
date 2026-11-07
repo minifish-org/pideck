@@ -7,6 +7,7 @@ export const inputEntryKind = "pideck.input";
 
 type ToolBlock = Extract<ChatBlock, { type: "tool" }>;
 type ToolPosition = { message: number; block: number };
+export type CompletedRunTiming = { entryId: number; durationMs: number };
 const inlineImageBudget = 16_000_000;
 const inlinePatchLimit = 512_000;
 
@@ -95,6 +96,7 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
   const messages: ChatMessage[] = [];
   const tools = new Map<string, ToolPosition>();
   const gaps: ChatGap[] = [];
+  const assistantEntries = new Map<number, { message: number; taskId: number }>();
   let firstUnplacedGap = 0;
   function push(message: ChatMessage) {
     for (const gap of gaps.slice(firstUnplacedGap)) gap.beforeMessageId = message.id;
@@ -115,7 +117,8 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
       const id = `${entry.id}:${index}`;
       if (message.role === "user") {
         const requestId = entry.kind === inputEntryKind ? inputRequestId(entry.data) : undefined;
-        push({ id, entryId: entry.id, role: "user", blocks: userBlocks(message.content), ...(requestId ? { requestId } : {}) });
+        push({ id, entryId: entry.id, role: "user", timestamp: message.timestamp,
+          blocks: userBlocks(message.content), ...(requestId ? { requestId } : {}) });
       } else if (message.role === "assistant") {
         const blocks = assistantBlocks(message);
         const error = message.stopReason === "length" ? "The model reached its output limit."
@@ -126,8 +129,9 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
         }
         // Upstream permits fork after any visible entry. If a provider response
         // was interrupted before becoming usable, offer the preceding entries.
+        if (entry.byTaskId !== undefined) assistantEntries.set(entry.id, { message: messages.length, taskId: entry.byTaskId });
         push({
-          id, role: "assistant", blocks,
+          id, role: "assistant", timestamp: message.timestamp, blocks,
           ...(message.stopReason === "error" || message.stopReason === "aborted" ? {} : { entryId: entry.id }),
           ...(error ? { error } : {}),
         });
@@ -139,7 +143,7 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
         } else {
           const tool: ToolBlock = { type: "tool", id: message.toolCallId, name: message.toolName, status: "pending" };
           applyToolResult(tool, message);
-          push({ id, role: "assistant", blocks: [tool] });
+          push({ id, role: "assistant", timestamp: message.timestamp, blocks: [tool] });
         }
       }
     }
@@ -157,7 +161,7 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
   }
   limitInlineImages(messages);
   const latest = items.findLast(item => item.kind === "entry");
-  return { messages, tools, gaps, latestEntryId: latest?.entry.id, hasEarlier: items[0]?.kind === "earlier" };
+  return { messages, tools, gaps, assistantEntries, latestEntryId: latest?.entry.id, hasEarlier: items[0]?.kind === "earlier" };
 }
 
 function liveActivity(live: LiveState | undefined): ChatView["activity"] {
@@ -188,13 +192,17 @@ function queuedInputs(inbox: InboxState | undefined): ChatView["queued"] {
 export function chatProjection() {
   let items: TranscriptView["items"] | undefined;
   let committed: ReturnType<typeof projectTranscript>;
-  return (view: TranscriptView): ChatView => {
+  return (view: TranscriptView, completedRuns?: ReadonlyMap<number, CompletedRunTiming>): ChatView => {
     if (items !== view.items) {
       items = view.items;
       committed = projectTranscript(items, view.conversation.parent?.at);
     }
-    const { hasEarlier, gaps, tools, latestEntryId } = committed;
+    const { hasEarlier, gaps, tools, assistantEntries, latestEntryId } = committed;
     const messages = committed.messages.slice();
+    for (const [taskId, timing] of completedRuns ?? []) {
+      const answer = assistantEntries.get(timing.entryId);
+      if (answer?.taskId === taskId) messages[answer.message] = { ...messages[answer.message], durationMs: timing.durationMs };
+    }
     const live = view.docs["pi.live"] as LiveState | undefined;
     const agent = view.docs["pi.agent"] as AgentState | undefined;
     const inbox = view.docs["pi.inbox"] as InboxState | undefined;
@@ -226,7 +234,7 @@ export function chatProjection() {
     const partial = live?.generation?.message;
     if (partial) {
       const blocks = assistantBlocks(partial);
-      if (blocks.length) messages.push({ id: "live-assistant", role: "assistant", blocks });
+      if (blocks.length) messages.push({ id: "live-assistant", role: "assistant", timestamp: partial.timestamp, blocks });
     }
 
     return {

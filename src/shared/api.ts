@@ -82,6 +82,8 @@ export type ChatMessage = {
   id: string;
   entryId?: number;
   requestId?: string;
+  timestamp?: number;
+  durationMs?: number;
   role: "user" | "assistant";
   blocks: ChatBlock[];
   error?: string;
@@ -125,6 +127,7 @@ export type TerminalEvent =
 type WatchRef = Selection & { subscriptionId: string };
 
 export type Commands = {
+  "clipboard:write": [{ text: string }, void];
   "project:list": [undefined, Project[]];
   "project:open": [undefined, Project | null];
   "project:remove": [{ projectId: string }, RemovalResult | null];

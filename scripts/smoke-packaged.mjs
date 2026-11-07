@@ -250,10 +250,19 @@ try {
   const navigation = page.getByRole("complementary", { name: "Workspace navigation" });
   const projectRow = navigation.getByRole("button", { name: "smoke-project", exact: true });
   const projectSessions = navigation.getByRole("list", { name: "smoke-project sessions", exact: true });
+  const leftDivider = page.getByRole("separator", { name: "Resize left sidebar", exact: true });
+  const defaultNavigationWidth = (await navigation.boundingBox()).width;
+  await leftDivider.press("ArrowRight");
+  await page.waitForFunction(width => Math.abs(document.getElementById("workspace-navigation").getBoundingClientRect().width - width) <= 1,
+    defaultNavigationWidth + 16);
   await prompt.fill("Edit example.ts and verify it.");
   await page.reload();
   await projectRow.waitFor();
   await prompt.waitFor();
+  assert.ok(Math.abs((await navigation.boundingBox()).width - defaultNavigationWidth - 16) <= 1);
+  await leftDivider.press("Enter");
+  await page.waitForFunction(width => Math.abs(document.getElementById("workspace-navigation").getBoundingClientRect().width - width) <= 1,
+    defaultNavigationWidth);
   assert.equal(await prompt.inputValue(), "Edit example.ts and verify it.");
   assert.deepEqual(await command("session:list", { projectId }), []);
   await verifyNativeTitlebar(app, page);
@@ -350,6 +359,38 @@ try {
   await page.getByText("Package stream", { exact: true }).waitFor();
   assert.equal(await page.locator(".composer-models .model-summary-thinking").count(), 0);
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
+  const sentMessage = page.getByRole("article", { name: "You", exact: true }).filter({ hasText: "Edit example.ts and verify it." });
+  const finalMessage = page.getByRole("article", { name: "Pideck", exact: true })
+    .filter({ has: page.getByText("Package stream verified with the real coding tools.", { exact: true }) });
+  await finalMessage.locator(".message-duration").waitFor();
+  assert.equal(await page.locator(".message-duration").count(), 1);
+  assert.match((await finalMessage.locator(".message-duration").innerText()).trim(), /^Worked for (?:<1s|[\dhms ]+)$/);
+  for (const message of [sentMessage, finalMessage]) {
+    const time = message.locator(".message-footer time");
+    assert.match((await time.innerText()).trim(), /^(?:[01]\d|2[0-3]):[0-5]\d$/);
+    assert.ok(Number.isFinite(Date.parse(await time.getAttribute("datetime"))));
+    assert.ok(await message.evaluate(article => article.querySelector(".message-footer").getBoundingClientRect().top
+      >= article.querySelector(".message-content").getBoundingClientRect().bottom - 1));
+  }
+  assert.equal(await sentMessage.getByRole("button", { name: "Branch from here" }).count(), 0);
+  assert.equal(await finalMessage.locator(".message-footer").getByRole("button", { name: "Branch from here" }).count(), 1);
+  await app.evaluate(({ clipboard }) => {
+    globalThis.__pideckSmokeCopy = { original: clipboard.writeText, text: undefined };
+    clipboard.writeText = text => { globalThis.__pideckSmokeCopy.text = text; };
+  });
+  try {
+    for (const [message, expected] of [[sentMessage, "Edit example.ts and verify it."],
+      [finalMessage, "Package stream verified with the real coding tools."]]) {
+      await message.getByRole("button", { name: "Copy message", exact: true }).click();
+      await message.getByRole("button", { name: "Message copied", exact: true }).waitFor();
+      assert.equal(await app.evaluate(() => globalThis.__pideckSmokeCopy.text), expected);
+    }
+  } finally {
+    await app.evaluate(({ clipboard }) => {
+      clipboard.writeText = globalThis.__pideckSmokeCopy.original;
+      delete globalThis.__pideckSmokeCopy;
+    });
+  }
   assert.equal(await modelPicker.locator(".model-summary-thinking").count(), 0);
   const shellCard = page.locator(".tool-card").filter({ has: page.locator("summary").filter({ hasText: "cat example.ts" }) });
   assert.equal(await shellCard.locator("summary").getByText('test -z "$AZURE_OPENAI_API_KEY" && cat example.ts', { exact: true }).count(), 1);

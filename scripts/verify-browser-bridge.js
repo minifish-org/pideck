@@ -9,6 +9,7 @@ async page => {
     let activityWatch;
     let nextTaskId = 0;
     let nextQueueId = 2;
+    const messageTime = Date.parse("2026-11-07T05:04:00Z");
     const project = { id: "74de4c42-3a46-4430-873c-9bcb42fdb287", name: "Sample project", directory: "/workspace/sample", createdAt: 1 };
     const secondProject = { id: "5746b747-730d-45df-94c5-717355475784", name: "Other project", directory: "/workspace/other", createdAt: 2 };
     const secondSession = { id: "0c1bd9dc-58bd-4918-92ee-bc30609f0dbd", projectId: secondProject.id, title: "Other task", createdAt: 2, updatedAt: 2 };
@@ -110,6 +111,10 @@ async page => {
         return () => listeners.delete(listener);
       },
       async invoke(command, payload) {
+        if (command === "clipboard:write") {
+          document.body.dataset.copiedText = payload.text;
+          return;
+        }
         if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
           case "project:list": return [...(state.opened ? [project] : []), ...(state.secondOpened ? [secondProject] : [])];
@@ -262,7 +267,7 @@ async page => {
           case "chat:unwatch": watches.delete(payload.subscriptionId); return;
           case "chat:earlier": {
             const view = state.views[payload.sessionId];
-            const old = { id: "old-turn", entryId: 1, role: "user", blocks: [{ type: "text", text: "An earlier coding request." }] };
+            const old = { id: "old-turn", entryId: 1, role: "user", timestamp: messageTime - 60_000, blocks: [{ type: "text", text: "An earlier coding request." }] };
             change(payload.sessionId, { messages: [old, ...view.messages], hasEarlier: false });
             return;
           }
@@ -273,13 +278,13 @@ async page => {
             const existing = state.sessions.find(({ id }) => id === payload.requestId);
             if (existing) return { ...existing };
             const session = addSession(payload.text.split("\n")[0].trim(), undefined, payload.requestId);
-            const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [
+            const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", timestamp: messageTime, blocks: [
               { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
             ] };
             const first = payload.text === "Update and verify the status.";
             const selectedModel = payload.model.id === fixedModel.id ? fixedModel : model;
             if (first && payload.thinking !== "high") throw new Error("Expected the selected thinking level.");
-            const messages = first ? [prompt, { id: "reply", role: "assistant", blocks: [
+            const messages = first ? [prompt, { id: "reply", role: "assistant", timestamp: messageTime + 500, blocks: [
               { type: "tool", name: "bash", id: "bash", status: "running", output: "Running the status check…", arguments: { command: "npm test" } },
             ] }] : [prompt];
             change(session.id, { messages, status: "running", canSteerQueued: first, model: selectedModel, thinking: payload.thinking });
@@ -310,7 +315,7 @@ async page => {
                 state.sessions.find(({ id }) => id === sessionId).title = payload.text.split("\n")[0].trim();
                 delete state.untitled[sessionId];
               }
-              const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", blocks: [
+              const prompt = { id: "prompt", entryId: 2, requestId: payload.requestId, role: "user", timestamp: messageTime, blocks: [
                 { type: "text", text: payload.text }, ...(payload.images ?? []).map(image => ({ type: "image", ...image })),
               ] };
               // The host accepted the input but its IPC reply was lost. The next
@@ -370,7 +375,7 @@ async page => {
                 ["follow-up", "Report the final verification."],
               ])) throw new Error("Queue operations did not leave the expected order and content.");
               window.addEventListener("pideck-fixture-finish-queue", () => {
-                const reply = { id: "reply", entryId: 8, role: "assistant", blocks: [
+                const reply = { id: "reply", entryId: 8, role: "assistant", timestamp: messageTime + 95_000, durationMs: 95_000, blocks: [
                   { type: "text", text: "I updated the status and checked the result." },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "edit", id: "large-edit", path: "second.ts", status: "done", patch: largePatch },

@@ -8,6 +8,14 @@ const projectId = randomUUID();
 const sessionId = randomUUID();
 const terminalId = randomUUID();
 
+test("clipboard writes accept bounded plain text and reject malformed native input", () => {
+  assert.equal(isCommand("clipboard:write"), true);
+  assert.equal(validPayload("clipboard:write", { text: "A message\nwith code and 中文." }), true);
+  for (const input of [undefined, null, "text", {}, { text: 4 }, { text: "bad\0text" }, { text: "x".repeat(2_000_001) }]) {
+    assert.equal(validPayload("clipboard:write", input), false);
+  }
+});
+
 test("IPC rejects unknown commands and malformed payloads", () => {
   assert.equal(isCommand("terminal:open"), true);
   for (const command of ["__proto__", "constructor", "project:trust", "project:inspect", "project:add", "owner:close", null]) {
