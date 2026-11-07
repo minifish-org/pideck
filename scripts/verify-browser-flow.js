@@ -161,10 +161,10 @@ async page => {
   });
   if (!fixedLevelFits) throw new Error("The long model name clipped its menu chevron.");
 
-  const pasteImage = () => prompt.evaluate(async textarea => {
+  const pasteImage = (width = 640, height = 360) => prompt.evaluate(async (textarea, size) => {
     const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 360;
+    canvas.width = size.width;
+    canvas.height = size.height;
     const context = canvas.getContext("2d");
     context.fillStyle = "#0d1117";
     context.fillRect(0, 0, canvas.width, canvas.height);
@@ -180,10 +180,25 @@ async page => {
     const clipboard = new DataTransfer();
     clipboard.items.add(new File([png], "pasted-preview.png", { type: "image/png" }));
     textarea.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
-  });
+  }, { width, height });
   const attachmentPreview = composer.getByRole("button", { name: "Preview attached image 1", exact: true });
   const removeAttachment = composer.getByRole("button", { name: "Remove attached image 1", exact: true });
   const imagePreview = page.getByRole("dialog", { name: "Image preview", exact: true });
+  const expectPreviewImageSize = async (width, height) => {
+    const fits = await imagePreview.getByRole("img").evaluate(async (image, natural) => {
+      await image.decode();
+      const dialog = image.closest("dialog");
+      const style = getComputedStyle(dialog);
+      const availableWidth = dialog.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const availableHeight = dialog.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const scale = Math.min(1, availableWidth / natural.width, availableHeight / natural.height);
+      const bounds = image.getBoundingClientRect();
+      return image.naturalWidth === natural.width && image.naturalHeight === natural.height
+        && Math.abs(bounds.width - natural.width * scale) < 1
+        && Math.abs(bounds.height - natural.height * scale) < 1;
+    }, { width, height });
+    if (!fits) throw new Error(`The ${width}×${height} image was enlarged or did not shrink proportionally to fit the window.`);
+  };
   await pasteImage();
   await attachmentPreview.waitFor();
   await removeAttachment.waitFor();
@@ -194,6 +209,7 @@ async page => {
   await attachmentPreview.focus();
   await page.keyboard.press("Enter");
   await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
+  await expectPreviewImageSize(640, 360);
   const windowPreview = await imagePreview.evaluate(dialog => {
     const bounds = dialog.getBoundingClientRect();
     const close = dialog.querySelector("button").getBoundingClientRect();
@@ -225,6 +241,15 @@ async page => {
   await removeAttachment.click();
   await attachmentPreview.waitFor({ state: "detached" });
   if (await imagePreview.count()) throw new Error("Removing an image opened its preview.");
+  for (const [width, height] of [[2400, 600], [600, 2400]]) {
+    await pasteImage(width, height);
+    await attachmentPreview.click();
+    await expectPreviewImageSize(width, height);
+    await page.keyboard.press("Escape");
+    await imagePreview.waitFor({ state: "hidden" });
+    await removeAttachment.click();
+    await attachmentPreview.waitFor({ state: "detached" });
+  }
   await pasteImage();
   await attachmentPreview.waitFor();
   await model.press("ArrowDown");

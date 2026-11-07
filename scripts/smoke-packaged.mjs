@@ -314,16 +314,19 @@ try {
     await previewImage.click();
     const imagePreview = page.getByRole("dialog", { name: "Image preview", exact: true });
     await imagePreview.getByRole("img", { name: "Attached image 1", exact: true }).waitFor();
-    assert.ok(await imagePreview.evaluate(dialog => {
+    assert.ok(await imagePreview.evaluate(async dialog => {
       const rect = dialog.getBoundingClientRect();
       const close = dialog.querySelector("button").getBoundingClientRect();
       const imageElement = dialog.querySelector("img");
+      await imageElement.decode();
       const image = imageElement.getBoundingClientRect();
       return rect.left === 0 && rect.top === 0 && rect.width === innerWidth && rect.height === innerHeight
         && close.top >= 8 && close.top <= 24 && innerWidth - close.right >= 8 && innerWidth - close.right <= 24
         && getComputedStyle(dialog).backgroundColor === "rgba(0, 0, 0, 0)"
         && getComputedStyle(dialog, "::backdrop").backgroundColor === "rgba(0, 0, 0, 0)"
         && image.left >= 0 && image.top >= 0 && image.right <= innerWidth && image.bottom <= innerHeight
+        && imageElement.naturalWidth === 320 && imageElement.naturalHeight === 180
+        && image.width === 320 && image.height === 180
         && getComputedStyle(imageElement).objectFit === "contain";
     }));
     await page.keyboard.press("Escape");
