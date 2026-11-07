@@ -58,7 +58,7 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
     await writeFile(join(source, path), contents);
   }
   try {
-    for (const name of ['@playwright/cli', 'playwright', 'playwright-core']) {
+    for (const name of ['@playwright/cli', 'playwright', 'playwright-core', 'npm']) {
       await cp(fileURLToPath(new URL(`../node_modules/${name}`, import.meta.url)), join(source, 'node_modules', name),
         { recursive: true, verbatimSymlinks: true });
     }
@@ -67,13 +67,12 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
     const browsers = JSON.parse(await readFile(join(source, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')).browsers;
     const chromium = browsers.find((browser: { name: string }) => browser.name === 'chromium').revision;
     const ffmpeg = browsers.find((browser: { name: string }) => browser.name === 'ffmpeg').revision;
-    const manifest = { schema: 1, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.4',
+    const manifest = { schema: 2, platform: 'darwin', arch: 'arm64', runtime: 'electron', electronVersion: '45.2.3', npmVersion: '10.9.9',
       cliVersion: cli.version, playwrightVersion: core.version, browserRevision: chromium,
-      node: 'node/bin/node', cli: 'node_modules/@playwright/cli/playwright-cli.js',
+      npm: 'node_modules/npm/bin/npm-cli.js', cli: 'node_modules/@playwright/cli/playwright-cli.js',
       chromium: `browsers/chromium-${chromium}/chrome-fixture/browser` };
     await file('manifest.json', JSON.stringify(manifest));
-    for (const path of [manifest.node, manifest.chromium, 'node/LICENSE', 'NOTICE.txt', 'node/bin/npm', 'node/bin/npx',
-      'node/lib/node_modules/npm/bin/npm-cli.js', 'node/lib/node_modules/npm/bin/npx-cli.js',
+    for (const path of [manifest.chromium, 'NOTICE.txt',
       `browsers/chromium-${chromium}/chrome-fixture/ABOUT`, `browsers/ffmpeg-${ffmpeg}/ffmpeg-mac`,
       `browsers/ffmpeg-${ffmpeg}/COPYING.LGPLv2.1`]) await file(path);
     await validateAutomationResources(source);
@@ -84,8 +83,12 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
       projectDir: temporary, platform: { nodeName: 'darwin' }, getResourcesDir: () => resources,
     } });
     await validateAutomationResources(published);
+    await assert.rejects(readFile(join(published, 'node', 'bin', 'node')), { code: 'ENOENT' });
     assert.equal(await readFile(join(published, manifest.cli), 'utf8'), await readFile(join(source, manifest.cli), 'utf8'));
-    await rm(join(published, 'node/lib/node_modules/npm'), { recursive: true });
-    await assert.rejects(validateAutomationResources(published), /missing or empty: node\/lib\/node_modules\/npm/);
+    await mkdir(join(published, 'node'));
+    await assert.rejects(validateAutomationResources(published), /independent Node runtime/);
+    await rm(join(published, 'node'), { recursive: true });
+    await rm(join(published, 'node_modules/npm'), { recursive: true });
+    await assert.rejects(validateAutomationResources(published), /missing or empty: node_modules\/npm/);
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });

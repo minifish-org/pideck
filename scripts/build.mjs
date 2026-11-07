@@ -21,8 +21,9 @@ await Promise.all([
     target: "node22",
   }),
   build({
-    entryPoints: ["src/automation/cli.ts"],
-    outfile: "dist/automation/cli.cjs",
+    entryPoints: ["src/automation/cli.ts", "src/automation/node-prelude.ts"],
+    outdir: "dist/automation",
+    outExtension: { ".js": ".cjs" },
     platform: "node",
     format: "cjs",
     packages: "external",

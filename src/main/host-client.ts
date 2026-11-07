@@ -27,7 +27,7 @@ export class HostClient {
     private onEvent: (owner: number, event: HostEvent) => void,
     private onRestart: () => void,
     private onDisconnect: (message: string) => void,
-    private automationDirectory?: string,
+    private automation?: { resourcesDirectory: string; electronExecutable: string },
   ) {}
 
   start(): void {
@@ -119,7 +119,7 @@ export class HostClient {
     void this.vault.hasSavedCredentials().then(hasSavedCredentials => {
       if (this.process === child && !this.stopping) {
         this.post(child, { type: "start", dataDir: this.dataDir, hasSavedCredentials, lifetimeId: this.lifetimeId,
-          closedWindows: [...this.closedWindows], automationDirectory: this.automationDirectory });
+          closedWindows: [...this.closedWindows], automation: this.automation });
       }
     });
   }

@@ -5,6 +5,7 @@ export type AutomationProfile = {
   conversationId: string;
   projectDirectory: string;
   node: string;
+  prelude: string;
   cli: string;
   chromium: string;
   browsers: string;
@@ -33,5 +34,9 @@ export function cliEnvironment(profile: AutomationProfile, source: NodeJS.Proces
     NO_UPDATE_NOTIFIER: '1',
     PLAYWRIGHT_BROWSERS_PATH: profile.browsers,
     PLAYWRIGHT_CLI_SESSION: profile.session,
+    ELECTRON_RUN_AS_NODE: '1',
+    // Node parses this environment value itself; JSON quoting preserves spaces,
+    // quotes and Windows backslashes without involving the shell.
+    NODE_OPTIONS: [source.NODE_OPTIONS, `--require=${JSON.stringify(profile.prelude)}`].filter(Boolean).join(' '),
   };
 }

@@ -328,7 +328,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
       return result.promise;
     } : undefined);
     void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows,
-      data.automationDirectory ? { resourcesDirectory: data.automationDirectory, stateDirectory: join(data.dataDir, "automation") } : undefined).then(opened => {
+      data.automation ? { ...data.automation, stateDirectory: join(data.dataDir, "automation") } : undefined).then(opened => {
       runtime = opened;
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
       send({ type: "ready" });

@@ -42,12 +42,12 @@
     "electron-builder": "26.18.0",
     "esbuild": "^0.28.0",
     "lucide-react": "1.70.0",
+    "npm": "10.9.9",
     "playwright": "1.65.0-alpha-2026-10-30",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "tar": "7.5.22",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "8.3.6"
@@ -60,6 +60,10 @@
     },
     "beforePack": "scripts/package-assets.mjs",
     "afterPack": "scripts/publish-assets.mjs",
+    "electronFuses": {
+      "runAsNode": true,
+      "enableNodeOptionsEnvironmentVariable": true
+    },
     "files": [
       "dist/**/*",
       "package.json"
@@ -72,7 +76,8 @@
     ],
     "asarUnpack": [
       "**/node_modules/node-pty/**/*",
-      "dist/automation/cli.cjs"
+      "dist/automation/cli.cjs",
+      "dist/automation/node-prelude.cjs"
     ],
     "mac": {
       "category": "public.app-category.developer-tools"

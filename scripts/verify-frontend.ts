@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -24,8 +25,10 @@ const fixture = fauxRuntime(data);
 const targetOS = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : process.platform;
 const runtime = await fixture.open(undefined, undefined, {
   resourcesDirectory: resolve("release", "automation-assets", `${targetOS}-${process.arch}`),
+  electronExecutable: createRequire(import.meta.url)("electron") as string,
   stateDirectory: join(data, "automation"),
   launcherPath: resolve("dist", "automation", "cli.cjs"),
+  preludePath: resolve("dist", "automation", "node-prelude.cjs"),
 });
 
 try {
