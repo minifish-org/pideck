@@ -75,6 +75,7 @@
       "dist/automation/cli.cjs"
     ],
     "mac": {
+      "icon": "build/pideck.icns",
       "category": "public.app-category.developer-tools"
     },
     "win": {
