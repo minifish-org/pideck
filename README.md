@@ -83,7 +83,7 @@ Packaged Pideck includes a fixed standalone Node.js runtime with npm and npx, th
 | Navigate sidebar rows | ↑/↓, then Enter to select |
 | Request removal of a sidebar row | Delete while the row has focus |
 
-Choose **Check for Updates…** from the Pideck menu on macOS or the File menu on Windows and Linux. Pideck compares the installed version with the latest stable GitHub release and opens the release page on request. A private release page opens in your browser so you can use your GitHub sign-in.
+Choose **Check for Updates…** from the Pideck menu on macOS or the File menu on Windows and Linux. Pideck anonymously compares the installed version with a public stable GitHub release and opens the release page on request. Private repositories cannot be checked anonymously; use the offered release page in your signed-in browser to download them manually. Automatic download and installation are not implemented.
 
 ## Verify and package
 

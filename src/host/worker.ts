@@ -364,9 +364,9 @@ port.on("message", ({ data }: { data: ToHost }) => {
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
     const owners = new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()]);
     const detached = Promise.allSettled([...owners].map(owner => closeOwner(owner, owner, true)));
-    terminals.closeAll();
+    const stoppedTerminals = terminals.closeAll();
     auth?.close();
-    void detached.then(() => runtime?.detachQueueEdits())
+    void Promise.allSettled([detached, stoppedTerminals]).then(() => runtime?.detachQueueEdits())
       .then(() => runtime?.close()).finally(() => process.exit(0));
   }
 });

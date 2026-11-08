@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { setImmediate, setTimeout } from "node:timers/promises";
 import { test } from "node:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Terminals } from "../src/host/terminal";
@@ -180,7 +181,10 @@ test("closing a project kills its shells across owners and keeps other projects 
   const readPid = (id: string) => Number(output.get(id)?.match(/\nSHELL_PID:(\d+)\r?\n/)?.[1]);
   await waitFor(() => removed.every(({ terminalId }) => readPid(terminalId) > 0));
   const first = removed[0];
-  terminals.input(first.owner, projectId, first.terminalId, "sleep 15 & printf 'JOB_PID:%s\\n' $!\r");
+  const job = process.platform === "linux"
+    ? `sh -c 'trap "" HUP; printf "\\nJOB_READY:%s\\n" $$; exec sleep 15'`
+    : "sleep 15";
+  terminals.input(first.owner, projectId, first.terminalId, `${job} & printf 'JOB_PID:%s\\n' $!\r`);
   const readJob = () => Number(output.get(first.terminalId)?.match(/\nJOB_PID:(\d+)\r?\n/)?.[1]);
   let jobStopped = false;
   t.after(() => {
@@ -189,7 +193,8 @@ test("closing a project kills its shells across owners and keeps other projects 
   });
   const second = removed[1];
   terminals.input(second.owner, projectId, second.terminalId, "trap '' HUP; printf 'HUP_%s\\n' READY\r");
-  await waitFor(() => readJob() > 0 && Boolean(output.get(second.terminalId)?.includes("HUP_READY")));
+  await waitFor(() => readJob() > 0 && Boolean(output.get(second.terminalId)?.includes("HUP_READY"))
+    && (process.platform !== "linux" || /\nJOB_READY:\d+\r?\n/.test(output.get(first.terminalId) ?? "")));
 
   // Removal also waits for a terminal whose ordinary close already began.
   terminals.close(second.owner, projectId, second.terminalId);
@@ -200,15 +205,29 @@ test("closing a project kills its shells across owners and keeps other projects 
   }
   await closing;
   for (const pid of [...removed.map(({ terminalId }) => readPid(terminalId)), readJob()]) {
-    await waitFor(() => {
-      try { process.kill(pid, 0); return false; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
-    });
+    await waitFor(() => !isRunning(pid));
   }
   jobStopped = true;
   terminals.input(1, "other-project", retained.terminalId, "printf 'STILL_%s\\n' RUNNING\r");
   await waitFor(() => Boolean(output.get(retained.terminalId)?.includes("STILL_RUNNING")));
 });
+
+function isRunning(pid: number) {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const status = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const state = status.slice(status.lastIndexOf(")") + 1).trim().split(/\s+/)[0];
+      // A dead orphan can remain visible until the runner's init reaps it.
+      // Sleeping/runnable/stopped processes must still disappear after cleanup.
+      if (state === "Z" || state === "X") return false;
+    }
+    return true;
+  } catch (error) {
+    if (["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  }
+}
 
 function openTestTerminal(terminals: Terminals, owner: number, projectId: string) {
   const previous = process.env.SHELL;

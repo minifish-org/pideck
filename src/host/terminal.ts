@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
 import { basename, isAbsolute } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node-pty";
 import type { IPty } from "node-pty";
 import type { HostEvent, TerminalEvent, TerminalOpen } from "../shared/api";
 import { terminalEnvironment } from "./shell-env";
+import { captureTerminalSession, terminalSessionGroups } from "./terminal-processes";
 
 type Terminal = {
   owner?: number;
@@ -203,11 +205,9 @@ export class Terminals {
     }
   }
 
-  closeAll() {
-    for (const shells of this.closing.values()) {
-      for (const shell of shells) killShell(shell.pty, "SIGKILL");
-    }
+  async closeAll() {
     for (const [id, terminal] of this.terminals) this.remove(id, terminal, true);
+    await Promise.all([...this.closing.values()].flatMap(shells => [...shells].map(shell => shell.exited)));
   }
 
   private find(owner: number, projectId: string, id: string): Terminal {
@@ -232,11 +232,47 @@ export class Terminals {
   }
 
   private stopShell(projectId: string, pty: IPty, force: boolean) {
-    const { promise, resolve } = Promise.withResolvers<void>();
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    // An explicit restart does not await teardown; project removal/shutdown do.
+    void promise.catch(() => {});
     const pending = this.closing.get(projectId) ?? new Set<ClosingShell>();
     const shell = { pty, exited: promise };
     pending.add(shell);
     this.closing.set(projectId, pending);
+    if (process.platform === "linux") {
+      let exited = false;
+      const exit = Promise.withResolvers<void>();
+      const subscription = pty.onExit(() => {
+        exited = true;
+        subscription.dispose();
+        exit.resolve();
+      });
+      void (async () => {
+        const session = await captureTerminalSession(pty.pid);
+        const signal = async (value: "SIGHUP" | "SIGKILL") => {
+          if (!session) {
+            if (!exited) killShell(pty, value);
+            return;
+          }
+          for (const group of await terminalSessionGroups(session)) {
+            try { process.kill(-group, value); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+          }
+        };
+        await signal(force ? "SIGKILL" : "SIGHUP");
+        if (!force) {
+          // dash does not forward HUP to jobs; jobs may also ignore HUP. Keep
+          // this pass even if the shell exits first, and discover groups afresh.
+          await delay(250);
+          await signal("SIGKILL");
+        }
+        await exit.promise;
+      })().then(resolve, reject).finally(() => {
+        pending.delete(shell);
+        if (!pending.size) this.closing.delete(projectId);
+      });
+      return;
+    }
     const graceful = process.platform !== "win32" && !force;
     // Let interactive shells send SIGHUP to their jobs before forcing teardown.
     const fallback = graceful ? setTimeout(() => killShell(pty, "SIGKILL"), 250) : undefined;
