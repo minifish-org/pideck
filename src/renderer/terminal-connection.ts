@@ -28,6 +28,8 @@ export function connectTerminal(options: {
   let size = initialSize;
   let lastSize = initialSize;
   let inputLength = 0;
+  let releaseRequested = false;
+  let released = false;
   const inputQueue: string[] = [];
   const outOfOrder = new Map<number, TerminalEvent>();
 
@@ -36,12 +38,16 @@ export function connectTerminal(options: {
   }
 
   function stop(release = true) {
+    releaseRequested ||= release;
+    if (releaseRequested && terminalId && !released) {
+      released = true;
+      close(terminalId);
+    }
     if (!active) return;
     active = false;
     unsubscribe();
     inputQueue.length = 0;
     outOfOrder.clear();
-    if (release && terminalId) close(terminalId);
   }
 
   function fail(cause: unknown) {
@@ -133,7 +139,7 @@ export function connectTerminal(options: {
 
   void bridge.invoke("terminal:open", { projectId, ...initialSize }).then(open => {
     if (!active) {
-      close(open.terminalId);
+      if (releaseRequested) close(open.terminalId);
       return;
     }
     terminalId = open.terminalId;

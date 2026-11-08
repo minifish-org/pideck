@@ -63,7 +63,9 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   };
   const template: MenuItemConstructorOptions[] = [];
   if (mac) {
-    app.setAboutPanelOptions({ applicationName: "Pideck", applicationVersion: app.getVersion() });
+    app.setAboutPanelOptions({ applicationName: "Pideck", applicationVersion: app.getVersion(),
+      copyright: "Licensed under AGPL-3.0-only",
+      credits: "Source and license notices: https://github.com/minifish-org/pideck\nThird-party license texts are included in the application package." });
     template.push({ label: "Pideck", submenu: [
       { role: "about", label: "About Pideck" }, updates, separator, settings, separator,
       { role: "hide", label: "Hide Pideck" }, { role: "quit", label: "Quit Pideck" },
@@ -134,6 +136,7 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   Menu.setApplicationMenu(menu);
 
   return {
+    openProject: () => { reopen(); dispatch("open-project"); },
     refreshAppearance: refresh,
     attach(target: BrowserWindow) {
       window = target;

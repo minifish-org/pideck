@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { CredentialVault } from "./credentials";
 import { hostEnvironment } from "./host-env";
-import type { HostEvent } from "../shared/api";
+import type { HostEvent, SessionActivity } from "../shared/api";
 import type { FromHost, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void };
@@ -28,6 +28,7 @@ export class HostClient {
     private onRestart: () => void,
     private onDisconnect: (message: string) => void,
     private automationDirectory?: string,
+    private onActivity?: (items: SessionActivity[], baseline: boolean) => void,
   ) {}
 
   start(): void {
@@ -68,6 +69,9 @@ export class HostClient {
       }
       if (this.stopping) return;
       switch (message.type) {
+        case "activity":
+          this.onActivity?.(message.items, message.baseline);
+          break;
         case "ready":
           clearTimeout(timeout);
           initialized = true;

@@ -4,12 +4,13 @@ import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { Project, Session } from "../shared/api.js";
+import type { Project, Selection, Session, SessionActivity } from "../shared/api.js";
 import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
 type ProjectRow = DirectoryIdentity & Project;
 type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; startPending: 0 | 1 };
+export type StoredSessionActivity = Omit<SessionActivity, keyof Selection> & { conversationId: ConversationId };
 
 function inspectDirectory(path: string): DirectoryIdentity {
   let directory: string;
@@ -75,6 +76,14 @@ export class Metadata {
           startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))
         ) STRICT;
         CREATE INDEX IF NOT EXISTS project_sessions ON sessions(projectId, updatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS session_activity (
+          conversationId INTEGER PRIMARY KEY REFERENCES sessions(conversationId) ON DELETE CASCADE,
+          taskId INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('running', 'finished', 'attention')),
+          settled INTEGER NOT NULL CHECK (settled IN (0, 1)),
+          resultEntryId INTEGER
+        ) STRICT;
 
         CREATE TABLE IF NOT EXISTS model_catalogs (
           provider TEXT PRIMARY KEY,
@@ -222,6 +231,32 @@ export class Metadata {
 
   hasConversation(conversationId: number): boolean {
     return this.db.prepare("SELECT 1 FROM sessions WHERE conversationId = ?").get(conversationId) !== undefined;
+  }
+
+  sessionActivities(): StoredSessionActivity[] {
+    const rows = this.db.prepare("SELECT * FROM session_activity").all();
+    return rows.map(row => ({
+      conversationId: row.conversationId as ConversationId,
+      taskId: row.taskId as number,
+      state: row.state as SessionActivity["state"],
+      settled: Boolean(row.settled),
+      ...(row.resultEntryId === null ? {} : { resultEntryId: row.resultEntryId as number }),
+    }));
+  }
+
+  saveSessionActivity(conversationId: ConversationId, activity: Omit<StoredSessionActivity, "conversationId">): void {
+    // An asynchronous Durable receipt must never recreate a removed session.
+    this.db.prepare(`
+      INSERT INTO session_activity (conversationId, taskId, state, settled, resultEntryId)
+      SELECT conversationId, ?, ?, ?, ? FROM sessions WHERE conversationId = ?
+      ON CONFLICT(conversationId) DO UPDATE SET
+        taskId = excluded.taskId, state = excluded.state,
+        settled = excluded.settled, resultEntryId = excluded.resultEntryId
+    `).run(activity.taskId, activity.state, Number(activity.settled), activity.resultEntryId ?? null, conversationId);
+  }
+
+  clearSessionActivity(conversationId: ConversationId): void {
+    this.db.prepare("DELETE FROM session_activity WHERE conversationId = ?").run(conversationId);
   }
 
   removeEmptyProject(projectId: string): void {

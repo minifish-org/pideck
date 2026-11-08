@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { MenuAction, ModelCatalog, Project, Selection, Session, SessionBranch } from '../shared/api';
+import type { DesktopNavigation, MenuAction, ModelCatalog, Project, Selection, Session, SessionBranch } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
 import { SessionName } from './SessionName';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
+import { useModalOpen } from './modal-visibility';
 import { WorkspaceDivider } from './WorkspaceDivider';
 import { NavigationDivider } from './NavigationDivider';
 import { WorkspacePanelButtons } from './WorkspacePanelButtons';
@@ -97,6 +98,7 @@ function Desktop() {
   const [review, setReview] = useState<Review>();
   const [terminals, setTerminals] = useState<Record<string, boolean>>({});
   const [focusTerminal, setFocusTerminal] = useState<string>();
+  const [resultNavigation, setResultNavigation] = useState(0);
   const [compactNavigation, setCompactNavigation] = useState(() => window.matchMedia(compactNavigationQuery).matches);
   const [drawerRequested, setDrawerRequested] = useState(false);
   const [canSplitWorkspace, setCanSplitWorkspace] = useState(false);
@@ -147,6 +149,7 @@ function Desktop() {
   const toolsOverlay = !canSplitWorkspace && toolsOpen;
   const panelButtonFocus = useRef<string | undefined>(undefined);
   const sessionActivity = useSessionActivity();
+  const nativeModalOpen = useModalOpen();
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
 
@@ -455,6 +458,41 @@ function Desktop() {
     });
   }
 
+  useEffect(() => {
+    let active = true;
+    let received = 0;
+    function navigate(target: DesktopNavigation | null) {
+      if (!active || !target || target.id <= received || removed.current.projects.has(target.project.id)
+        || (target.session && removed.current.sessions.has(target.session.id))) return;
+      received = target.id;
+      const { project, session } = target;
+      setProjects(previous => [project, ...(previous ?? []).filter(item => item.id !== project.id)]);
+      if (session) setSessionLists(previous => ({ ...previous, [project.id]:
+        [session, ...(previous[project.id] ?? []).filter(item => item.id !== session.id)] }));
+      setPreferences(current => ({ ...current, projectId: project.id,
+        sessions: session ? { ...current.sessions, [project.id]: session.id } : current.sessions,
+        reading: session && target.showResult ? { ...current.reading,
+          [project.id]: without(current.reading[project.id] ?? {}, session.id) } : current.reading }));
+      setProjectExpansion(current => ({ ...current, [project.id]: true }));
+      setDrawerRequested(false);
+      setRenaming(undefined);
+      setRemovalBlock(undefined);
+      setSettings(undefined);
+      setReview(undefined);
+      setTerminals(current => current[project.id] ? { ...current, [project.id]: false } : current);
+      setFocusWorkspace(project.id);
+      setError(undefined);
+      if (target.showResult) setResultNavigation(target.id);
+    }
+    const unsubscribe = api.onEvent(event => {
+      if (event.type === 'desktop:navigate') navigate(event.navigation);
+    });
+    // Subscribe before declaring readiness so Finder/notification entry points
+    // cannot fall between the initial view and event subscription.
+    void api.invoke('desktop:ready').then(navigate).catch(() => {});
+    return () => { active = false; unsubscribe(); };
+  }, [api]);
+
   async function openProject() {
     if (opening) return;
     setOpening(true);
@@ -618,7 +656,7 @@ function Desktop() {
   }, [api, forgetRemoval]);
 
   useEffect(() => api.onEvent((event) => {
-    if (event.type !== 'host:restart') return;
+    if (event.type !== 'host:restart' && event.type !== 'host:resume') return;
     refreshWorkspace((current) => current + 1);
     for (const check of removalChecks.current) void checkRemoval(check);
   }), [api, checkRemoval]);
@@ -742,6 +780,12 @@ function Desktop() {
   }
 
   const modalOpen = Boolean(settings);
+  useEffect(() => {
+    const context = { projectId, sessionId, viewing: Boolean(sessionId && !toolsOverlay && !drawerOpen && !nativeModalOpen) };
+    void api.invoke('desktop:context', context).catch(() => {});
+    document.title = [session?.title, project?.name, 'Pideck'].filter(Boolean).join(' — ');
+  }, [api, projectId, sessionId, project?.name, session?.title, toolsOverlay, drawerOpen, nativeModalOpen, workspaceEpoch]);
+
   useEffect(() => {
     const unsubscribe = api.onMenuAction?.(handleMenuAction);
     function handleShortcut(event: KeyboardEvent) {
@@ -994,11 +1038,11 @@ function Desktop() {
                         </button>
                       </EmptyScene>
                 : sessions
-                  ? <Chat key={`${project.id}/${draftId}`} project={project} session={session} models={models}
+                  ? <Chat key={`${project.id}/${draftId}/${resultNavigation}`} project={project} session={session} models={models}
                       modelsReady={modelsReady} modelsError={modelsError} defaultModel={preferences.model}
                       savedConnectionsPending={savedConnectionsPending} onLoadSavedModels={loadSavedModels}
                       draft={projectDrafts?.[draftId] ?? emptyDraft} updateDraft={updateActiveDraft}
-                      activityReceipt={!toolsOverlay && !drawerOpen && !settings && sessionId ? sessionActivity[sessionId] : undefined}
+                      activityReceipt={!toolsOverlay && !drawerOpen && !nativeModalOpen && sessionId ? sessionActivity[sessionId] : undefined}
                       readingPosition={session ? preferences.reading[project.id]?.[session.id] : undefined} onReadingPosition={rememberReadingPosition}
                       onModelChosen={(model) => setPreferences((current) => ({ ...current, model }))}
                       onRetryModels={() => refreshModels((current) => current + 1)}

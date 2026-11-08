@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
 import { setImmediate, setTimeout } from "node:timers/promises";
 import { test } from "node:test";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Terminals } from "../src/host/terminal";
 import { connectTerminal, type TerminalStatus } from "../src/renderer/terminal-connection";
 import type { Commands, HostEvent, Pideck, TerminalEvent } from "../src/shared/api";
@@ -99,6 +102,70 @@ test("native PTY pauses unread output, replays in sequence, and resumes after ac
   assert.throws(() => terminals.input(1, projectId, terminalId, "x"), /no longer open/);
 });
 
+test("detaching a screen drops unsubmitted input without stopping its shell, including an in-flight open", async () => {
+  const opening = Promise.withResolvers<Commands["terminal:open"][1]>();
+  const calls: string[] = [];
+  let listener: ((event: HostEvent) => void) | undefined;
+  const bridge: Pideck = {
+    platform: process.platform,
+    invoke: ((command: string) => {
+      calls.push(command);
+      return command === "terminal:open" ? opening.promise : Promise.resolve();
+    }) as Pideck["invoke"],
+    onEvent: receive => { listener = receive; return () => { listener = undefined; }; },
+  };
+  const connection = connectTerminal({ bridge, projectId, initialSize: { cols: 80, rows: 24 },
+    write: (_data, consumed) => consumed(), status: () => {}, issue: () => {} });
+  connection.input("do not replay me\r");
+  connection.stop(false);
+  opening.resolve({ terminalId, data: "", sequence: 0, exited: false });
+  await setImmediate();
+  assert.equal(listener, undefined);
+  assert.deepEqual(calls, ["terminal:open"]);
+});
+
+test("closing a window keeps its shell and drains bounded output until another owner reattaches", {
+  skip: process.platform === "win32", timeout: 10_000,
+}, async t => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-terminal-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const done = join(directory, "done");
+  const frames: { owner: number; event: TerminalEvent }[] = [];
+  const terminals = new Terminals((owner, event) => {
+    if (event.type === "terminal:data" || event.type === "terminal:exit") frames.push({ owner, event });
+  });
+  t.after(() => terminals.closeAll());
+  const opened = openTestTerminal(terminals, 1, projectId);
+  terminals.input(1, projectId, opened.terminalId, "PIDECK_SESSION=retained; printf '\\nBEFORE_%s:%s\\n' detach $$\r");
+  const output = () => frames.flatMap(({ event }) => event.type === "terminal:data" ? [event.data] : []).join("");
+  await waitFor(() => /\nBEFORE_detach:(\d+)\r?\n/.test(output()));
+  const pid = output().match(/\nBEFORE_detach:(\d+)\r?\n/)![1];
+  terminals.sync(1, projectId, opened.terminalId, frames.at(-1)!.event.sequence);
+  const snapshot = openTestTerminal(terminals, 1, projectId);
+  assert.equal(snapshot.terminalId, opened.terminalId);
+  assert.match(snapshot.data, /BEFORE_detach:/, "acknowledged screen history remains available to a new renderer");
+  terminals.input(1, projectId, opened.terminalId,
+    `yes retained | head -n 180000; printf '\\nDETACHED_%s\\n' DONE; : > '${done.replaceAll("'", "'\\''")}'\r`);
+  terminals.closeOwner(1);
+  const eventCount = frames.length;
+  assert.throws(() => terminals.input(1, projectId, opened.terminalId, "x"), /no longer open/);
+  assert.throws(() => terminals.resize(1, projectId, opened.terminalId, 80, 24), /no longer open/);
+  await waitForAsync(async () => { try { await stat(done); return true; } catch { return false; } });
+  assert.equal(frames.length, eventCount, "a closed owner receives no more output");
+  const attached = openTestTerminal(terminals, 2, projectId);
+  assert.equal(attached.terminalId, opened.terminalId);
+  assert.equal(attached.exited, false);
+  assert.ok(attached.data.length <= 1024 * 1024 + 64);
+  assert.match(attached.data, /Earlier terminal output omitted/);
+  assert.match(attached.data, /DETACHED_DONE/);
+  terminals.input(2, projectId, attached.terminalId, "printf '\\nAFTER_%s:%s:%s\\n' attach $$ \"$PIDECK_SESSION\"\r");
+  await waitFor(() => output().includes(`AFTER_attach:${pid}:retained`));
+  assert.throws(() => terminals.sync(1, projectId, attached.terminalId, 0, true), /no longer open/);
+  terminals.close(2, projectId, attached.terminalId);
+  const replacement = openTestTerminal(terminals, 2, projectId);
+  assert.notEqual(replacement.terminalId, attached.terminalId, "explicit restart creates a new shell");
+});
+
 test("closing a project kills its shells across owners and keeps other projects alive", {
   skip: process.platform === "win32", timeout: 10_000,
 }, async t => {
@@ -161,4 +228,12 @@ async function waitFor(check: () => boolean) {
     await setTimeout(25);
   }
   throw new Error("Timed out waiting for PTY output.");
+}
+
+async function waitForAsync(check: () => Promise<boolean>) {
+  for (let attempt = 0; attempt < 180; attempt++) {
+    if (await check()) return;
+    await setTimeout(25);
+  }
+  throw new Error("Timed out waiting for detached shell completion.");
 }

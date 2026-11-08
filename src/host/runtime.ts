@@ -117,8 +117,13 @@ export class Runtime {
   private closing?: Promise<void>;
   private removing?: Promise<RemovalResult>;
   private readonly admissions = new Set<Promise<unknown>>();
+  private activeAdmissions = 0;
   private readonly starting = new Map<string, { projectId: string; result: Promise<Session> }>();
-  private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id));
+  private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id), {
+    load: () => this.metadata.sessionActivities(),
+    save: (id, activity) => this.metadata.saveSessionActivity(id, activity),
+    clear: id => this.metadata.clearSessionActivity(id),
+  });
   private readonly closedEditOwners = new Set<number>();
   private editsClosing = false;
 
@@ -240,6 +245,9 @@ export class Runtime {
     return this.activities.subscribe(listener);
   }
 
+  sessionActivities() { return this.activities.snapshot(); }
+  hasActiveWork() { return this.activeAdmissions > 0 || this.activities.hasActiveWork(); }
+
   readSessionActivity(selection: Selection, taskId: number) {
     const session = this.metadata.session(selection.projectId, selection.sessionId);
     this.activities.read(session.conversationId, taskId);
@@ -343,7 +351,7 @@ export class Runtime {
   }
 
   send(input: SendChat): Promise<void> {
-    return this.admit(() => this.submitChat(input));
+    return this.admit(() => this.submitChat(input), true);
   }
 
   start(input: StartChat): Promise<Session> {
@@ -360,7 +368,7 @@ export class Runtime {
       this.starting.set(requestId, { projectId: project.id, result });
       try { return await result; }
       finally { this.starting.delete(requestId); }
-    });
+    }, true);
   }
 
   private async submitFirstMessage(input: StartChat, directory: string): Promise<Session> {
@@ -639,12 +647,18 @@ export class Runtime {
     if (this.removing || this.closing) throw new Error("The workspace is finishing a removal.");
   }
 
-  private async admit<T>(operation: () => Promise<T>): Promise<T> {
+  private async admit<T>(operation: () => Promise<T>, startsWork = false): Promise<T> {
     this.assertWritable();
-    const admitted = operation();
-    this.admissions.add(admitted);
-    try { return await admitted; }
-    finally { this.admissions.delete(admitted); }
+    if (startsWork) this.activeAdmissions++;
+    let admitted: Promise<T> | undefined;
+    try {
+      admitted = operation();
+      this.admissions.add(admitted);
+      return await admitted;
+    } finally {
+      if (admitted) this.admissions.delete(admitted);
+      if (startsWork) this.activeAdmissions--;
+    }
   }
 
   async watch(
@@ -785,12 +799,15 @@ export class Runtime {
   }
 
   close(): Promise<void> {
-    this.closing ??= (async () => {
+    // Set the gate before draining accepted writes. A send may still be
+    // validating credentials and not have appeared in the task graph yet.
+    this.closing ??= Promise.resolve().then(async () => {
       await this.removing?.catch(() => {});
+      await Promise.allSettled(this.admissions);
       this.activities.detach();
       try { await this.harness.close(context); }
       finally { await this.automation?.closeAll(); }
-    })().finally(() => this.metadata.close());
+    }).finally(() => this.metadata.close());
     return this.closing;
   }
 }

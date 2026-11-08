@@ -2,13 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { access, cp, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { spawn } from "node:child_process";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { Arch } from "builder-util";
 import { x as extractTar } from "tar";
 import { utils } from "playwright-core/lib/coreBundle";
+import { npmVersion, prepareNpmRuntime } from "./npm-runtime.mjs";
+import { validateInstalledLicenses } from "./licenses.mjs";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
 const nodeVersion = "22.23.4";
@@ -21,18 +22,6 @@ const nodeChecksums = {
   "win32-x64": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
 };
 const targetNames = { darwin: "mac", linux: "linux", win32: "win" };
-
-function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options });
-    let output = "";
-    child.stdout?.on("data", data => { output += data; });
-    child.once("error", reject);
-    child.once("close", (code, signal) => code === 0
-      ? resolve(output)
-      : reject(new Error(`${command} failed (${signal ?? code}).`)));
-  });
-}
 
 async function sha256(path) {
   const hash = createHash("sha256");
@@ -93,8 +82,9 @@ export async function validateAutomationLinks(root) {
 export async function validateAutomationResources(root, expected = {}) {
   await validateAutomationLinks(root);
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
-  if (manifest.schema !== 1 || !Object.hasOwn(nodeChecksums, `${manifest.platform}-${manifest.arch}`)
+  if (manifest.schema !== 2 || !Object.hasOwn(nodeChecksums, `${manifest.platform}-${manifest.arch}`)
     || manifest.nodeVersion !== nodeVersion
+    || manifest.npmVersion !== npmVersion
     || (expected.platform && manifest.platform !== expected.platform)
     || (expected.arch && manifest.arch !== expected.arch)) {
     throw new Error("Published automation manifest does not match the package target or pinned Node.js version.");
@@ -109,13 +99,22 @@ export async function validateAutomationResources(root, expected = {}) {
   }
   const windows = manifest.platform === "win32";
   const npm = windows ? "node/node_modules/npm" : "node/lib/node_modules/npm";
-  for (const entry of [manifest.node, manifest.cli, manifest.chromium, "node/LICENSE", "NOTICE.txt",
+  for (const entry of [manifest.node, manifest.cli, manifest.playwright, "node/LICENSE", "NOTICE.txt",
     `${npm}/bin/npm-cli.js`, `${npm}/bin/npx-cli.js`,
     windows ? "node/npm.cmd" : "node/bin/npm", windows ? "node/npx.cmd" : "node/bin/npx",
+    `${npm}/package.json`, `${npm}/LICENSE`, `${npm}/PIDECK-DISTRIBUTION.txt`,
     "node_modules/@playwright/cli/playwright-cli.js", "node_modules/@playwright/cli/skillCheck.js",
     "node_modules/playwright/cli.js", "node_modules/playwright-core/lib/coreBundle.js",
     "node_modules/playwright-core/lib/utilsBundle.js", "node_modules/playwright-core/lib/entry/cliDaemon.js",
     "node_modules/playwright-core/lib/tools/cli-client/program.js"]) await requiredFile(entry);
+  const bundledNpm = JSON.parse(await readFile(join(root, npm, "package.json"), "utf8"));
+  if (bundledNpm.version !== npmVersion) throw new Error("Published npm does not match its pinned version.");
+  await validateInstalledLicenses(join(root, npm));
+  // Browser executables are obtained directly from their upstream distributor
+  // on first use. An old staging tree must never reintroduce them into a release.
+  if (await access(join(root, "browsers")).then(() => true, () => false)) {
+    throw new Error("Browser and FFmpeg binaries must not be redistributed in Pideck resources.");
+  }
   const packages = {};
   for (const name of ["@playwright/cli", "playwright", "playwright-core"]) {
     await requiredFile(`node_modules/${name}/LICENSE`);
@@ -137,12 +136,6 @@ export async function validateAutomationResources(root, expected = {}) {
   if (browsers.find(browser => browser.name === "chromium")?.revision !== manifest.browserRevision) {
     throw new Error("Published Chromium revision does not match the Playwright installation.");
   }
-  const ffmpeg = browsers.find(browser => browser.name === "ffmpeg");
-  const ffmpegDirectory = `browsers/ffmpeg-${ffmpeg?.revision}`;
-  const ffmpegName = windows ? "ffmpeg-win64.exe" : manifest.platform === "darwin" ? "ffmpeg-mac" : "ffmpeg-linux";
-  await requiredFile(`${ffmpegDirectory}/${ffmpegName}`);
-  await requiredFile(`${ffmpegDirectory}/COPYING.LGPLv2.1`);
-  await requiredFile(`${manifest.chromium.split("/").slice(0, 3).join("/")}/ABOUT`);
   return manifest;
 }
 
@@ -193,41 +186,20 @@ export async function prepareAutomation(platform = process.platform, arch = proc
       await mkdir(join(staging, "node"));
       await extractTar({ file: archive, cwd: join(staging, "node"), strip: 1, strict: true });
     }
+    await prepareNpmRuntime(join(staging, "node"), cache, root, platform);
     for (const name of ["@playwright/cli", "playwright", "playwright-core"]) {
       await cp(join(root, "node_modules", name), join(staging, "node_modules", name), { recursive: true, verbatimSymlinks: true });
     }
 
-    // Use the pinned installer's download URLs, revisions and archive handling.
-    // Its platform override selects the package target, not the build host.
-    const browserCache = join(cache, "browsers");
-    const hostPlatform = platform === "darwin" ? `mac26${arch === "arm64" ? "-arm64" : ""}`
-      : platform === "linux" ? `ubuntu22.04-${arch}` : "win64";
-    const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserCache,
-      PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: hostPlatform, PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1",
-      PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000", NO_UPDATE_NOTIFIER: "1" };
-    await run(process.execPath, [join(root, "node_modules", "playwright", "cli.js"), "install", "chromium", "--no-shell", "--no-progress", "--no-remove"], { env, cwd: root });
-    const metadata = JSON.parse(await run(process.execPath, ["-e", `
-      const registry = require('playwright-core/lib/coreBundle').registry.registry;
-      console.log(JSON.stringify(['chromium', 'ffmpeg'].map(name => {
-        const browser = registry.findExecutable(name);
-        return { name, directory: browser.directory, executable: browser.executablePath(), revision: browser.revision };
-      })));
-    `], { env, cwd: root, stdio: ["ignore", "pipe", "inherit"] }));
-    await mkdir(join(staging, "browsers"));
-    for (const browser of metadata) {
-      await access(browser.executable);
-      // Exclude install-cache links and host validation markers outside these
-      // distribution directories; they contain build-machine paths.
-      await cp(browser.directory, join(staging, "browsers", relative(browserCache, browser.directory)), { recursive: true, verbatimSymlinks: true });
-    }
-    const chromium = metadata.find(browser => browser.name === "chromium");
-    const manifest = { schema: 1, platform, arch, nodeVersion, cliVersion: cliPackage.version,
+    const browsers = JSON.parse(await readFile(join(staging, "node_modules", "playwright-core", "browsers.json"), "utf8")).browsers;
+    const chromium = browsers.find(browser => browser.name === "chromium");
+    const manifest = { schema: 2, platform, arch, nodeVersion, npmVersion, cliVersion: cliPackage.version,
       playwrightVersion: playwrightPackage.version, browserRevision: chromium.revision,
       node: platform === "win32" ? "node/node.exe" : "node/bin/node",
       cli: "node_modules/@playwright/cli/playwright-cli.js",
-      chromium: `browsers/${relative(browserCache, chromium.executable).split("\\").join("/")}` };
+      playwright: "node_modules/playwright/cli.js" };
     await writeFile(join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    await writeFile(join(staging, "NOTICE.txt"), `Pideck browser automation\n\nNode.js ${nodeVersion}: node/LICENSE and the notices in the complete Node.js distribution.\nPlaywright CLI ${cliPackage.version}, Playwright ${playwrightPackage.version}: LICENSE and NOTICE files in node_modules/@playwright/cli, node_modules/playwright and node_modules/playwright-core.\nChromium ${chromium.revision} and FFmpeg: upstream distribution license/credit files under browsers/.\n`);
+    await writeFile(join(staging, "NOTICE.txt"), `Pideck browser automation\n\nNode.js ${nodeVersion}: node/LICENSE. npm ${npmVersion}: licenses in its distribution and pinned runtime dependencies.\nPlaywright CLI ${cliPackage.version}, Playwright ${playwrightPackage.version}: LICENSE and NOTICE files in node_modules/@playwright/cli, node_modules/playwright and node_modules/playwright-core.\nBrowser revision ${chromium.revision} and FFmpeg are NOT included in this package. On first browser use, the pinned upstream Playwright installer obtains them directly from upstream into application data. Their upstream licenses and terms apply. See https://github.com/minifish-org/pideck/blob/main/docs/BROWSER_DISTRIBUTION.md.\n`);
     await validateAutomationResources(staging, { platform, arch });
     await rm(destination, { recursive: true, force: true });
     await rename(staging, destination);

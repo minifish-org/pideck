@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -18,10 +18,14 @@ async function fixture(workspace = true) {
   const projectDirectory = join(root, 'project');
   await Promise.all([mkdir(resourcesDirectory), mkdir(projectDirectory)]);
   if (workspace) await mkdir(join(projectDirectory, '.playwright'));
+  await writeFile(join(projectDirectory, 'config with spaces.json'), '{}');
   const node = join(resourcesDirectory, 'node');
   await writeFile(node, `#!/bin/sh\nexec ${quote(process.execPath)} "$@"\n`, { mode: 0o700 });
-  const chromium = join(resourcesDirectory, 'chromium');
-  await writeFile(chromium, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const playwright = join(resourcesDirectory, 'node_modules/playwright/cli.js');
+  await mkdir(join(resourcesDirectory, 'node_modules/playwright'), { recursive: true });
+  const installerLog = join(root, 'installer.jsonl');
+  await writeFile(playwright, `require('node:fs').appendFileSync(${JSON.stringify(installerLog)},JSON.stringify({args:process.argv.slice(2),browsers:process.env.PLAYWRIGHT_BROWSERS_PATH})+'\\n');`);
+  await symlink(await realpath('node_modules/playwright-core'), join(resourcesDirectory, 'node_modules/playwright-core'), 'dir');
   const log = join(root, 'calls.jsonl');
   const cli = join(resourcesDirectory, 'upstream.cjs');
   await writeFile(cli, `
@@ -29,7 +33,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 const defaults=JSON.parse(fs.readFileSync(path.join(process.env.HOME,'.playwright','cli.config.json')));
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args,cwd:process.cwd(),home:process.env.HOME,runtime:process.env.XDG_RUNTIME_DIR,username:process.env.USERNAME,nodePath:process.env.PATH,executable:defaults.browser.launchOptions.executablePath,noUpdate:process.env.NO_UPDATE_NOTIFIER})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args,cwd:process.cwd(),home:process.env.HOME,runtime:process.env.XDG_RUNTIME_DIR,username:process.env.USERNAME,nodePath:process.env.PATH,channel:defaults.browser.launchOptions.channel,noUpdate:process.env.NO_UPDATE_NOTIFIER})+'\\n');
 const state = path.join(process.env.HOME, 'browser.json');
 const workspace = fs.existsSync(path.join(process.cwd(), '.playwright')) ? process.cwd() : '0123456789abcdef';
 if (args[0] === 'open') fs.writeFileSync(state, JSON.stringify({workspace}));
@@ -37,9 +41,9 @@ if (args[0] === 'close-all') { try { if (JSON.parse(fs.readFileSync(state)).work
 if (args[0] === 'list') console.log(JSON.stringify({browsers:fs.existsSync(state)?[JSON.parse(fs.readFileSync(state))]:[]}));
 else console.log(JSON.stringify({args,home:process.env.HOME}));
 `);
-  await writeFile(join(resourcesDirectory, 'manifest.json'), JSON.stringify({ schema: 1, platform: process.platform, arch: process.arch,
-    nodeVersion: '22.23.4', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
-    node: 'node', cli: 'upstream.cjs', chromium: 'chromium' }));
+  await writeFile(join(resourcesDirectory, 'manifest.json'), JSON.stringify({ schema: 2, platform: process.platform, arch: process.arch,
+    nodeVersion: '22.23.4', npmVersion: '12.2.2', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
+    node: 'node', cli: 'upstream.cjs', playwright: 'node_modules/playwright/cli.js' }));
   const launcherPath = join(root, 'cli.cjs');
   await build({ entryPoints: ['src/automation/cli.ts'], outfile: launcherPath, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' });
   const options = { resourcesDirectory, stateDirectory, launcherPath };
@@ -48,7 +52,8 @@ else console.log(JSON.stringify({args,home:process.env.HOME}));
     const shim = join(environment.PATH.split(delimiter)[0], 'playwright-cli');
     return execute(shim, args, { cwd: projectDirectory, env: { ...process.env, ...environment } });
   };
-  return { root, options, resourcesDirectory, stateDirectory, projectDirectory, call, get automation() { return automation; },
+  return { root, options, resourcesDirectory, stateDirectory, projectDirectory, playwright, call, get automation() { return automation; },
+    async installations() { return (await readFile(installerLog, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); },
     async reopen(resources = resourcesDirectory) { automation = await Automation.open({ ...options, resourcesDirectory: resources }); },
     async calls() { return (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)); },
     async close() { await automation.closeAll(); await rm(root, { recursive: true, force: true }); },
@@ -77,9 +82,96 @@ test('browser CLI preserves argv and cwd while isolating its profile and socket 
     assert.notEqual(calls[0].username, calls[1].username);
     assert.ok(Buffer.byteLength(join(calls[0].runtime, 'playwright', 'cli', '1234567890123456.sock')) < 104);
     assert.equal(calls[0].noUpdate, '1');
-    assert.equal(calls[0].executable, join(f.resourcesDirectory, 'chromium'));
+    assert.equal(calls[0].channel, 'chromium');
+    assert.equal((await f.installations()).length, 2);
     await assert.rejects(f.automation.environment('other-project', '1', f.projectDirectory), /another project/);
   } finally { await f.close(); }
+});
+
+test('browser setup is lazy, keeps native arguments, and shares only the upstream binary cache', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture();
+  try {
+    const a = await f.automation.environment('project-a', '1', f.projectDirectory);
+    const b = await f.automation.environment('project-a', '2', f.projectDirectory);
+    for (const argv of [['--help'], ['open', '--help'], ['--version'], ['list'], ['attach', 'custom-endpoint']]) await f.call(a, argv);
+    assert.deepEqual(await f.installations(), []);
+    const argv = ['--session', 'native-name', 'open', 'about:blank', '--headed'];
+    await f.call(a, argv);
+    await f.call(b, ['open', 'about:blank']);
+    const installations = await f.installations();
+    assert.equal(installations.length, 2);
+    assert.deepEqual(installations[0].args, ['install', 'chromium', '--no-progress', '--no-remove']);
+    assert.equal(installations[0].browsers, join(f.stateDirectory, 'browsers'));
+    assert.equal(installations[0].browsers, installations[1].browsers);
+    assert.deepEqual((await f.calls()).at(-2).args, argv);
+  } finally { await f.close(); }
+});
+
+test('failed upstream browser setup does not launch a session and can be retried', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture();
+  try {
+    const env = await f.automation.environment('project-a', '1', f.projectDirectory);
+    await writeFile(f.playwright, 'process.exit(23);');
+    await assert.rejects(f.call(env, ['open', 'about:blank']), error => {
+      const result = error as Error & { code: number; stderr: string };
+      return result.code === 23 && result.stderr.includes('Check your connection');
+    });
+    await assert.rejects(readFile(join(f.root, 'calls.jsonl')), { code: 'ENOENT' });
+    await writeFile(f.playwright, 'process.exit(0);');
+    await f.call(env, ['open', 'about:blank']);
+    assert.deepEqual((await f.calls())[0].args, ['open', 'about:blank']);
+  } finally { await f.close(); }
+});
+
+test('native browser and config selection controls setup while JSON stdout stays intact', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture();
+  try {
+    const env = await f.automation.environment('project-a', '1', f.projectDirectory);
+    await writeFile(f.playwright, "console.log('Upstream download progress');");
+    const opened = await f.call(env, ['--json', 'open', 'about:blank']);
+    assert.deepEqual(JSON.parse(opened.stdout).args, ['--json', 'open', 'about:blank']);
+    assert.match(opened.stderr, /Upstream download progress/);
+    // An installed branded channel, custom executable, or remote endpoint must
+    // work offline without being blocked by an unrelated Chromium download.
+    await writeFile(f.playwright, 'process.exit(37);');
+    await f.call(env, ['open', '--browser', 'chrome']);
+    for (const browser of [{ launchOptions: { executablePath: '/custom/browser' } },
+      { remoteEndpoint: 'http://127.0.0.1:9000' }, { cdpEndpoint: 'http://127.0.0.1:9000' }]) {
+      const path = join(f.projectDirectory, 'custom.json');
+      await writeFile(path, JSON.stringify({ browser }));
+      await f.call(env, ['open', '--config', path]);
+    }
+    const log = join(f.root, 'selected-browser.txt');
+    await writeFile(f.playwright, `require('node:fs').writeFileSync(${JSON.stringify(log)},process.argv[3]);`);
+    await f.call(env, ['open', '--browser', 'firefox']);
+    assert.equal(await readFile(log, 'utf8'), 'firefox');
+    await f.call(env, ['video-start']);
+    assert.equal(await readFile(log, 'utf8'), 'ffmpeg');
+  } finally { await f.close(); }
+});
+
+test('cancelling browser setup exits unsuccessfully without starting the upstream session', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture();
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const environment = await f.automation.environment('project-a', '1', f.projectDirectory);
+    await writeFile(f.playwright, "console.error('installer-ready');setInterval(()=>{},1000);");
+    child = spawn(join(environment.PATH.split(delimiter)[0], 'playwright-cli'), ['open'], {
+      cwd: f.projectDirectory, env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Installer did not start')), 10_000);
+      child!.stderr!.on('data', data => { if (data.toString().includes('installer-ready')) { clearTimeout(timeout); resolve(); } });
+      child!.once('error', reject);
+    });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve =>
+      child!.once('exit', (code, signal) => resolve({ code, signal })));
+    child.kill('SIGTERM');
+    const result = await exited;
+    child = undefined;
+    assert.ok(result.signal === 'SIGTERM' || (result.code !== null && result.code !== 0));
+    await assert.rejects(readFile(join(f.root, 'calls.jsonl')), { code: 'ENOENT' });
+  } finally { child?.kill('SIGKILL'); await f.close(); }
 });
 
 test('native close-all only closes owned project profiles, including profiles recovered by a new host', { skip: process.platform === 'win32' }, async () => {

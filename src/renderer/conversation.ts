@@ -69,7 +69,7 @@ export function useConversation({ projectId, sessionId }: { projectId: string; s
         disconnect(event.message);
         return;
       }
-      if (event.type === 'host:restart'
+      if (event.type === 'host:restart' || event.type === 'host:resume'
         || (event.type === 'chat:reset' && event.projectId === projectId && event.sessionId === sessionId)) {
         repairingGap = false;
         attach();

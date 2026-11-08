@@ -11,6 +11,9 @@ const { validateAutomationLinks, validateAutomationResources, publishAutomation 
   validateAutomationResources(root: string): Promise<unknown>;
   publishAutomation(context: unknown): Promise<void>;
 };
+const { prepareInstalledLicenses } = await import(new URL('../scripts/licenses.mjs', import.meta.url).href) as {
+  prepareInstalledLicenses(directory: string): Promise<unknown>;
+};
 
 test('automation resources retain portable framework links after leaving their source directory', async () => {
   const temporary = await mkdtemp(join(tmpdir(), 'pideck-assets-links-'));
@@ -67,15 +70,16 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
     const browsers = JSON.parse(await readFile(join(source, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')).browsers;
     const chromium = browsers.find((browser: { name: string }) => browser.name === 'chromium').revision;
     const ffmpeg = browsers.find((browser: { name: string }) => browser.name === 'ffmpeg').revision;
-    const manifest = { schema: 1, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.4',
+    const manifest = { schema: 2, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.4', npmVersion: '12.2.2',
       cliVersion: cli.version, playwrightVersion: core.version, browserRevision: chromium,
       node: 'node/bin/node', cli: 'node_modules/@playwright/cli/playwright-cli.js',
-      chromium: `browsers/chromium-${chromium}/chrome-fixture/browser` };
+      playwright: 'node_modules/playwright/cli.js' };
     await file('manifest.json', JSON.stringify(manifest));
-    for (const path of [manifest.node, manifest.chromium, 'node/LICENSE', 'NOTICE.txt', 'node/bin/npm', 'node/bin/npx',
+    for (const path of [manifest.node, 'node/LICENSE', 'NOTICE.txt', 'node/bin/npm', 'node/bin/npx',
       'node/lib/node_modules/npm/bin/npm-cli.js', 'node/lib/node_modules/npm/bin/npx-cli.js',
-      `browsers/chromium-${chromium}/chrome-fixture/ABOUT`, `browsers/ffmpeg-${ffmpeg}/ffmpeg-mac`,
-      `browsers/ffmpeg-${ffmpeg}/COPYING.LGPLv2.1`]) await file(path);
+      'node/lib/node_modules/npm/LICENSE', 'node/lib/node_modules/npm/PIDECK-DISTRIBUTION.txt']) await file(path);
+    await file('node/lib/node_modules/npm/package.json', JSON.stringify({ name: 'npm', version: '12.2.2', license: 'Artistic-2.0' }));
+    await prepareInstalledLicenses(join(source, 'node/lib/node_modules/npm'));
     await validateAutomationResources(source);
     await cp(source, published, { recursive: true, verbatimSymlinks: true,
       filter: path => path !== join(source, 'node_modules') });
@@ -84,6 +88,9 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
       projectDir: temporary, platform: { nodeName: 'darwin' }, getResourcesDir: () => resources,
     } });
     await validateAutomationResources(published);
+    await mkdir(join(published, 'browsers'));
+    await assert.rejects(validateAutomationResources(published), /must not be redistributed/);
+    await rm(join(published, 'browsers'), { recursive: true });
     assert.equal(await readFile(join(published, manifest.cli), 'utf8'), await readFile(join(source, manifest.cli), 'utf8'));
     await rm(join(published, 'node/lib/node_modules/npm'), { recursive: true });
     await assert.rejects(validateAutomationResources(published), /missing or empty: node\/lib\/node_modules\/npm/);

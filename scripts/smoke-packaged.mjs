@@ -108,12 +108,16 @@ async function verifyAppearanceMenu(app, page) {
 }
 
 async function mockProjectPicker(app, directory) {
-  await app.evaluate(({ dialog }, directory) => {
+  await app.evaluate(({ dialog, Notification }, directory) => {
+    // OS delivery has its own acceptance path. A disposable regression profile
+    // must not request or change the user's system notification permission.
+    Notification.isSupported = () => false;
     dialog.showOpenDialog = async () => directory
       ? { canceled: false, filePaths: [directory] }
       : { canceled: true, filePaths: [] };
     dialog.showMessageBox = async (_window, options) => {
-      if (options.buttons?.[1] !== "Remove") throw new Error("Unexpected native confirmation.");
+      options ??= _window;
+      if (options.buttons?.[1] !== "Remove" && options.message !== "Quit while work is running?") throw new Error("Unexpected native confirmation.");
       return { response: 1, checkboxChecked: false };
     };
   }, directory);

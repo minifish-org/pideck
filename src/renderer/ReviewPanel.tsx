@@ -420,7 +420,7 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
     };
     setWatchError(false);
     const unsubscribe = api.onEvent(event => {
-      if (event.type === "host:restart") setWatchAttempt(attempt => attempt + 1);
+      if (event.type === "host:restart" || event.type === "host:resume") setWatchAttempt(attempt => attempt + 1);
       if (event.type === "host:disconnected") failed();
       if ((event.type === "review:changed" || event.type === "review:watch-error")
         && event.subscriptionId === scope.subscriptionId && event.projectId === scope.projectId) {

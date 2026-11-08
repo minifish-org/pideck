@@ -20,6 +20,8 @@ export type Session = {
 };
 
 export type Selection = { projectId: string; sessionId: string };
+export type DesktopNavigation = { id: number; project: Project; session?: Session; showResult?: true };
+export type DesktopContext = { projectId?: string; sessionId?: string; viewing: boolean };
 export type SessionActivity = Selection & {
   taskId: number;
   state: "running" | "finished" | "attention";
@@ -133,6 +135,8 @@ export type TerminalEvent =
 type WatchRef = Selection & { subscriptionId: string };
 
 export type Commands = {
+  "desktop:ready": [undefined, DesktopNavigation | null];
+  "desktop:context": [DesktopContext, void];
   "appearance:get": [undefined, AppearanceState];
   "clipboard:write": [{ text: string }, void];
   "link:open-external": [{ url: string }, void];
@@ -193,6 +197,8 @@ export type MenuState = {
   terminalVisible: boolean;
 };
 export type HostEvent =
+  | { type: "desktop:navigate"; navigation: DesktopNavigation }
+  | { type: "host:resume" }
   | { type: "appearance:changed"; appearance: AppearanceState }
   | { type: "session:activity"; subscriptionId: string; items: SessionActivity[] }
   | ({ type: "chat:update"; sequence: number } & WatchRef & ({ view: ChatView } | { ops: Op[] }))

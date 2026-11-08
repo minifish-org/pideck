@@ -156,7 +156,8 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       stopConnection.current = undefined;
       resize.dispose();
       write.dispose();
-      connection.stop();
+      // Unmounting a view is not a request to stop its project shell.
+      connection.stop(false);
     };
   }, [project.id, host, attempt, onExit]);
 

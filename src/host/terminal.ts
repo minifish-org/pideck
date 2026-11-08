@@ -7,7 +7,7 @@ import type { HostEvent, TerminalEvent, TerminalOpen } from "../shared/api";
 import { terminalEnvironment } from "./shell-env";
 
 type Terminal = {
-  owner: number;
+  owner?: number;
   projectId: string;
   pty: IPty;
   sequence: number;
@@ -16,6 +16,10 @@ type Terminal = {
   backlogSize: number;
   paused: boolean;
   exited: boolean;
+  history: string[];
+  historySize: number;
+  historyTrimmed: boolean;
+  flushOutput(): void;
   flush?: NodeJS.Timeout;
   subscriptions: { dispose(): void }[];
 };
@@ -24,6 +28,7 @@ type ClosingShell = { pty: IPty; exited: Promise<void> };
 const outputChunkSize = 32 * 1024;
 const highWatermark = 256 * 1024;
 const lowWatermark = highWatermark / 2;
+const historyLimit = 1024 * 1024;
 
 function eventSize(event: TerminalEvent) {
   return 128 + (event.type === "terminal:data" ? event.data.length * 2 : 0);
@@ -40,8 +45,23 @@ export class Terminals {
   constructor(private emit: (owner: number, event: HostEvent) => void) {}
 
   open(owner: number, projectId: string, cwd: string, cols: number, rows: number): TerminalOpen {
-    if ([...this.terminals.values()].filter(terminal => terminal.owner === owner).length >= 4) {
-      throw new Error("This window has four running shells. Use exit in one before opening another.");
+    for (const [terminalId, terminal] of this.terminals) {
+      if (terminal.projectId !== projectId || (terminal.owner !== undefined && terminal.owner !== owner)) continue;
+      // Renderer/window lifetime does not own the shell. Reattach without replaying input.
+      terminal.flushOutput();
+      terminal.owner = owner;
+      terminal.backlog.length = 0;
+      terminal.backlogSize = 0;
+      if (terminal.paused && !terminal.exited) {
+        terminal.paused = false;
+        terminal.pty.resume();
+      }
+      if (!terminal.exited) terminal.pty.resize(cols, rows);
+      const data = (terminal.historyTrimmed ? "[Earlier terminal output omitted]\r\n" : "") + terminal.history.join("");
+      return { terminalId, data, sequence: terminal.sequence, exited: terminal.exited };
+    }
+    if (this.terminals.size >= 4) {
+      throw new Error("Four project shells are running. Use exit in one before opening another.");
     }
     const configuredShell = process.env.SHELL || userInfo().shell;
     const shell = process.platform === "win32" ? "powershell.exe"
@@ -61,17 +81,40 @@ export class Terminals {
     const terminal: Terminal = {
       owner, projectId, pty, sequence: 0, pending: "", subscriptions: [],
       backlog: [], backlogSize: 0, paused: false, exited: false,
+      history: [], historySize: 0, historyTrimmed: false, flushOutput: () => {},
     };
     this.terminals.set(terminalId, terminal);
 
     const publish = (event: TerminalEvent) => {
+      if (event.type === "terminal:data") {
+        terminal.history.push(event.data);
+        terminal.historySize += event.data.length;
+        while (terminal.historySize > historyLimit && terminal.history.length) {
+          const excess = terminal.historySize - historyLimit;
+          const first = terminal.history[0];
+          if (first.length <= excess) {
+            terminal.history.shift();
+            terminal.historySize -= first.length;
+          } else {
+            // Prefer a line boundary so a restored screen does not begin inside ANSI text.
+            const newline = first.indexOf("\n", excess);
+            const cut = newline >= 0 ? newline + 1 : excess;
+            terminal.history[0] = first.slice(cut);
+            terminal.historySize -= cut;
+          }
+          terminal.historyTrimmed = true;
+        }
+      }
+      // Keep draining detached shells, including servers that keep writing while the
+      // window is closed. Only a connected screen applies acknowledgement backpressure.
+      if (terminal.owner === undefined) return;
       terminal.backlog.push(event);
       terminal.backlogSize += eventSize(event);
       if (!terminal.paused && !terminal.exited && terminal.backlogSize >= highWatermark) {
         pty.pause();
         terminal.paused = true;
       }
-      this.emit(owner, event);
+      this.emit(terminal.owner, event);
     };
     const flush = () => {
       clearTimeout(terminal.flush);
@@ -81,6 +124,7 @@ export class Terminals {
       terminal.pending = "";
       publish({ type: "terminal:data", terminalId, projectId, sequence: ++terminal.sequence, data });
     };
+    terminal.flushOutput = flush;
     terminal.subscriptions.push(
       pty.onData(data => {
         terminal.pending += data;
@@ -132,8 +176,15 @@ export class Terminals {
   }
 
   closeOwner(owner: number) {
-    for (const [id, terminal] of this.terminals) {
-      if (terminal.owner === owner) this.remove(id, terminal);
+    for (const terminal of this.terminals.values()) {
+      if (terminal.owner !== owner) continue;
+      terminal.owner = undefined;
+      terminal.backlog.length = 0;
+      terminal.backlogSize = 0;
+      if (terminal.paused && !terminal.exited) {
+        terminal.paused = false;
+        terminal.pty.resume();
+      }
     }
   }
 
@@ -174,6 +225,8 @@ export class Terminals {
     terminal.pending = "";
     terminal.backlog.length = 0;
     terminal.backlogSize = 0;
+    terminal.history.length = 0;
+    terminal.historySize = 0;
     for (const subscription of terminal.subscriptions.splice(0)) subscription.dispose();
     if (!terminal.exited) this.stopShell(terminal.projectId, terminal.pty, force);
   }

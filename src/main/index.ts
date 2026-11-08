@@ -1,6 +1,6 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, powerMonitor, protocol, safeStorage, session, shell } from "electron";
 import type { IpcMainInvokeEvent, MessageBoxOptions } from "electron";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { eventChannel, invokeChannel, menuStateChannel, type RemovalTarget } from "../shared/transport";
@@ -13,6 +13,10 @@ import { isCommand, validPayload } from "./validation";
 import { minimumWindow, openWindowState } from "./window-state";
 import { appearanceBackground, appearanceDocument, openAppearance } from "./appearance";
 import { externalMessageUrl } from "../shared/message-links";
+import type { DesktopContext, DesktopNavigation, Project, Selection, Session } from "../shared/api";
+import { projectArguments, QuitGuard, workspaceTitle } from "./native-workspace";
+import { createNativeNotifications } from "./native-notifications";
+import { activityNotificationLaunchId } from "./activity-notifications";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -41,6 +45,87 @@ let appearance: Awaited<ReturnType<typeof openAppearance>>;
 let owner = 0;
 let host: HostClient | undefined;
 let exiting = false;
+let shutdownComplete = false;
+let shuttingDown = false;
+let quitPending = false;
+let quitGuard: QuitGuard | undefined;
+let desktopReady = false;
+let locked = false;
+let contextVersion = 0;
+let navigationId = 0;
+let visibleContext: DesktopContext = { viewing: false };
+let pendingNavigation: DesktopNavigation | null = null;
+let reminders: ReturnType<typeof createNativeNotifications> | undefined;
+let notificationLaunch: string | undefined;
+const pendingFolders: string[] = [];
+let openingFolders = false;
+
+function revealWindow() {
+  if (!host || !windowState || exiting) return;
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) openWindow(true);
+  else {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    if (process.platform === "darwin") app.focus({ steal: true });
+    window.focus();
+  }
+}
+
+function navigate(project: Project, session?: Session, showResult = false) {
+  const navigation: DesktopNavigation = { id: ++navigationId, project, session, ...(showResult ? { showResult: true } : {}) };
+  pendingNavigation = navigation;
+  revealWindow();
+  if (desktopReady && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(eventChannel, { type: "desktop:navigate", navigation });
+  }
+}
+
+async function drainFolders() {
+  if (!host || !windowState || openingFolders || exiting) return;
+  openingFolders = true;
+  try {
+    while (pendingFolders.length && !exiting) {
+      const directory = pendingFolders.shift()!;
+      try {
+        // Finder can also send ordinary files. Opening a project never launches
+        // a file or guesses its parent directory.
+        if (!(await stat(directory)).isDirectory()) continue;
+        const project = await host.request(0, "project:add", { directory });
+        if (!exiting) navigate(project);
+      } catch {
+        if (!exiting) dialog.showErrorBox("Could not open folder", "The project folder is unavailable. Check that it still exists and that you can access it.");
+      }
+    }
+  } finally { openingFolders = false; }
+}
+
+function queueFolders(directories: readonly string[]) {
+  for (const directory of directories) if (!pendingFolders.includes(directory)) pendingFolders.push(directory);
+  void drainFolders();
+}
+
+async function openResult(selection: Selection) {
+  if (!host || exiting) return;
+  // Revalidate at the host boundary; a stale OS notification cannot recreate
+  // a removed project/session or navigate to a different session.
+  const project = (await host.request(0, "project:list", undefined)).find(item => item.id === selection.projectId);
+  if (!project || exiting) return;
+  const session = (await host.request(0, "session:list", { projectId: project.id })).find(item => item.id === selection.sessionId);
+  if (session && !exiting) navigate(project, session, true);
+}
+
+function shutdownHost() {
+  if (exiting || !host) return;
+  exiting = true;
+  if (mainWindow) windowState.capture(mainWindow);
+  void Promise.allSettled([host.close(), windowState.flush(), appearance.flush()]).finally(() => {
+    reminders?.dispose();
+    appearance.dispose();
+    shutdownComplete = true;
+    app.quit();
+  });
+}
 
 function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, window: BrowserWindow): boolean {
   return event.sender === window.webContents
@@ -81,7 +166,7 @@ async function showUpdateCheck(window?: BrowserWindow) {
   if (response === 0 && releaseUrl && !exiting) await shell.openExternal(releaseUrl);
 }
 
-function openWindow() {
+function openWindow(activate = false) {
   const initial = windowState.options();
   const window = new BrowserWindow({
     ...initial.bounds,
@@ -104,6 +189,9 @@ function openWindow() {
     },
   });
   mainWindow = window;
+  desktopReady = false;
+  visibleContext = { viewing: false };
+  contextVersion++;
   desktopMenu?.attach(window);
   let windowOwner = ++owner;
   const windowId = window.webContents.id;
@@ -112,10 +200,18 @@ function openWindow() {
     void host?.request(windowOwner, "owner:close", { preserveQueueEdits }, windowId).catch(() => {});
   };
   window.webContents.on("did-navigate", () => {
+    desktopReady = false;
+    visibleContext = { viewing: false };
+    contextVersion++;
     retire(true);
     windowOwner = ++owner;
   });
-  window.webContents.on("render-process-gone", () => retire(true));
+  window.webContents.on("render-process-gone", () => {
+    desktopReady = false;
+    visibleContext = { viewing: false };
+    contextVersion++;
+    retire(true);
+  });
   window.webContents.on("will-navigate", event => event.preventDefault());
   window.webContents.on("will-frame-navigate", event => event.preventDefault());
   window.webContents.on("will-attach-webview", event => event.preventDefault());
@@ -128,12 +224,23 @@ function openWindow() {
   window.on("close", () => { capture(); void windowState.flush(); });
   window.once("closed", () => {
     retire();
-    if (mainWindow === window) mainWindow = undefined;
+    if (mainWindow === window) {
+      mainWindow = undefined;
+      desktopReady = false;
+      visibleContext = { viewing: false };
+      contextVersion++;
+    }
   });
   window.once("ready-to-show", () => {
     window.show();
     if (initial.maximized) window.maximize();
+    if (activate) {
+      if (process.platform === "darwin") app.focus({ steal: true });
+      window.focus();
+    }
   });
+  // The validated workspace context, not HTML/model output, owns the OS title.
+  window.on("page-title-updated", event => event.preventDefault());
   void window.loadURL(appUrl).catch(() => {
     if (!window.isDestroyed()) {
       dialog.showErrorBox("Pideck", "The desktop interface could not be loaded.");
@@ -178,6 +285,15 @@ async function initialize() {
   session.defaultSession.on("will-download", event => event.preventDefault());
 
   windowState = await openWindowState(dataDir);
+  locked = powerMonitor.getSystemIdleState(1) === "locked";
+  reminders = createNativeNotifications({
+    isViewing: selection => !locked && Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()
+      && mainWindow.isVisible() && !mainWindow.isMinimized() && visibleContext.viewing
+      && visibleContext.projectId === selection.projectId && visibleContext.sessionId === selection.sessionId),
+    open: openResult,
+  });
+  if (notificationLaunch) reminders.activate(notificationLaunch);
+  await reminders.ready;
   const vault = new CredentialVault(dataDir, safeStorage);
   const targetOS = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : process.platform;
   const automationDirectory = app.isPackaged ? join(process.resourcesPath, "automation")
@@ -188,11 +304,14 @@ async function initialize() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:restart" });
   }, message => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:disconnected", message });
-  }, automationDirectory);
+  }, automationDirectory, (items, baseline) => reminders?.update(items, { baseline }));
   host = client;
   client.start();
-  const menu = installDesktopMenu(openWindow, showUpdateCheck, appearance);
+  const menu = installDesktopMenu(revealWindow, showUpdateCheck, appearance);
   desktopMenu = menu;
+  if (process.platform === "darwin") {
+    app.dock?.setMenu(Menu.buildFromTemplate([{ label: "Open Folder…", click: () => menu.openProject() }]));
+  }
   ipcMain.on(menuStateChannel, (event, state: unknown) => {
     const window = mainWindow;
     if (window && !window.isDestroyed() && ownsFrame(event, window) && isMenuState(state)) menu.update(window, state);
@@ -214,7 +333,12 @@ async function initialize() {
       detail: `Pideck will stop active work in ${scope} and permanently remove its saved data.\n\nFiles in ${plan.directory} will be kept.`,
     });
     if (result.response !== 1 || window.isDestroyed() || requestOwner !== owner) return null;
-    return client.request(requestOwner, "removal:execute", { ...target, scope: plan.scope });
+    const removed = await client.request(requestOwner, "removal:execute", { ...target, scope: plan.scope });
+    if (pendingNavigation?.project.id === target.projectId
+      && (!target.sessionId || (pendingNavigation.session && removed.sessionIds.includes(pendingNavigation.session.id)))) {
+      pendingNavigation = null;
+    }
+    return removed;
   }
 
   let choosingProject = false;
@@ -223,6 +347,38 @@ async function initialize() {
     const requestOwner = owner;
     if (!window || window.isDestroyed() || !ownsFrame(event, window)) throw new Error("Unauthorized window.");
     if (!isCommand(command)) throw new Error("Invalid workspace request.");
+
+    if (command === "desktop:ready") {
+      if (!validPayload(command, payload)) throw new Error("Invalid desktop request.");
+      desktopReady = true;
+      const target = pendingNavigation;
+      if (!target) return null;
+      const project = (await client.request(requestOwner, "project:list", undefined)).find(item => item.id === target.project.id);
+      const selected = project && target.session
+        ? (await client.request(requestOwner, "session:list", { projectId: project.id })).find(item => item.id === target.session!.id) : undefined;
+      if (!project || (target.session && !selected)) {
+        if (pendingNavigation?.id === target.id) pendingNavigation = null;
+        return null;
+      }
+      if (window.isDestroyed() || requestOwner !== owner) return null;
+      return { ...target, project, session: selected };
+    }
+    if (command === "desktop:context") {
+      if (!validPayload(command, payload)) throw new Error("Invalid desktop context.");
+      const version = ++contextVersion;
+      const project = payload.projectId
+        ? (await client.request(requestOwner, "project:list", undefined)).find(item => item.id === payload.projectId) : undefined;
+      const selected = project && payload.sessionId
+        ? (await client.request(requestOwner, "session:list", { projectId: project.id })).find(item => item.id === payload.sessionId) : undefined;
+      if ((payload.projectId && !project) || (payload.sessionId && !selected)) throw new Error("This workspace is no longer available.");
+      if (window.isDestroyed() || requestOwner !== owner || version !== contextVersion) return;
+      visibleContext = payload;
+      window.setTitle(workspaceTitle(project, selected));
+      const pending = pendingNavigation;
+      if (pending && pending.project.id === project?.id
+        && (!pending.session || pending.session.id === selected?.id)) pendingNavigation = null;
+      return;
+    }
 
     if (command === "appearance:get") {
       if (!validPayload(command, payload)) throw new Error("Invalid appearance request.");
@@ -242,6 +398,10 @@ async function initialize() {
       return;
     }
     if (!validPayload(command, payload)) throw new Error("Invalid workspace request.");
+
+    if (command === "session:read-activity" && (locked || !window.isFocused() || !window.isVisible() || window.isMinimized())) {
+      throw new Error("View the result to mark it as read.");
+    }
 
     if (command === "project:open") {
       if (choosingProject) return null;
@@ -280,24 +440,61 @@ async function initialize() {
     return client.request(requestOwner, command, payload, window.webContents.id);
   });
 
+  quitGuard = new QuitGuard(async () => (await client.request(0, "host:status", undefined)).active, async () => {
+    const options: MessageBoxOptions = { type: "warning", message: "Quit while work is running?",
+      detail: "Running work and terminal commands will stop. Your saved conversations will be available when you reopen Pideck.",
+      buttons: ["Keep Working", "Quit"], defaultId: 0, cancelId: 0, noLink: true };
+    const window = mainWindow;
+    const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
+    return result.response === 1;
+  });
+  powerMonitor.on("lock-screen", () => { locked = true; });
+  powerMonitor.on("unlock-screen", () => {
+    locked = false;
+    reminders?.refreshBadge();
+    if (!exiting) mainWindow?.webContents.send(eventChannel, { type: "host:resume" });
+  });
+  powerMonitor.on("resume", () => {
+    if (exiting) return;
+    reminders?.refreshBadge();
+    // Reattach read-only watches after sleep. Never resend chat/tool input or
+    // restart a live PTY as a side effect of a power event.
+    mainWindow?.webContents.send(eventChannel, { type: "host:resume" });
+  });
+  powerMonitor.on("shutdown", () => {
+    shuttingDown = true;
+    app.quit();
+  });
   openWindow();
+  void drainFolders();
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on("second-instance", () => mainWindow?.focus());
-  app.on("activate", () => { if (host && !mainWindow) openWindow(); });
+  app.once("ready", (_event, launchInfo) => { notificationLaunch = activityNotificationLaunchId(launchInfo); });
+  app.on("open-file", (event, path) => { event.preventDefault(); queueFolders([path]); });
+  app.on("second-instance", (_event, argv, cwd) => {
+    revealWindow();
+    queueFolders(projectArguments(argv.slice(app.isPackaged ? 1 : 2), cwd));
+  });
+  app.on("activate", revealWindow);
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   app.on("before-quit", event => {
-    if (exiting || !host) return;
-    exiting = true;
+    if (shutdownComplete || !host) return;
     event.preventDefault();
-    if (mainWindow) windowState.capture(mainWindow);
-    void Promise.allSettled([host.close(), windowState.flush(), appearance.flush()]).finally(() => {
-      appearance.dispose();
-      app.quit();
-    });
+    if (exiting) return;
+    // System shutdown bypasses an outstanding confirmation, but repeated Cmd+Q
+    // cannot bypass either the confirmation or asynchronous host cleanup.
+    if (shuttingDown || !quitGuard) { shutdownHost(); return; }
+    if (quitPending) return;
+    quitPending = true;
+    void quitGuard.request().then(allowed => {
+      if (exiting) return;
+      if (allowed) shutdownHost();
+      else revealWindow();
+    }, shutdownHost).finally(() => { quitPending = false; });
   });
+  if (app.isPackaged) queueFolders(projectArguments(process.argv.slice(1), process.cwd()));
   void app.whenReady().then(initialize).catch(error => {
     dialog.showErrorBox("Pideck could not start", error instanceof Error ? error.message : "Startup failed.");
     app.quit();

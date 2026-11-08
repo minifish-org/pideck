@@ -33,7 +33,7 @@ export function useSessionActivity() {
       if (event.type === 'host:disconnected') {
         detach();
         setItems({});
-      } else if (event.type === 'host:restart') attach();
+      } else if (event.type === 'host:restart' || event.type === 'host:resume') attach();
       else if (event.type === 'session:activity' && event.subscriptionId === subscription?.id) {
         setItems(Object.fromEntries(event.items.map(item => [item.sessionId, item])));
       }
@@ -71,7 +71,8 @@ export function useReadSessionActivity(activity: SessionActivity | undefined, vi
     let sent = false;
     function check() {
       frame = 0;
-      if (sent || !document.hasFocus() || document.visibilityState !== 'visible' || !viewport?.clientHeight) return;
+      if (sent || !document.hasFocus() || document.visibilityState !== 'visible' || !viewport?.clientHeight
+        || document.querySelector('dialog[open]')) return;
       const bounds = viewport.getBoundingClientRect();
       const end = target.getBoundingClientRect().bottom;
       if (end <= bounds.top || end > bounds.bottom + 1) return;

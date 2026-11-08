@@ -8,6 +8,18 @@ const projectId = randomUUID();
 const sessionId = randomUUID();
 const terminalId = randomUUID();
 
+test("desktop readiness and context accept only scoped selection identifiers", () => {
+  assert.equal(validPayload("desktop:ready", undefined), true);
+  assert.equal(validPayload("desktop:ready", { directory: "/tmp" }), false);
+  assert.equal(validPayload("desktop:context", { viewing: false }), true);
+  assert.equal(validPayload("desktop:context", { projectId, sessionId, viewing: true }), true);
+  for (const input of [undefined, {}, { projectId, viewing: "yes" }, { sessionId, viewing: true },
+    { projectId: "../project", sessionId, viewing: true }]) {
+    assert.equal(validPayload("desktop:context", input), false);
+  }
+  assert.equal(isCommand("host:status"), false);
+});
+
 test("appearance snapshots accept only empty renderer requests", () => {
   assert.equal(isCommand("appearance:get"), true);
   assert.equal(validPayload("appearance:get", undefined), true);

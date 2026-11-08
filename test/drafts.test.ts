@@ -4,7 +4,7 @@ import { readDrafts, retainQueueEditText, saveDrafts, type Attachment, type Draf
 
 const projectId = '17b4acb3-33f5-4924-a16e-d777892a6555';
 const sessionId = '2dd96030-16c4-4319-9a8b-6a10258dbf82';
-const token = '94001d79-f370-4352-8f52-606ef6831f48';
+const token = '94001d79-f370-4352-8f52-606ef6831f48'; // Test-only queue edit token. gitleaks:allow
 const attachment: Attachment = { data: 'cGljdHVyZQ==', mimeType: 'image/png', name: 'draft.png' };
 
 test('a stopped or expired editor keeps unsaved text in the ordinary draft without another draft list', () => {

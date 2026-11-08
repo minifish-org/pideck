@@ -72,6 +72,10 @@ function chatInput(value: Record<string, unknown>): boolean {
 }
 
 const validators = {
+  "desktop:ready": empty,
+  "desktop:context": (value) => object(value) && typeof value.viewing === "boolean"
+    && (value.projectId === undefined ? value.sessionId === undefined
+      : project(value) && (value.sessionId === undefined || match(value.sessionId, id))),
   "appearance:get": empty,
   "clipboard:write": (value) => object(value) && string(value.text, 2_000_000),
   "link:open-external": (value) => object(value) && typeof value.url === "string" && Boolean(externalMessageUrl(value.url)),

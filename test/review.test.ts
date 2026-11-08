@@ -1,10 +1,11 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { listChanges, readPatch, watchChanges } from "../src/host/review.js";
 
 function git(cwd: string, ...args: string[]) {
@@ -109,15 +110,39 @@ test("review watch sees workspace edits and Git index changes outside a selected
 
   let changed = Promise.withResolvers<void>();
   let events = 0;
+  let waitingFor = "external Git metadata watch readiness";
+  t.after(() => {
+    if (t.signal.aborted) t.diagnostic(`Waiting for ${waitingFor}; received ${events} review notifications.`);
+  });
   await watchChanges(cwd, watch.signal, () => { events++; changed.resolve(); },
     () => changed.reject(new Error("The review watch failed.")));
+  // fs.watch has no ready event, and macOS can miss the first change while its
+  // native stream starts under load. Keep offering a harmless readiness probe
+  // until that stream acknowledges one, within the original test deadline.
+  // The real working-tree and index mutations below are still each made once.
+  const probeReady = () => writeFile(join(root, ".git", "info", "exclude"),
+    "\n# review fixture watch ready\n", { flag: "a" });
+  const probing = setInterval(() => { void probeReady().catch(changed.reject); }, 300);
+  t.after(() => clearInterval(probing));
+  try {
+    await probeReady();
+    await changed.promise;
+  } finally { clearInterval(probing); }
+
+  changed = Promise.withResolvers<void>();
+  waitingFor = "working-tree edit";
   await writeFile(join(cwd, "temp.ts"), "after\n");
   await rename(join(cwd, "temp.ts"), file);
   await changed.promise;
   assert.deepEqual(await listChanges(cwd), [{ path: "tracked.ts", status: " M" }]);
 
   changed = Promise.withResolvers<void>();
-  git(cwd, "add", "tracked.ts");
+  waitingFor = "Git index update";
+  // Keep the event loop available while Git creates and renames index.lock;
+  // a synchronous child would force native notifications to coalesce.
+  await promisify(execFile)("git", ["add", "tracked.ts"], {
+    cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+  });
   await changed.promise;
   assert.deepEqual(await listChanges(cwd), [{ path: "tracked.ts", status: "M " }]);
 

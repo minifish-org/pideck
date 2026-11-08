@@ -1,4 +1,4 @@
-import type { Command, Commands, HostEvent, Project, RemovalBlocked, RemovalResult } from "./api";
+import type { Command, Commands, HostEvent, Project, RemovalBlocked, RemovalResult, SessionActivity } from "./api";
 import type { Credential } from "@earendil-works/pi-ai";
 
 export const invokeChannel = "pideck:invoke";
@@ -6,7 +6,7 @@ export const eventChannel = "pideck:event";
 export const menuActionChannel = "pideck:menu-action";
 export const menuStateChannel = "pideck:menu-state";
 
-type Forwarded = Exclude<Command, "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
+type Forwarded = Exclude<Command, "desktop:ready" | "desktop:context" | "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
 
@@ -15,6 +15,7 @@ export type HostCommand =
   | "project:add"
   | "removal:plan"
   | "removal:execute"
+  | "host:status"
   | "owner:close";
 export type HostInput = {
   [C in Forwarded]: Commands[C][0];
@@ -25,6 +26,7 @@ export type HostInput = {
   // Navigation retains the window's exclusive edit lease; a real close detaches
   // the lease while keeping the edit and queued inputs held for reopening.
   "owner:close": { preserveQueueEdits?: boolean } | undefined;
+  "host:status": undefined;
 };
 export type HostResult = {
   [C in Exclude<Forwarded, "model:auth-open" | "model:auth-copy">]: Commands[C][1];
@@ -35,6 +37,7 @@ export type HostResult = {
   "removal:plan": RemovalPreview;
   "removal:execute": RemovalResult;
   "owner:close": void;
+  "host:status": { active: boolean; activities: SessionActivity[] };
 };
 export type HostRequest = {
   [C in HostCommand]: { type: "request"; id: number; owner: number; windowId?: number; command: C; payload: HostInput[C] }
@@ -46,6 +49,7 @@ export type ToHost =
   | { type: "shutdown" }
   | HostRequest;
 export type FromHost =
+  | { type: "activity"; items: SessionActivity[]; baseline: boolean }
   | { type: "ready" }
   | { type: "fatal"; error: string }
   | { type: "result"; id: number; value?: unknown; error?: string }

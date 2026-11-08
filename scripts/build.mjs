@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { prepareLicenses } from "./licenses.mjs";
 
 await Promise.all([
   build({
@@ -30,3 +31,5 @@ await Promise.all([
     target: "node22",
   }),
 ]);
+
+await prepareLicenses();

@@ -7,7 +7,7 @@
   "type": "module",
   "main": "dist/main/index.js",
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
     "dev": "npm run prepare:automation && npm run build && electron .",
@@ -19,7 +19,9 @@
     "package": "npm run build && node scripts/package.mjs",
     "verify:frontend": "npm run prepare:automation && npm run build && tsx scripts/verify-frontend.ts",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
-    "smoke:credentials": "node scripts/smoke-credentials.mjs"
+    "smoke:credentials": "node scripts/smoke-credentials.mjs",
+    "check:licenses": "node scripts/licenses.mjs",
+    "check:distribution": "node scripts/check-distribution.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.5.0",
@@ -50,7 +52,9 @@
     "tar": "7.5.22",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
-    "vite": "8.3.6"
+    "vite": "8.3.6",
+    "@electron/asar": "3.4.1",
+    "semver": "7.8.6"
   },
   "build": {
     "appId": "works.pideck.desktop",
@@ -62,7 +66,8 @@
     "afterPack": "scripts/publish-assets.mjs",
     "files": [
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE"
     ],
     "extraResources": [
       {
@@ -76,7 +81,16 @@
     ],
     "mac": {
       "icon": "build/pideck.icns",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "minimumSystemVersion": "14.0",
+      "extendInfo": {
+        "CFBundleDocumentTypes": [{
+          "CFBundleTypeName": "Project Folder",
+          "LSItemContentTypes": ["public.folder"],
+          "CFBundleTypeRole": "Viewer",
+          "LSHandlerRank": "Alternate"
+        }]
+      }
     },
     "win": {
       "target": "nsis"
@@ -84,6 +98,10 @@
     "linux": {
       "target": "AppImage",
       "category": "Development"
-    }
+    },
+    "publish": null
+  },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.1"
   }
 }

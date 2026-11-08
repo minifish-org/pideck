@@ -6,7 +6,7 @@ export type AutomationProfile = {
   projectDirectory: string;
   node: string;
   cli: string;
-  chromium: string;
+  playwright: string;
   browsers: string;
   home: string;
   output: string;

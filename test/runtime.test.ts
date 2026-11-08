@@ -291,6 +291,54 @@ test("an unfinished generation resumes after closing and reopening the SQLite st
   }
 });
 
+for (const mode of ["send", "start"] as const) test(`quit sees a ${mode} admission during model validation and closes only after it commits`, async t => {
+  const fixture = await openFixture();
+  let runtime = fixture.runtime;
+  const validating = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const requestId = randomUUID();
+  let admission: Promise<unknown> | undefined;
+  try {
+    assert.equal(runtime.hasActiveWork(), false);
+    await runtime.renameSession(fixture.selection, "Idle renamed session");
+    assert.equal(runtime.hasActiveWork(), false, "ordinary metadata changes are not running model work");
+    const available = runtime.models.getAvailableOfType.bind(runtime.models);
+    t.mock.method(runtime.models, "getAvailableOfType", async (...args: Parameters<typeof available>) => {
+      validating.resolve();
+      await release.promise;
+      return available(...args);
+    });
+    fixture.faux.setResponses([fauxAssistantMessage("Accepted before exit.")]);
+    const input = { ...fixture.input, requestId };
+    admission = mode === "send" ? runtime.send(input) : runtime.start(input);
+    assert.equal(runtime.hasActiveWork(), true, "sending work is active before its first asynchronous step");
+    await validating.promise;
+    assert.deepEqual(runtime.sessionActivities(), [], "no Durable generation exists during model validation");
+    assert.equal(runtime.hasActiveWork(), true);
+    let closed = false;
+    const closing = runtime.close().then(() => { closed = true; });
+    await assert.rejects(runtime.send({ ...input, requestId: randomUUID() }), /finishing/);
+    await assert.rejects(runtime.createSession(fixture.project.id), /finishing/);
+    assert.equal(closed, false, "close must not shut the store underneath an accepted send");
+    release.resolve();
+    const admitted = await admission;
+    await closing;
+
+    fixture.faux.setResponses([fauxAssistantMessage("Recovered accepted input.")]);
+    runtime = await fixture.open();
+    const selection = mode === "start"
+      ? { projectId: fixture.project.id, sessionId: (admitted as { id: string }).id } : fixture.selection;
+    const view = await waitForView(runtime, selection, view => view.status === "idle" && view.messages.length >= 2);
+    assert.equal(view.messages.filter(message => message.role === "user").length, 1);
+    assert.equal(view.messages.find(message => message.role === "user")?.requestId, requestId);
+  } finally {
+    release.resolve();
+    await admission?.catch(() => {});
+    await runtime.close();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 function textIn(view: ChatView, text: string): boolean {
   return view.messages.some(message => message.blocks.some(block => block.type === "text" && block.text === text));
 }

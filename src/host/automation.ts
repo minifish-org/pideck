@@ -10,9 +10,9 @@ import { shellEnvironment } from './shell-env.js';
 import { cliEnvironment, type AutomationProfile } from '../automation/profile.js';
 
 const execute = promisify(execFile);
-const manifestVersion = { schema: 1, nodeVersion: '22.23.4', cliVersion: '0.1.23',
+const manifestVersion = { schema: 2, nodeVersion: '22.23.4', npmVersion: '12.2.2', cliVersion: '0.1.23',
   playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252' };
-type Manifest = typeof manifestVersion & { platform: string; arch: string; node: string; cli: string; chromium: string };
+type Manifest = typeof manifestVersion & { platform: string; arch: string; node: string; cli: string; playwright: string };
 type Options = { resourcesDirectory: string; stateDirectory: string; launcherPath?: string };
 type Profile = { directory: string; descriptor: string; value: AutomationProfile };
 
@@ -47,7 +47,7 @@ export class Automation {
   private readonly closing = new Map<string, Promise<void>>();
 
   private constructor(private readonly options: Options, private readonly owner: string,
-    private readonly paths?: { node: string; cli: string; chromium: string; browsers: string }, private readonly reason?: string) {}
+    private readonly paths?: { node: string; cli: string; playwright: string; browsers: string }, private readonly reason?: string) {}
 
   static async open(options: Options): Promise<Automation> {
     let paths: Automation['paths'];
@@ -56,9 +56,9 @@ export class Automation {
       const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8')) as Manifest;
       if (Object.entries(manifestVersion).some(([key, value]) => manifest[key as keyof Manifest] !== value)
         || manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error(unavailable);
-      const [node, cli, chromium] = await Promise.all([resource(root, manifest.node), resource(root, manifest.cli), resource(root, manifest.chromium)]);
-      await Promise.all([access(node, constants.X_OK), access(chromium, constants.X_OK)]);
-      paths = { node, cli, chromium, browsers: join(root, 'browsers') };
+      const [node, cli, playwright] = await Promise.all([resource(root, manifest.node), resource(root, manifest.cli), resource(root, manifest.playwright)]);
+      await access(node, constants.X_OK);
+      paths = { node, cli, playwright, browsers: join(options.stateDirectory, 'browsers') };
     } catch { return new Automation(options, '', undefined, unavailable); }
     await ownedDirectory(options.stateDirectory);
     const ownerFile = join(options.stateDirectory, '.owner');
@@ -84,7 +84,7 @@ export class Automation {
 
   instructions() {
     return this.paths
-      ? 'Pideck provides playwright-cli and Node/npm on PATH, with a bundled Chromium. Use playwright-cli directly; no installation is needed. Browser sessions and output are isolated to this conversation. Read screenshot paths with the read tool when the model supports images. Close browsers with playwright-cli close when finished; never use kill-all.'
+      ? 'Pideck provides playwright-cli and Node/npm on PATH. Use playwright-cli directly. The first browser open automatically downloads the pinned upstream browser and FFmpeg into application data; allow a longer bash timeout for this first download. Later opens reuse the cache. Browser sessions and output are isolated to this conversation. Read screenshot paths with the read tool when the model supports images. Close browsers with playwright-cli close when finished; never use kill-all.'
       : unavailable;
   }
 
@@ -128,7 +128,7 @@ export class Automation {
     const configDirectory = join(profile.value.home, '.playwright');
     await ownedDirectory(configDirectory);
     await atomicWrite(join(configDirectory, 'cli.config.json'), JSON.stringify({
-      browser: { browserName: 'chromium', launchOptions: { executablePath: profile.value.chromium, headless: true } },
+      browser: { browserName: 'chromium', launchOptions: { channel: 'chromium', headless: true } },
       outputDir: profile.value.output, filePaths: 'absolute',
     }));
     await atomicWrite(profile.descriptor, JSON.stringify(profile.value));
