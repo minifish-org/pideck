@@ -181,14 +181,16 @@ test("closing a project kills its shells across owners and keeps other projects 
   t.after(() => terminals.closeAll());
   const removed = [1, 2].map(owner => ({ owner, ...openTestTerminal(terminals, owner, projectId) }));
   const retained = openTestTerminal(terminals, 1, "other-project");
-  for (const { owner, terminalId } of removed) terminals.input(owner, projectId, terminalId, "printf 'SHELL_PID:%s\\n' $$\r");
+  // A shell may paint its prompt before or after input is echoed. Start output
+  // markers on their own line so readiness does not depend on that timing.
+  for (const { owner, terminalId } of removed) terminals.input(owner, projectId, terminalId, "printf '\\nSHELL_PID:%s\\n' $$\r");
   const readPid = (id: string) => Number(output.get(id)?.match(/\nSHELL_PID:(\d+)\r?\n/)?.[1]);
   await waitFor(() => removed.every(({ terminalId }) => readPid(terminalId) > 0));
   const first = removed[0];
   const job = process.platform === "linux"
     ? `sh -c 'trap "" HUP; printf "\\nJOB_READY:%s\\n" $$; exec sleep 15'`
     : "sleep 15";
-  terminals.input(first.owner, projectId, first.terminalId, `${job} & printf 'JOB_PID:%s\\n' $!\r`);
+  terminals.input(first.owner, projectId, first.terminalId, `${job} & printf '\\nJOB_PID:%s\\n' $!\r`);
   const readJob = () => Number(output.get(first.terminalId)?.match(/\nJOB_PID:(\d+)\r?\n/)?.[1]);
   let jobStopped = false;
   t.after(() => {
