@@ -9,9 +9,15 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { getSystemMessageText } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry, defineExtension, defineTask, GenerationTask, Harness, hook, LiveDoc, runEndTask } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ChatView, Selection, StartChat } from "../src/shared/api.js";
 import { Runtime } from "../src/host/runtime.js";
+import { continueEntryKind, inputEntryKind } from "../src/host/chat-view.js";
+import { activeRunStartedAt, completedRun } from "../src/host/run-timing.js";
 import { fauxRuntime, toolResponse, waitForView } from "./support/faux-runtime.js";
 
 async function openFixture() {
@@ -245,15 +251,235 @@ test("cancelling a running bash call settles the watched run and stops the proce
     const running = waitForView(runtime, selection, view => view.messages.some(message => message.blocks.some(
       block => block.type === "tool" && block.status === "running" && block.output?.includes("started"),
     )));
-    await runtime.send(input);
+    await runtime.send({ ...input, requestId: randomUUID() });
     await running;
     await assert.rejects(runtime.send(input), /busy/i);
     const idle = waitForView(runtime, selection, view => view.status === "idle");
     await runtime.cancel(selection);
     const stopped = await idle;
-    assert.match(stopped.error ?? "", /stopped/i);
+    assert.equal(stopped.runOutcome?.kind, "cancelled");
+    assert.equal(stopped.error, undefined);
+    assert.ok(stopped.messages.every(message => message.completed === undefined));
     await assert.rejects(readFile(join(projectDir, "completed")), { code: "ENOENT" });
   } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("whole-run cancellation withdraws queued inputs and native continue finishes without another user message", async () => {
+  const fixture = await openFixture();
+  const { root, project, selection, input, faux } = fixture;
+  let runtime = fixture.runtime;
+  try {
+    faux.setResponses([toolResponse("bash", { command: "printf 'waiting'; sleep 20" })]);
+    // A continuation's native settlement proves completion even when the
+    // original input came from a build without request metadata.
+    await runtime.send(input);
+    const originalRun = await waitForView(runtime, selection, view => view.runStartedAt !== undefined && view.messages.some(message => message.blocks.some(
+      block => block.type === "tool" && block.status === "running" && block.output?.includes("waiting"),
+    )));
+    assert.equal(originalRun.runStartedAt, originalRun.messages.find(message => message.role === "user")?.timestamp);
+    await runtime.send({ ...input, requestId: randomUUID(), delivery: "follow-up", text: "Withdraw this queued follow-up." });
+    await runtime.send({ ...input, requestId: randomUUID(), delivery: "follow-up", text: "Withdraw this one too." });
+    await runtime.cancel(selection);
+    const cancelled = await waitForView(runtime, selection, view => view.runOutcome?.kind === "cancelled" && Boolean(view.canContinue) && view.runEndedAt !== undefined);
+    assert.equal(cancelled.error, undefined);
+    assert.equal(cancelled.queued, undefined);
+    assert.equal(cancelled.runStartedAt, originalRun.runStartedAt);
+    const nativeHarness = (runtime as unknown as { harness: Harness }).harness;
+    const cancelledTask = await nativeHarness.getTask(cancelled.runOutcome!.taskId as Parameters<Harness["getTask"]>[0], BACKGROUND_CONTEXT);
+    assert.equal(cancelled.runEndedAt, cancelledTask?.endedAt);
+    const users = cancelled.messages.filter(message => message.role === "user");
+    assert.equal(users.length, 1);
+    await runtime.close();
+    runtime = await fixture.open();
+    const restoredCancellation = await waitForView(runtime, selection, view => Boolean(view.canContinue) && view.runEndedAt !== undefined);
+    assert.equal(restoredCancellation.runOutcome?.kind, "cancelled");
+    assert.deepEqual(restoredCancellation.messages, cancelled.messages);
+    assert.equal(restoredCancellation.runStartedAt, cancelled.runStartedAt);
+    assert.equal(restoredCancellation.runEndedAt, cancelled.runEndedAt);
+    const requestId = randomUUID();
+    await assert.rejects(runtime.continue({ ...selection, requestId, model: { ...input.model, id: "missing-model" }, thinking: "off" }), /unavailable/);
+    faux.setResponses([
+      toolResponse("bash", { command: "sleep 0.08; printf resumed" }),
+      fauxAssistantMessage("Native continuation completed."),
+    ]);
+    const continuedAt = Date.now();
+    await Promise.all([
+      runtime.continue({ ...selection, requestId, model: input.model, thinking: input.thinking }),
+      runtime.continue({ ...selection, requestId, model: input.model, thinking: input.thinking }),
+    ]);
+    const resumedRun = await waitForView(runtime, selection, view => view.status === "running" && view.runStartedAt !== undefined);
+    assert.ok(resumedRun.runStartedAt! >= continuedAt);
+    assert.ok(resumedRun.runStartedAt! > originalRun.runStartedAt!);
+    const completed = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Native continuation completed.")) && view.runEndedAt !== undefined);
+    const answer = answerWithTiming(completed, "Native continuation completed.")!;
+    assert.equal(answer.completed, true);
+    assert.ok(answer.durationMs! >= 80);
+    assert.deepEqual(completed.messages.filter(message => message.role === "user"), users);
+    assert.equal(completed.runOutcome, undefined);
+    assert.equal(completed.canContinue, undefined);
+    assert.equal(completed.runStartedAt, resumedRun.runStartedAt);
+    assert.equal(completed.runEndedAt! - completed.runStartedAt!, answer.durationMs);
+    assert.equal(faux.state.callCount, 3, "An idempotent Continue does not create another generation.");
+    await runtime.continue({ ...selection, requestId, model: { ...input.model, id: "missing-model" }, thinking: "off" });
+    await assert.rejects(runtime.continue({ ...selection, requestId: randomUUID() }), /no unfinished response/);
+    assert.equal(faux.state.callCount, 3);
+    const branch = await runtime.fork(selection, answer.entryId!);
+    const forked = await waitForView(runtime, { projectId: project.id, sessionId: branch.id }, () => true);
+    assert.equal(answerWithTiming(forked, "Native continuation completed.")?.durationMs, answer.durationMs);
+    await runtime.close();
+    runtime = await fixture.open();
+    const reopened = await waitForView(runtime, selection, () => true);
+    assert.deepEqual(reopened.messages, completed.messages);
+    assert.equal(reopened.runStartedAt, completed.runStartedAt);
+    assert.equal(reopened.runEndedAt, completed.runEndedAt);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cancelling one owned live tool leaves the agent and follow-up queue running", async () => {
+  const { root, runtime, project, selection, input, faux } = await openFixture();
+  const next = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let sawAbortedTool = false;
+  try {
+    faux.setResponses([
+      toolResponse("bash", { command: "printf 'cancel this tool'; sleep 20" }),
+      async request => {
+        sawAbortedTool = request.messages.some(message => message.role === "toolResult" && message.isError);
+        next.resolve();
+        await release.promise;
+        return fauxAssistantMessage("Finished after the tool was cancelled.");
+      },
+      fauxAssistantMessage("The queued follow-up was preserved."),
+    ]);
+    await runtime.send({ ...input, requestId: randomUUID() });
+    const running = await waitForView(runtime, selection, view => view.messages.some(message => message.blocks.some(
+      block => block.type === "tool" && block.taskId !== undefined && block.output?.includes("cancel this tool"),
+    )));
+    const tool = running.messages.flatMap(message => message.blocks).find(block => block.type === "tool" && block.taskId !== undefined);
+    assert.ok(tool?.type === "tool" && tool.taskId);
+    const generation = runtime.sessionActivities().find(item => item.sessionId === selection.sessionId);
+    assert.ok(generation);
+    await assert.rejects(runtime.cancelTask({ ...selection, taskId: generation.taskId }), /does not belong/);
+    const other = await runtime.createSession(project.id);
+    await assert.rejects(runtime.cancelTask({ ...selection, sessionId: other.id, taskId: tool.taskId }), /does not belong/);
+    const otherProject = runtime.addProject(root);
+    await assert.rejects(runtime.cancelTask({ ...selection, projectId: otherProject.id, taskId: tool.taskId }), /Session not found/);
+    await runtime.send({ ...input, requestId: randomUUID(), delivery: "follow-up", text: "Keep this follow-up." });
+    await runtime.cancelTask({ ...selection, taskId: tool.taskId });
+    await next.promise;
+    const afterTool = await waitForView(runtime, selection, view => Boolean(view.queued?.length)
+      && view.messages.some(message => message.blocks.some(block => block.type === "tool" && block.cancelled === true)));
+    assert.equal(afterTool.status, "running");
+    assert.equal(afterTool.runOutcome, undefined);
+    assert.equal(afterTool.canContinue, undefined);
+    assert.equal(sawAbortedTool, true);
+    const settledTool = afterTool.messages.flatMap(message => message.blocks).find(block => block.type === "tool" && block.id === tool.id);
+    assert.ok(settledTool?.type === "tool");
+    assert.equal(settledTool.taskId, undefined);
+    assert.equal(settledTool.cancelling, undefined);
+    await runtime.cancelTask({ ...selection, taskId: tool.taskId });
+    release.resolve();
+    const finished = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "The queued follow-up was preserved.")));
+    assert.equal(finished.messages.filter(message => message.role === "user").length, 2);
+    assert.equal(finished.runOutcome, undefined);
+    assert.equal(finished.queued, undefined);
+  } finally {
+    release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native continue applies the newly selected model and thinking level after a failed request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-continue-model-"));
+  const projectDir = join(root, "project");
+  await mkdir(projectDir);
+  const faux = fauxProvider({ models: [{ id: "before", reasoning: true }, { id: "after", reasoning: true }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const runtime = await Runtime.open(join(root, "app"), {}, models);
+  const project = runtime.addProject(projectDir);
+  const session = await runtime.createSession(project.id);
+  const selection = { projectId: project.id, sessionId: session.id };
+  let resumedModel: string | undefined;
+  let resumedThinking: string | undefined;
+  try {
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid credentials" }),
+      (_request, options, _state, model) => {
+        resumedModel = model.id;
+        resumedThinking = options?.reasoning;
+        return fauxAssistantMessage("Recovered with the selected model.");
+      },
+    ]);
+    await runtime.send({ ...selection, text: "Complete this work.", requestId: randomUUID(),
+      model: { provider: faux.getModel("before")!.provider, id: "before" }, thinking: "off" });
+    const failed = await waitForView(runtime, selection, view => Boolean(view.canContinue));
+    assert.equal(failed.runOutcome?.kind, "failed");
+    await runtime.continue({ ...selection, requestId: randomUUID(),
+      model: { provider: faux.getModel("after")!.provider, id: "after" }, thinking: "high" });
+    const finished = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Recovered with the selected model.")));
+    assert.equal(resumedModel, "after");
+    assert.equal(resumedThinking, "high");
+    assert.equal(finished.thinking, "high");
+    assert.equal(finished.messages.filter(message => message.role === "user").length, 1);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("native continue places retained queued inputs even when the prior context ends in an answer", async () => {
+  const { root, runtime, selection, input, faux } = await openFixture();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let sawQueuedInput = false;
+  try {
+    faux.setResponses([
+      async () => {
+        started.resolve();
+        await release.promise;
+        return fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid credentials" });
+      },
+      request => {
+        sawQueuedInput = request.messages.some(message => message.role === "user" && message.content === "Retained native follow-up.");
+        return fauxAssistantMessage("Finished the retained queued input.");
+      },
+    ]);
+    await runtime.send({ ...input, requestId: randomUUID() });
+    await started.promise;
+    await runtime.send({ ...input, requestId: randomUUID(), delivery: "follow-up", text: "Retained native follow-up." });
+    release.resolve();
+    const failed = await waitForView(runtime, selection, view => view.status === "idle" && Boolean(view.queued?.length));
+    // Preserve an actual native failed-run inbox, then make its current model
+    // context end in a completed answer through a native context/history write.
+    const harness = (runtime as unknown as { harness: Harness }).harness;
+    const task = await harness.getTask(failed.failureTaskId as Parameters<Harness["getTask"]>[0], BACKGROUND_CONTEXT);
+    assert.ok(task);
+    const conversation = await harness.conversation(task.conversationId, BACKGROUND_CONTEXT);
+    assert.ok(conversation);
+    await conversation.commit(tx => tx.appendEntry(conversation.id, { kind: "pi.assistant",
+      model: [fauxAssistantMessage("The earlier text reached its output limit.", { stopReason: "length" })] }), BACKGROUND_CONTEXT);
+    const contextBefore = await conversation.context(BACKGROUND_CONTEXT);
+    assert.equal(contextBefore.messages.findLast(message => message.role !== "system")?.role, "assistant");
+    const ready = await waitForView(runtime, selection, view => Boolean(view.canContinue)
+      && textIn(view, "The earlier text reached its output limit."));
+    assert.equal(ready.queued?.length, 1);
+    await runtime.continue({ ...selection, requestId: randomUUID() });
+    const finished = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Finished the retained queued input.")));
+    assert.equal(sawQueuedInput, true);
+    assert.equal(finished.messages.filter(message => message.role === "user").length, 2,
+      "Only native placement of the retained input adds a user message.");
+    assert.equal(finished.queued, undefined);
+    assert.equal(finished.canContinue, undefined);
+  } finally {
+    release.resolve();
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
@@ -265,28 +491,112 @@ test("an unfinished generation resumes after closing and reopening the SQLite st
   let runtime = fixture.runtime;
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
+  const resumed = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
   try {
     faux.setResponses([async () => {
       started.resolve();
       await release.promise;
       return fauxAssistantMessage("Old generation.");
     }]);
-    await runtime.send(input);
+    await runtime.send({ ...input, requestId: randomUUID() });
     await started.promise;
+    const original = await waitForView(runtime, selection, view => view.runStartedAt !== undefined);
+    assert.equal(original.runStartedAt, original.messages.find(message => message.role === "user")?.timestamp);
+    const otherSession = await runtime.createSession(project.id);
+    const otherView = await waitForView(runtime, { ...selection, sessionId: otherSession.id }, () => true);
+    assert.equal(otherView.runStartedAt, undefined);
+    const reattached = await waitForView(runtime, selection, () => true);
+    assert.equal(reattached.runStartedAt, original.runStartedAt);
     // Let the in-flight test provider settle when Durable aborts its stream on close.
     const closing = runtime.close();
     release.resolve();
     await closing;
 
-    faux.setResponses([fauxAssistantMessage("Recovered generation.")]);
+    faux.setResponses([async () => {
+      resumed.resolve();
+      await finish.promise;
+      return fauxAssistantMessage("Recovered generation.");
+    }]);
     runtime = await fixture.open();
-    const recovered = await waitForView(runtime, selection, view => view.messages.some(message => message.blocks.some(
+    await resumed.promise;
+    const reopened = await waitForView(runtime, selection, view => view.runStartedAt !== undefined);
+    assert.equal(reopened.runStartedAt, original.runStartedAt);
+    finish.resolve();
+    const recovered = await waitForView(runtime, selection, view => view.runEndedAt !== undefined && view.messages.some(message => message.blocks.some(
       block => block.type === "text" && block.text === "Recovered generation.",
     )));
     assert.equal(recovered.messages.filter(message => message.role === "user").length, 1);
+    assert.equal(recovered.runStartedAt, original.runStartedAt);
+    assert.ok(recovered.runEndedAt! >= recovered.runStartedAt!);
   } finally {
     release.resolve();
+    finish.resolve();
     await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an afterRun clock reconstructs the new Continue admission after inputs clear and storage reopens", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-after-run-clock-"));
+  const faux = fauxProvider({ models: [{ id: "after-run-clock" }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const waitTask = defineTask<null, { phase: "wait" }, null>({
+    name: "run-clock-wait", version: 1, initial: () => ({ phase: "wait" }),
+    phases: { wait: async (_task, runtime, context) => { await runtime.sleepUntil(Date.now() + 60_000, { phase: "wait" }, context); } },
+    abort: async (_task, runtime, context) => { await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context); },
+  });
+  const registry = createRegistry();
+  const extension = defineExtension({ name: "run-clock", tasks: [waitTask],
+    hooks: [hook(GenerationTask, { afterRun: () => ({ tasks: [runEndTask(waitTask, null)] }) })] });
+  registry.install(extension);
+  const open = async () => Harness.open(await openNodeSqliteStorage(join(root, "native.sqlite")), { models, registry }, BACKGROUND_CONTEXT);
+  let harness = await open();
+  try {
+    const model = faux.getModel();
+    let conversation = await harness.createConversation({ ownership: { kind: "ownerless" },
+      agent: { model: { provider: model.provider, modelId: model.id }, thinkingLevel: "off", extensions: [extension] } }, BACKGROUND_CONTEXT);
+    faux.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid credentials" }),
+      fauxAssistantMessage("Answered before afterRun work."),
+    ]);
+    const originalRequest = randomUUID();
+    const original = await conversation.submit({ type: "input", content: "Do this work.", requestId: originalRequest,
+      entry: { kind: inputEntryKind, data: { requestId: originalRequest } } }, BACKGROUND_CONTEXT);
+    const failed = await original.wait(BACKGROUND_CONTEXT);
+    assert.equal(failed.status, "unanswered");
+    assert.ok(failed.type === "input" && failed.entry !== undefined);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    const id = await conversation.commit(async tx => {
+      const submissionId = await conversation.submit(tx, { type: "continue", requestId });
+      await tx.appendEntry(conversation.id, { kind: continueEntryKind, data: { requestId, startedAt } });
+      return submissionId;
+    }, BACKGROUND_CONTEXT);
+    const answered = await (await harness.submission(id, BACKGROUND_CONTEXT))!.wait(BACKGROUND_CONTEXT);
+    assert.ok(answered.type === "continue" && answered.status === "done");
+    const live = await harness.snapshot(LiveDoc, conversation.id, BACKGROUND_CONTEXT);
+    assert.ok(live?.run?.afterRun);
+    assert.deepEqual(live.run.inputs, []);
+    assert.equal(live.run.first, failed.entry, "Continue inherits the failed history boundary, not its new clock origin.");
+    assert.equal(await activeRunStartedAt(harness, conversation, live.run, BACKGROUND_CONTEXT), startedAt);
+    const conversationId = conversation.id;
+    await harness.close(BACKGROUND_CONTEXT);
+    harness = await open();
+    conversation = (await harness.conversation(conversationId, BACKGROUND_CONTEXT))!;
+    const reopened = await harness.snapshot(LiveDoc, conversation.id, BACKGROUND_CONTEXT);
+    assert.ok(reopened?.run?.afterRun);
+    assert.equal(await activeRunStartedAt(harness, conversation, reopened.run, BACKGROUND_CONTEXT), startedAt);
+    await conversation.abort(BACKGROUND_CONTEXT, { background: true });
+    const ended = await harness.getTask(reopened.run.taskId, BACKGROUND_CONTEXT);
+    assert.ok(ended?.endedAt);
+    const completion = await completedRun(harness, ended, BACKGROUND_CONTEXT, answered.answer);
+    assert.equal(completion?.startedAt, startedAt);
+    assert.equal(completion?.durationMs, ended.endedAt - startedAt, "Aborted afterRun work ends at the native task terminal time.");
+  } finally {
+    await harness.close(BACKGROUND_CONTEXT);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -348,7 +658,7 @@ function answerWithTiming(view: ChatView, text: string) {
     && message.blocks.some(block => block.type === "text" && block.text === text));
 }
 
-test("message timestamps and whole-run timing survive reopen and respect the selected fork boundary", async () => {
+test("completed interactions and whole-run timing survive reopen and respect the selected fork boundary", async () => {
   const fixture = await openFixture();
   const { root, project, selection, input, faux } = fixture;
   let runtime = fixture.runtime;
@@ -364,20 +674,34 @@ test("message timestamps and whole-run timing survive reopen and respect the sel
         return fauxAssistantMessage("Timed work finished.");
       },
     ]);
-    const finished = waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Timed work finished.")));
+    const clockViews: ChatView[] = [];
+    const clockWatch = await runtime.watch(selection, view => { clockViews.push(view); });
+    const finished = waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Timed work finished.")) && view.runEndedAt !== undefined);
     void finished.catch(() => {});
     await runtime.send({ ...input, requestId: randomUUID() });
     await generating.promise;
-    const running = await waitForView(runtime, selection, view => view.status === "running");
+    const running = await waitForView(runtime, selection, view => view.status === "running" && view.runStartedAt !== undefined);
+    assert.equal(running.runStartedAt, running.messages.find(message => message.role === "user")?.timestamp,
+      "Tool-round task handoffs keep the original native placement time.");
     assert.ok(running.messages.every(message => message.durationMs === undefined));
+    assert.ok(running.messages.every(message => message.completed === undefined));
     await new Promise(resolve => setTimeout(resolve, 50));
     release.resolve();
     const view = await finished;
     const answer = answerWithTiming(view, "Timed work finished.")!;
+    assert.equal(view.runStartedAt, running.runStartedAt);
+    assert.equal(view.runEndedAt! - view.runStartedAt!, answer.durationMs);
+    const firstClock = clockViews.findIndex(view => view.runStartedAt !== undefined);
+    assert.ok(firstClock >= 0);
+    assert.ok(clockViews.slice(firstClock).every(view => view.runStartedAt === running.runStartedAt),
+      "The current run clock stays present while its native terminal time is read.");
+    clockWatch.dispose();
+    assert.equal(answer.completed, true);
     assert.ok(answer.durationMs! >= 120, "Whole-run time includes earlier tools and the final generation wait.");
     const firstInput = view.messages.find(message => message.role === "user")!;
     assert.ok(answer.durationMs! >= answer.timestamp! - firstInput.timestamp!);
     assert.equal(view.messages.filter(message => message.durationMs !== undefined).length, 1);
+    assert.deepEqual(view.messages.filter(message => message.completed).map(message => message.id), [answer.id]);
     assert.ok(view.messages.every(message => typeof message.timestamp === "number" && Number.isFinite(message.timestamp)));
     const tool = view.messages.find(message => message.blocks.some(block => block.type === "tool"));
     assert.ok(tool?.entryId && answer.entryId);
@@ -385,16 +709,131 @@ test("message timestamps and whole-run timing survive reopen and respect the sel
     const before = await runtime.fork(selection, tool.entryId);
     const beforeView = await waitForView(runtime, { projectId: project.id, sessionId: before.id }, () => true);
     assert.ok(beforeView.messages.every(message => message.durationMs === undefined));
+    assert.ok(beforeView.messages.every(message => message.completed === undefined));
+    assert.equal(beforeView.runStartedAt, undefined);
+    assert.equal(beforeView.runEndedAt, undefined);
     const after = await runtime.fork(selection, answer.entryId);
     const afterView = await waitForView(runtime, { projectId: project.id, sessionId: after.id }, () => true);
     assert.equal(answerWithTiming(afterView, "Timed work finished.")?.durationMs, answer.durationMs);
+    assert.equal(answerWithTiming(afterView, "Timed work finished.")?.completed, true);
+    assert.equal(afterView.runStartedAt, view.runStartedAt);
+    assert.equal(afterView.runEndedAt, view.runEndedAt);
 
     await runtime.close();
     runtime = await fixture.open();
     const reopened = await waitForView(runtime, selection, () => true);
     assert.deepEqual(reopened.messages, view.messages);
+    assert.equal(reopened.runStartedAt, view.runStartedAt);
+    assert.equal(reopened.runEndedAt, view.runEndedAt);
+
+    const nextGeneration = Promise.withResolvers<void>();
+    const nextRelease = Promise.withResolvers<void>();
+    const nextViews: ChatView[] = [];
+    const nextWatch = await runtime.watch(selection, view => { nextViews.push(view); });
+    try {
+      faux.setResponses([async () => {
+        nextGeneration.resolve();
+        await nextRelease.promise;
+        return fauxAssistantMessage("The next request failed.", { stopReason: "error", errorMessage: "Invalid credentials" });
+      }]);
+      await runtime.send({ ...input, requestId: randomUUID(), text: "Start the next interaction." });
+      await nextGeneration.promise;
+      const nextRunning = await waitForView(runtime, selection, view => view.status === "running" && view.runStartedAt !== undefined);
+      assert.notEqual(nextRunning.runStartedAt, view.runStartedAt);
+      assert.equal(nextRunning.runEndedAt, undefined);
+      assert.ok(nextViews.filter(view => view.status === "running").every(next => next.runStartedAt !== view.runStartedAt && next.runEndedAt === undefined),
+        "A new native run never displays the older frozen range while its start is loading.");
+      assert.deepEqual(nextRunning.messages.filter(message => message.completed).map(message => message.id), [answer.id]);
+      assert.equal(answerWithTiming(nextRunning, "Timed work finished.")?.durationMs, answer.durationMs);
+      nextRelease.resolve();
+      const failed = await waitForView(runtime, selection, view => view.status === "idle" && Boolean(view.error) && view.runEndedAt !== undefined);
+      assert.equal(failed.runStartedAt, nextRunning.runStartedAt);
+      const native = (runtime as unknown as { harness: Harness }).harness;
+      const failedTask = await native.getTask(failed.failureTaskId as Parameters<Harness["getTask"]>[0], BACKGROUND_CONTEXT);
+      assert.equal(failed.runEndedAt, failedTask?.endedAt);
+      assert.deepEqual(failed.messages.filter(message => message.completed).map(message => message.id), [answer.id]);
+      assert.ok(failed.messages.filter(message => message.id !== answer.id).every(message => message.durationMs === undefined));
+      const failedOutput = failed.messages.find(message => message.blocks.some(
+        block => block.type === "text" && block.text === "The next request failed.",
+      ));
+      assert.ok(failedOutput);
+      assert.equal(failedOutput.entryId, undefined);
+      nextWatch.dispose();
+      await runtime.close();
+      runtime = await fixture.open();
+      const reopenedFailure = await waitForView(runtime, selection, () => true);
+      assert.equal(reopenedFailure.runStartedAt, failed.runStartedAt);
+      assert.equal(reopenedFailure.runEndedAt, failed.runEndedAt);
+    } finally {
+      nextWatch.dispose();
+      nextRelease.resolve();
+    }
   } finally {
     release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an idle fork opens promptly while its parent's visible tool round is still running", async () => {
+  const { root, runtime, project, selection, input, faux } = await openFixture();
+  let watching: ReturnType<Runtime["watch"]> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    faux.setResponses([toolResponse("bash", { command: "printf 'parent-tool-ready'; sleep 20" })]);
+    await runtime.send({ ...input, requestId: randomUUID() });
+    const parent = await waitForView(runtime, selection, view => view.messages.some(message => message.blocks.some(
+      block => block.type === "tool" && block.taskId !== undefined && block.output?.includes("parent-tool-ready"),
+    )));
+    const message = parent.messages.find(message => message.entryId !== undefined && message.blocks.some(
+      block => block.type === "tool" && block.taskId !== undefined,
+    ));
+    assert.ok(message?.entryId);
+    const tool = message.blocks.find(block => block.type === "tool" && block.taskId !== undefined);
+    assert.ok(tool?.type === "tool" && tool.taskId);
+    const branch = await runtime.fork(selection, message.entryId);
+    let forkView: ChatView | undefined;
+    watching = runtime.watch({ projectId: project.id, sessionId: branch.id }, view => { forkView = view; });
+    await Promise.race([
+      watching,
+      new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("Fork watch waited for the parent's active tool.")), 2_000); }),
+    ]);
+    clearTimeout(deadline);
+    assert.equal(forkView?.status, "idle");
+    assert.equal(forkView?.runStartedAt, undefined);
+    assert.equal(forkView?.runEndedAt, undefined);
+    assert.ok(forkView?.messages.every(message => message.blocks.every(block => block.type !== "tool" || block.taskId === undefined)));
+    const harness = (runtime as unknown as { harness: Harness }).harness;
+    const parentTool = await harness.getTask(tool.taskId as Parameters<Harness["getTask"]>[0], BACKGROUND_CONTEXT);
+    assert.notEqual(parentTool?.state.status, "terminal", "The fork must open before its parent's work finishes.");
+  } finally {
+    clearTimeout(deadline);
+    await runtime.cancel(selection);
+    await watching?.then(watch => watch.dispose()).catch(() => {});
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a native final answer stays completed when an earlier legacy boundary leaves its timing unknown", async () => {
+  const fixture = await openFixture();
+  const { root, selection, input, faux } = fixture;
+  let runtime = fixture.runtime;
+  try {
+    faux.setResponses([fauxAssistantMessage("Legacy reply."), fauxAssistantMessage("Confirmed final answer.")]);
+    await runtime.send(input);
+    await waitForView(runtime, selection, view => view.status === "idle" && textIn(view, "Legacy reply."));
+    await runtime.send({ ...input, requestId: randomUUID(), text: "A new native input." });
+    const view = await waitForView(runtime, selection, view => view.messages.some(message => message.completed
+      && message.blocks.some(block => block.type === "text" && block.text === "Confirmed final answer.")));
+    const answer = view.messages.find(message => message.completed)!;
+    assert.equal(answer.durationMs, undefined);
+    assert.deepEqual(view.messages.filter(message => message.completed).map(message => message.id), [answer.id]);
+    await runtime.close();
+    runtime = await fixture.open();
+    const reopened = await waitForView(runtime, selection, () => true);
+    assert.deepEqual(reopened.messages, view.messages);
+  } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }
@@ -522,6 +961,10 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
   const { root, runtime, project, selection, input, faux } = await openFixture();
   const release = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
+  const steered = Promise.withResolvers<void>();
+  const finishCurrent = Promise.withResolvers<void>();
+  const following = Promise.withResolvers<void>();
+  const finishFollowing = Promise.withResolvers<void>();
   const first = { ...input, requestId: randomUUID() };
   try {
     faux.setResponses([
@@ -530,11 +973,12 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
         await release.promise;
         return toolResponse("bash", { command: "printf ready" });
       },
-      fauxAssistantMessage("Current run finished."),
-      fauxAssistantMessage("Follow-up finished."),
+      async () => { steered.resolve(); await finishCurrent.promise; return fauxAssistantMessage("Current run finished."); },
+      async () => { following.resolve(); await finishFollowing.promise; return fauxAssistantMessage("Follow-up finished."); },
     ]);
     await runtime.send(first);
     await started.promise;
+    const initialRun = await waitForView(runtime, selection, view => view.runStartedAt !== undefined);
     const queuedAt = Date.now();
     const followUp = { ...input, delivery: "follow-up" as const, requestId: randomUUID(), text: "Next run." };
     const steer = { ...input, delivery: "steer" as const, requestId: randomUUID(), text: "Steer this run." };
@@ -545,6 +989,17 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
     assert.deepEqual(queued.queued?.map(item => item.delivery), ["follow-up", "steer"]);
     await new Promise(resolve => setTimeout(resolve, 80));
     release.resolve();
+    await steered.promise;
+    const steeredRun = await waitForView(runtime, selection, view => view.messages.some(message => message.requestId === steer.requestId));
+    assert.equal(steeredRun.runStartedAt, initialRun.runStartedAt);
+    finishCurrent.resolve();
+    await following.promise;
+    const followUpRun = await waitForView(runtime, selection, view => view.messages.some(message => message.requestId === followUp.requestId)
+      && view.runStartedAt !== undefined);
+    assert.equal(followUpRun.runStartedAt, followUpRun.messages.find(message => message.requestId === followUp.requestId)?.timestamp);
+    assert.ok(followUpRun.runStartedAt! >= queuedAt + 60, "The live clock excludes the queued follow-up's waiting time.");
+    assert.notEqual(followUpRun.runStartedAt, initialRun.runStartedAt);
+    finishFollowing.resolve();
     const completed = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Follow-up finished.")));
     assert.deepEqual(
       completed.messages.filter(message => message.role === "user").map(message => message.requestId),
@@ -563,6 +1018,8 @@ test("native steering and follow-up queue the selected delivery and deduplicate 
     await assert.rejects(runtime.send({ ...steer, requestId: randomUUID() }), /idle/i);
   } finally {
     release.resolve();
+    finishCurrent.resolve();
+    finishFollowing.resolve();
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }

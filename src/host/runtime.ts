@@ -6,8 +6,8 @@ import { InMemoryCredentialStore, type CredentialStore } from "@earendil-works/p
 import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
-  AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, section,
-  type Conversation, type ConversationId, type ConversationView, type EntryId, type InputSubmissionDraft, type TaskId, type TranscriptView,
+  AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, InboxDoc, LiveDoc, section, ToolTask,
+  type Conversation, type ConversationId, type ConversationView, type EntryId, type InboxState, type InputSubmissionDraft, type LiveState, type TaskGraph, type TaskId, type TranscriptView,
 } from "@earendil-works/pi-durable";
 import { err, ExecutionError, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -16,11 +16,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
   ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueEditRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
-  StartChat,
+  StartChat, Commands,
 } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
-import { chatProjection, inputEntryKind, type CompletedRunTiming } from "./chat-view.js";
+import { chatProjection, continueEntryKind, inputEntryKind, type CompletedRun } from "./chat-view.js";
 import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
@@ -29,7 +29,7 @@ import { advanceReleasedQueue, detachQueueEdit, discardQueueEdit, finishQueueEdi
 import type { QueueEditState } from "./queued-input.js";
 import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
-import { completedRunTiming } from "./run-timing.js";
+import { activeRunStartedAt, completedRun } from "./run-timing.js";
 import { reviewWrites } from "./write-review.js";
 import { Automation } from "./automation.js";
 
@@ -160,7 +160,7 @@ export class Runtime {
       const models = suppliedModels ?? builtinModels({
         credentials,
         modelsStore: metadata.modelsStore,
-        identity: { userAgent: { custom: "Pideck/0.1.0" } },
+        identity: { userAgent: { custom: "Pideck/0.1.1" } },
       });
       const savedCredentials = credentials instanceof PersistentCredentials ? credentials : undefined;
       const restoreCatalogs = () => models.refresh({ allowNetwork: false });
@@ -553,6 +553,67 @@ export class Runtime {
     });
   }
 
+  continue(input: Commands["chat:continue"][0]): Promise<void> {
+    return this.admit(async () => {
+      this.requireProject(input.projectId);
+      const conversation = await this.conversation(input);
+      const existing = await conversation.commit(tx => tx.submissionByRequest(conversation.id, input.requestId), context);
+      if (existing) {
+        if (existing.type !== "continue") throw new Error("This request already belongs to another action.");
+        return;
+      }
+      if (Boolean(input.model) !== Boolean(input.thinking)) throw new Error("Choose both a model and thinking level.");
+      const agent = await this.harness.snapshot(AgentDoc, conversation.id, context);
+      const model = input.model ?? (agent?.model ? { provider: agent.model.provider, id: agent.model.modelId } : undefined);
+      if (!model) throw new Error("Choose a model before continuing.");
+      const thinking = input.thinking ?? agent?.thinkingLevel ?? "off";
+      await this.validateChatModel({ ...input, model, thinking, text: "" });
+      const current = await conversation.context(context);
+      const last = current.messages.findLast(message => message.role !== "system");
+      const tail = current.entries.at(-1)?.id;
+      await conversation.commit(async tx => {
+        const accepted = await tx.submissionByRequest(conversation.id, input.requestId);
+        if (accepted) {
+          if (accepted.type !== "continue") throw new Error("This request already belongs to another action.");
+          return;
+        }
+        const live = await tx.doc(LiveDoc, conversation.id);
+        if (live.run || live.compactions?.length) throw new Error("Wait for the current work to finish before continuing.");
+        if ((await tx.doc(QueueEditDoc, conversation.id)).edit) throw new Error("Finish editing the queued message first.");
+        const queuedInput = (await tx.doc(InboxDoc, conversation.id)).items.some(item => item.mode !== "write");
+        if (await tx.latestEntryId(conversation.id) !== tail) throw new Error("The conversation changed. Try continuing again.");
+        if (!queuedInput && last?.role !== "user" && last?.role !== "toolResult") throw new Error("There is no unfinished response to continue.");
+        await configure(tx, conversation.id, { model: { provider: model.provider, modelId: model.id }, thinkingLevel: thinking });
+        await conversation.submit(tx, { type: "continue", requestId: input.requestId });
+        // Native continue has no model message. This display-free receipt links
+        // its settlement and admission time to the eventual final answer.
+        await tx.appendEntry(conversation.id, { kind: continueEntryKind, data: { requestId: input.requestId, startedAt: Date.now() } });
+      }, context);
+      this.metadata.touchSession(input.sessionId);
+    }, true);
+  }
+
+  cancelTask(input: Commands["chat:task-cancel"][0]): Promise<void> {
+    return this.admit(async () => {
+      const conversation = await this.conversation(input);
+      const taskId = await conversation.commit(async tx => {
+        const task = await tx.task(input.taskId as TaskId);
+        if (!task || task.conversationId !== conversation.id || task.kind !== ToolTask.definition.name) {
+          throw new Error("This tool does not belong to the selected conversation.");
+        }
+        if (task.state.status === "terminal" || task.abortRequested) return undefined;
+        const live = await tx.doc(LiveDoc, conversation.id);
+        if (!live.tools?.some(slot => slot.taskId === task.id && slot.status !== "done" && !slot.unoffered)) {
+          throw new Error("This tool is no longer active in the selected conversation.");
+        }
+        return task.id;
+      }, context);
+      if (taskId === undefined) return;
+      await this.harness.abortTask(taskId, context);
+      await this.harness.waitForTask(taskId, context);
+    });
+  }
+
   removalPlan(target: RemovalTarget): RemovalPlan {
     const project = this.metadata.getProject(target.projectId);
     const selected = target.sessionId ? this.metadata.session(target.projectId, target.sessionId) : undefined;
@@ -676,10 +737,13 @@ export class Runtime {
       (query, limit, loadContext) => conversation.entries(query, limit, undefined, loadContext),
     );
     const project = chatProjection();
-    const completedRuns = new Map<number, CompletedRunTiming>();
-    const timingReads = new Map<number, Promise<void>>();
+    const completedRuns = new Map<number, CompletedRun>();
+    const completionReads = new Map<number, Promise<void>>();
+    const answerEntries = new Map<number, EntryId>();
     const harness = this.harness;
     const detach = new Set<() => void>();
+    let graph: TaskGraph | undefined;
+    let canContinue = false;
     let nativeView: ConversationView | undefined;
     let queueEdit: Readonly<QueueEditState> | undefined;
     let editAdvanced = false;
@@ -687,36 +751,136 @@ export class Runtime {
     let scheduled = false;
     let latest: TranscriptView | undefined;
     let stopped = false;
-    async function publishTiming(task: NonNullable<Awaited<ReturnType<typeof harness.getTask>>>) {
-      if (stopped) return;
-      const timing = await completedRunTiming(harness, task, scope.context);
-      if (stopped || !timing) return;
-      completedRuns.set(task.id, timing);
-      if (latest) emit(project(latest, completedRuns));
+    let runTiming: { inputId?: number; taskId: number; startedAt?: number; endedAt?: number; settling?: true; read?: Promise<void> } | undefined;
+    function emitCurrent() {
+      if (!stopped && latest) emit(project(latest, completedRuns, graph, canContinue, runTiming?.startedAt, runTiming?.endedAt));
     }
-    function readTimings(view: TranscriptView) {
+    function readRunTiming(view: TranscriptView) {
+      const live = view.docs["pi.live"] as LiveState | undefined;
+      const run = live?.run;
+      if (run) {
+        const inputId = run.inputs[0];
+        if (runTiming && runTiming.endedAt === undefined
+            && (inputId !== undefined ? runTiming.inputId === inputId : runTiming.taskId === run.taskId)) {
+          runTiming.taskId = run.taskId;
+          return runTiming.read;
+        }
+        const timing: NonNullable<typeof runTiming> = { ...(inputId !== undefined ? { inputId } : {}), taskId: run.taskId };
+        // Replace the previous range before reading a new run's origin. A slow
+        // read must never show the previous run's total as the new live clock.
+        runTiming = timing;
+        timing.read = activeRunStartedAt(harness, conversation, run, scope.context).then(startedAt => {
+          if (stopped || runTiming !== timing) return;
+          timing.startedAt = startedAt;
+          emitCurrent();
+        }).catch(() => {});
+        return timing.read;
+      }
+      const lastAssistant = view.items.findLast(item => item.kind === "entry" && item.entry.kind === "pi.assistant" && item.entry.byTaskId !== undefined);
+      const assistantTaskId = lastAssistant?.kind === "entry" ? lastAssistant.entry.byTaskId : undefined;
+      const taskId = Math.max(assistantTaskId ?? 0, live?.runFailure?.taskId ?? 0, runTiming?.taskId ?? 0);
+      if (!taskId) return;
+      if (runTiming?.taskId !== taskId) runTiming = { taskId };
+      const timing = runTiming;
+      if (timing.settling || timing.endedAt !== undefined) return timing.read;
+      timing.settling = true;
+      const originRead = timing.read;
+      timing.read = Promise.resolve(originRead).then(async () => {
+        let task = await harness.getTask(taskId as TaskId, scope.context);
+        if (!task || task.kind !== GenerationTask.definition.name) return;
+        if (task.state.status !== "terminal") {
+          // A native end may still drain owned work as `completing`. Keep a
+          // cached current origin, but never block initial watch attachment.
+          // An inherited parent's task does not drive this idle fork's clock.
+          if (task.conversationId === conversation.id) void harness.waitForTask(task.id, scope.context).then(() => {
+            if (stopped || runTiming !== timing) return;
+            timing.settling = undefined;
+            timing.read = undefined;
+            if (latest) void readRunTiming(latest);
+          }).catch(() => {});
+          return;
+        }
+        const answer = lastAssistant?.kind === "entry" && lastAssistant.entry.byTaskId === taskId ? lastAssistant.entry.id : undefined;
+        const candidate = completedRuns.get(taskId) ?? await completedRun(harness, task, scope.context, answer);
+        // A fork may expose an intermediate tool round whose native task later
+        // answered in the parent. Its final result lies beyond this view's cut.
+        const completion = candidate?.entryId === answer ? candidate : undefined;
+        const failure = live?.runFailure?.taskId === taskId ? live.runFailure : undefined;
+        const startedAt = timing.startedAt ?? completion?.startedAt
+          ?? (failure ? await activeRunStartedAt(harness, conversation, failure, scope.context) : undefined);
+        if (stopped || runTiming !== timing) return;
+        if (completion) completedRuns.set(taskId, completion);
+        if (startedAt !== undefined && task.endedAt !== undefined && Number.isFinite(task.endedAt) && task.endedAt >= startedAt) {
+          timing.startedAt = startedAt;
+          timing.endedAt = task.endedAt;
+        } else {
+          timing.startedAt = undefined;
+        }
+        emitCurrent();
+      }).catch(() => {});
+      // Keep the current origin visible through the terminal read, then freeze
+      // at the persisted task end; no mount-time or observation-time substitute.
+      return timing.read;
+    }
+    async function readContinuable(view: TranscriptView) {
+      const live = view.docs["pi.live"] as LiveState | undefined;
+      const held = view.docs[QueueEditDoc.definition.kind] as QueueEditState | undefined;
+      if (live?.run || live?.compactions?.length || held?.edit) return;
+      const inbox = view.docs["pi.inbox"] as InboxState | undefined;
+      if (inbox?.items.some(item => item.mode !== "write")) {
+        canContinue = true;
+        emitCurrent();
+        return;
+      }
+      if (live?.runFailure?.reason === "nothing_to_answer") return;
+      const current = await conversation.context(scope.context);
+      if (stopped || latest !== view) return;
+      const last = current.messages.findLast(message => message.role !== "system");
+      const tail = view.items.findLast(item => item.kind === "entry");
+      if (current.entries.at(-1)?.id !== (tail?.kind === "entry" ? tail.entry.id : undefined)) return;
+      if (last?.role === "user" || last?.role === "toolResult") {
+        canContinue = true;
+        emitCurrent();
+      }
+    }
+    async function publishCompletion(task: NonNullable<Awaited<ReturnType<typeof harness.getTask>>>) {
+      if (stopped) return;
+      const completion = await completedRun(harness, task, scope.context, answerEntries.get(task.id));
+      if (stopped || !completion) return;
+      completedRuns.set(task.id, completion);
+      emitCurrent();
+    }
+    function readCompletions(view: TranscriptView) {
       const reads = [];
       for (const item of view.items) {
         if (item.kind !== "entry" || item.entry.kind !== "pi.assistant" || item.entry.byTaskId === undefined) continue;
         const id = item.entry.byTaskId;
-        let read = timingReads.get(id);
+        answerEntries.set(id, item.entry.id);
+        let read = completionReads.get(id);
         if (!read) {
           read = harness.getTask(id as TaskId, scope.context).then(async task => {
             if (!task || task.kind !== GenerationTask.definition.name) return;
-            if (task.state.status === "terminal") await publishTiming(task);
-            else void harness.waitForTask(id as TaskId, scope.context).then(publishTiming).catch(() => {});
+            if (task.state.status === "terminal") await publishCompletion(task);
+            else void harness.waitForTask(id as TaskId, scope.context).then(publishCompletion).catch(() => {});
           }).catch(() => {});
-          timingReads.set(id, read);
+          completionReads.set(id, read);
         }
         reads.push(read);
       }
       return Promise.all(reads);
     }
-    function publish(view: TranscriptView) {
-      if (stopped || view === latest) return;
+    function publish(view: TranscriptView, force = false) {
+      if (stopped) return;
+      if (view === latest) {
+        if (force) emitCurrent();
+        return;
+      }
       latest = view;
-      emit(project(view, completedRuns));
-      void readTimings(view);
+      canContinue = false;
+      void readRunTiming(view);
+      emitCurrent();
+      void readCompletions(view);
+      void readContinuable(view).catch(() => {});
     }
     function currentView(view: ConversationView) {
       return { ...view, docs: { ...view.docs, ...(queueEdit ? { [QueueEditDoc.definition.kind]: queueEdit } : {}) } };
@@ -727,7 +891,7 @@ export class Runtime {
       queueMicrotask(() => {
         scheduled = false;
         if (!stopped && nativeView) {
-          try { publish(transcript.merge(currentView(nativeView))); }
+          try { publish(transcript.merge(currentView(nativeView)), true); }
           catch { ended(); }
         }
       });
@@ -740,6 +904,12 @@ export class Runtime {
       onError?.("The conversation watch disconnected. Reconnect to refresh.");
     }
     try {
+      const observedGraph = await harness.observeTaskGraph({
+        advance(call) { if (call.kind === "value") { graph = call.value; changed(); } },
+        end: ended,
+      }, scope.context);
+      detach.add(observedGraph.detach);
+      graph ??= observedGraph.value;
       const observed = await harness.observeConversation(conversation.id, {
         advance(call) { if (call.kind === "value") { nativeView = call.value; changed(); } },
         end: ended,
@@ -768,7 +938,7 @@ export class Runtime {
         }
       }
       const first = transcript.merge(initial);
-      await readTimings(first);
+      await Promise.all([readCompletions(first), readRunTiming(first)]);
       ready = true;
       publish(transcript.merge(currentView(nativeView)));
     } catch (error) {

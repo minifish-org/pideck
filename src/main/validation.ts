@@ -64,10 +64,14 @@ function images(value: unknown): boolean {
   return true;
 }
 
-function chatInput(value: Record<string, unknown>): boolean {
-  return string(value.text, 200_000) && object(value.model) && match(value.model.provider, provider)
+function modelInput(value: Record<string, unknown>): boolean {
+  return object(value.model) && match(value.model.provider, provider)
     && string(value.model.id, 240) && value.model.id.length > 0
-    && thinking.has(value.thinking as Thinking) && images(value.images)
+    && thinking.has(value.thinking as Thinking);
+}
+
+function chatInput(value: Record<string, unknown>): boolean {
+  return string(value.text, 200_000) && modelInput(value) && images(value.images)
     && Boolean(value.text.trim() || (Array.isArray(value.images) && value.images.length));
 }
 
@@ -123,6 +127,9 @@ const validators = {
       || (value.action === "move" && entry(value.targetId) && value.targetId !== value.id
         && (value.position === "before" || value.position === "after"))),
   "chat:cancel": (value) => object(value) && selection(value),
+  "chat:continue": (value) => object(value) && selection(value) && match(value.requestId, id)
+    && (value.model === undefined && value.thinking === undefined || modelInput(value)),
+  "chat:task-cancel": (value) => object(value) && selection(value) && entry(value.taskId),
   "chat:fork": (value) => object(value) && selection(value) && entry(value.entryId)
     && (value.title === undefined || string(value.title, sessionTitleLimit)),
   "review:list": (value) => object(value) && project(value),

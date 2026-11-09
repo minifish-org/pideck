@@ -1,13 +1,14 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentState, InboxState, LiveState, RunFailure, TranscriptView } from "@earendil-works/pi-durable";
+import type { AgentState, InboxState, LiveState, RunFailure, TaskGraph, TranscriptView } from "@earendil-works/pi-durable";
 import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
 import { canSteerQueued, QueueEditDoc, queueItems, type QueueEditState } from "./queued-input.js";
 
 export const inputEntryKind = "pideck.input";
+export const continueEntryKind = "pideck.continue";
 
 type ToolBlock = Extract<ChatBlock, { type: "tool" }>;
 type ToolPosition = { message: number; block: number };
-export type CompletedRunTiming = { entryId: number; durationMs: number };
+export type CompletedRun = { entryId: number; startedAt?: number; durationMs?: number };
 const inlineImageBudget = 16_000_000;
 const inlinePatchLimit = 512_000;
 
@@ -32,8 +33,12 @@ function assistantBlocks(message: AssistantMessage): ChatBlock[] {
   });
 }
 
-function applyToolResult(tool: ToolBlock, result: ToolResultMessage): void {
+function applyToolResult(tool: ToolBlock, result: ToolResultMessage, data?: unknown): void {
   tool.status = result.isError ? "error" : "done";
+  if (data && typeof data === "object" && "diagnostics" in data && Array.isArray(data.diagnostics)
+      && data.diagnostics.some(item => item && typeof item === "object" && item.severity === "error" && item.code === "aborted")) {
+    tool.cancelled = true;
+  }
   tool.output = result.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
   const images = result.content.flatMap(block => block.type === "image"
     ? [{ mimeType: block.mimeType, data: block.data }]
@@ -121,8 +126,7 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
           blocks: userBlocks(message.content), ...(requestId ? { requestId } : {}) });
       } else if (message.role === "assistant") {
         const blocks = assistantBlocks(message);
-        const error = message.stopReason === "length" ? "The model reached its output limit."
-          : message.stopReason === "aborted" ? "This response was interrupted." : undefined;
+        const error = message.stopReason === "length" ? "The model reached its output limit." : undefined;
         if (!blocks.length && !error) continue;
         for (const [block, value] of blocks.entries()) {
           if (value.type === "tool") tools.set(value.id, { message: messages.length, block });
@@ -139,10 +143,10 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
         const position = tools.get(message.toolCallId);
         const matching = position && messages[position.message]?.blocks[position.block];
         if (matching?.type === "tool") {
-          applyToolResult(matching, message);
+          applyToolResult(matching, message, entry.data);
         } else {
           const tool: ToolBlock = { type: "tool", id: message.toolCallId, name: message.toolName, status: "pending" };
-          applyToolResult(tool, message);
+          applyToolResult(tool, message, entry.data);
           push({ id, role: "assistant", timestamp: message.timestamp, blocks: [tool] });
         }
       }
@@ -194,16 +198,17 @@ function queuedInputs(inbox: InboxState | undefined, held?: QueueEditState): Cha
 export function chatProjection() {
   let items: TranscriptView["items"] | undefined;
   let committed: ReturnType<typeof projectTranscript>;
-  return (view: TranscriptView, completedRuns?: ReadonlyMap<number, CompletedRunTiming>): ChatView => {
+  return (view: TranscriptView, completedRuns?: ReadonlyMap<number, CompletedRun>, graph?: TaskGraph, canContinue = false, runStartedAt?: number, runEndedAt?: number): ChatView => {
     if (items !== view.items) {
       items = view.items;
       committed = projectTranscript(items, view.conversation.parent?.at);
     }
     const { hasEarlier, gaps, tools, assistantEntries, latestEntryId } = committed;
     const messages = committed.messages.slice();
-    for (const [taskId, timing] of completedRuns ?? []) {
-      const answer = assistantEntries.get(timing.entryId);
-      if (answer?.taskId === taskId) messages[answer.message] = { ...messages[answer.message], durationMs: timing.durationMs };
+    for (const [taskId, completion] of completedRuns ?? []) {
+      const answer = assistantEntries.get(completion.entryId);
+      if (answer?.taskId === taskId) messages[answer.message] = { ...messages[answer.message], completed: true,
+        ...(completion.durationMs !== undefined ? { durationMs: completion.durationMs } : {}) };
     }
     const live = view.docs["pi.live"] as LiveState | undefined;
     const agent = view.docs["pi.agent"] as AgentState | undefined;
@@ -220,6 +225,12 @@ export function chatProjection() {
         ...(existing?.type === "tool" ? existing : { type: "tool", id: slot.callId, name: slot.name }),
         status: slot.unoffered || (slot.status === "done" && slot.entry === undefined) ? "error" : slot.status,
       };
+      const task = slot.taskId === undefined ? undefined : graph?.tasks[String(slot.taskId)];
+      if (task?.conversationId === view.conversation.id && task.kind === "pi.tool" && task.state.status !== "completing"
+          && (tool.status === "pending" || tool.status === "running")) {
+        tool.taskId = task.id;
+        if (task.abortRequested) tool.cancelling = true;
+      }
       if (slot.output !== undefined) {
         tool.output = slot.droppedBytes || slot.droppedLines
           ? "[Earlier tool output omitted.]\n" + slot.output : slot.output;
@@ -240,9 +251,14 @@ export function chatProjection() {
       if (blocks.length) messages.push({ id: "live-assistant", role: "assistant", timestamp: partial.timestamp, blocks });
     }
 
+    const cancelling = (live?.run && graph?.tasks[String(live.run.taskId)]?.abortRequested)
+      || live?.compactions?.some(task => graph?.tasks[String(task.taskId)]?.abortRequested);
+
     return {
       messages,
-      status: live?.run || activity?.kind === "compacting" ? "running" : "idle",
+      status: cancelling ? "cancelling" : live?.run || activity?.kind === "compacting" ? "running" : "idle",
+      ...(runStartedAt !== undefined ? { runStartedAt, ...(!live?.run && runEndedAt !== undefined ? { runEndedAt } : {}) } : {}),
+      ...(canContinue && !live?.run && !live?.compactions?.length && !held?.edit ? { canContinue: true } : {}),
       ...(latestEntryId !== undefined ? { latestEntryId } : {}),
       ...(hasEarlier ? { hasEarlier: true } : {}),
       ...(gaps.length ? { gaps } : {}),
@@ -251,7 +267,12 @@ export function chatProjection() {
       ...(activity ? { activity } : {}),
       ...(agent?.model ? { model: { provider: agent.model.provider, id: agent.model.modelId } } : {}),
       ...(agent?.thinkingLevel ? { thinking: agent.thinkingLevel } : {}),
-      ...(live?.runFailure ? { error: failureMessage(live.runFailure), failureTaskId: live.runFailure.taskId }
+      ...(live?.runFailure ? {
+        runOutcome: { kind: live.runFailure.reason === "aborted" ? "cancelled" : "failed", taskId: live.runFailure.taskId,
+          message: live.runFailure.reason === "aborted" ? "Run cancelled." : failureMessage(live.runFailure) },
+        ...(live.runFailure.reason !== "aborted" ? { error: failureMessage(live.runFailure) } : {}),
+        failureTaskId: live.runFailure.taskId,
+      }
         : live?.compactionFailure ? { error: "The model could not compact the conversation.", failureTaskId: live.compactionFailure.taskId } : {}),
     };
   };

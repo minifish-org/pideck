@@ -34,15 +34,23 @@ export async function openSmokeProvider() {
       const held = gateName ? gate(gateName) : undefined;
       const queueExercise = payload.input.some(item => item.role === "user" && JSON.stringify(item.content).includes("Queue hold "));
       const recovering = prompt?.includes("Recover the active request");
+      const controlRun = prompt?.includes("Native tool cancellation") ? "tool"
+        : prompt?.includes("Native continue check") ? "continue" : undefined;
+      const controlOutputCount = payload.input.slice(payload.input.findLastIndex(item => item.role === "user") + 1)
+        .filter(item => item.type === "function_call_output").length;
       const id = randomUUID().replaceAll("-", "");
       const responseId = "resp_" + id;
       const emit = event => response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
       emit({ type: "response.created", response: { id: responseId } });
       let item;
-      if (!recovering && !queueExercise && tools.length < 2) {
-        const name = tools.length === 0 ? "edit" : "bash";
-        const args = JSON.stringify(name === "edit"
+      if (controlRun && controlOutputCount < 2 || !controlRun && !recovering && !queueExercise && tools.length < 2) {
+        const name = controlRun ? controlOutputCount === 0 ? "bash" : "write" : tools.length === 0 ? "edit" : "bash";
+        const args = JSON.stringify(controlRun ? controlOutputCount === 0
+          ? { command: `printf 'NATIVE_${controlRun === "tool" ? "TOOL" : "RUN"}_READY\\n'; sleep 30; printf 'CANCEL_WAS_MISSED\\n'` }
+          : { path: controlRun === "tool" ? "tool-cancel-result.txt" : "continue-result.txt",
+            content: controlRun === "tool" ? "Tool cancelled; remaining work completed.\n" : "Continued work completed.\n" }
+          : name === "edit"
           ? { path: "example.ts", edits: [{ oldText: "'before'", newText: "'after'" }] }
           : { command: 'test -z "$AZURE_OPENAI_API_KEY" && cat example.ts' });
         item = { type: "function_call", id: "fc_" + id, call_id: "call_" + id, name, arguments: "", status: "in_progress" };
@@ -51,9 +59,11 @@ export async function openSmokeProvider() {
         item = { ...item, arguments: args, status: "completed" };
       } else {
         const firstRecoveryAttempt = recovering && ++recoveryRequests === 1;
-        const text = held ? `${gateName}: current run finished.`
+        const text = controlRun === "tool" ? "The long command was cancelled; the rest of the work completed."
+          : controlRun === "continue" ? "Continued the cancelled run and verified the result."
+          : held ? `${gateName}: current run finished.`
           : recovering ? "Recovered after host restart." : "Package stream verified with the real coding tools.";
-        const partial = held ? `${gateName}: current run`
+        const partial = controlRun ? text.slice(0, 20) : held ? `${gateName}: current run`
           : firstRecoveryAttempt ? "Recovery request is in progress." : recovering ? "Recovered" : "Package stream";
         item = { type: "message", id: "msg_" + id, role: "assistant", status: "in_progress", content: [] };
         emit({ type: "response.output_item.added", output_index: 0, item });
@@ -65,7 +75,7 @@ export async function openSmokeProvider() {
           if (response.destroyed) return;
         }
         if (firstRecoveryAttempt) return; // The client is terminated while this response is open.
-        await delay(650);
+        await delay(controlRun ? 1_500 : 650);
         emit({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text.slice(partial.length) });
         item = { ...item, status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
       }

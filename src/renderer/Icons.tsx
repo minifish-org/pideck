@@ -1,14 +1,14 @@
 import {
   ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleAlert, CodeXml, Columns2, Copy,
   Eye, FilePlus2, FileText, Folder, FolderPlus, GitFork, Image, ImagePlus, KeyRound, ListPlus, LoaderCircle, LockKeyhole, MessageCircle,
-  PanelLeft, Pencil, Plus, RotateCw, Search, Settings, SquareTerminal, Timer, Trash2, X,
+  PanelLeft, Pencil, Play, Plus, RotateCw, Search, Settings, SquareTerminal, Timer, Trash2, X,
 } from 'lucide-react';
 import type { SVGProps } from 'react';
 
 const icons = {
   sidebar: PanelLeft, terminal: SquareTerminal, diff: Columns2, folder: Folder, folderPlus: FolderPlus,
   plus: Plus, chat: MessageCircle, chevron: ChevronRight, down: ChevronDown, settings: Settings,
-  arrowUp: ArrowUp, arrowDown: ArrowDown, close: X, file: FileText, copy: Copy,
+  arrowUp: ArrowUp, arrowDown: ArrowDown, close: X, file: FileText, copy: Copy, play: Play,
   queue: ListPlus, eye: Eye, filePlus: FilePlus2, picture: Image, timer: Timer, lock: LockKeyhole,
   code: CodeXml, check: Check, alert: CircleAlert, spinner: LoaderCircle, retry: RotateCw, key: KeyRound, image: ImagePlus, fork: GitFork, edit: Pencil, search: Search, trash: Trash2,
 };

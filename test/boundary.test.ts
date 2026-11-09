@@ -94,6 +94,31 @@ test("IPC validates queue item identity, edits, and relative moves", () => {
   assert.equal(validPayload("chat:queue-update", { ...queued, action: "move", targetId: 9, position: "first" }), false);
 });
 
+test("run controls require a scoped session, idempotent continue key, and bounded task identity", () => {
+  const selection = { projectId, sessionId };
+  const requestId = randomUUID();
+  assert.equal(isCommand("chat:continue"), true);
+  assert.equal(isCommand("chat:task-cancel"), true);
+  assert.equal(isCommand("chat:pause"), false);
+  assert.equal(validPayload("chat:continue", { ...selection, requestId }), true);
+  const model = { provider: "openai", id: "replacement-model" };
+  assert.equal(validPayload("chat:continue", { ...selection, requestId, model, thinking: "high" }), true);
+  assert.equal(validPayload("chat:continue", { ...selection, requestId, model }), false);
+  assert.equal(validPayload("chat:continue", { ...selection, requestId, thinking: "high" }), false);
+  assert.equal(validPayload("chat:continue", { ...selection, requestId, model, thinking: "extreme" }), false);
+  assert.equal(validPayload("chat:task-cancel", { ...selection, taskId: 42 }), true);
+  for (const scoped of [{}, { projectId }, { ...selection, projectId: "../project" }, { ...selection, sessionId: 42 }]) {
+    assert.equal(validPayload("chat:continue", { ...scoped, requestId }), false);
+    assert.equal(validPayload("chat:task-cancel", { ...scoped, taskId: 42 }), false);
+  }
+  for (const key of [undefined, "", 42, "request\0id", "../request"]) {
+    assert.equal(validPayload("chat:continue", { ...selection, requestId: key }), false);
+  }
+  for (const taskId of [undefined, "42", 0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(validPayload("chat:task-cancel", { ...selection, taskId }), false);
+  }
+});
+
 test("tool and terminal environment drops credentials and shell injection variables", () => {
   const env = shellEnvironment({
     PATH: "/usr/bin",

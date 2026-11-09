@@ -64,6 +64,8 @@ async page => {
       }
       for (const message of view.messages) nextFixtureEntryId = Math.max(nextFixtureEntryId, message.entryId ?? 0);
       if (view.status === "running") {
+        view.runStartedAt ??= Date.now() - 8_000;
+        delete view.runEndedAt;
         activity.set(sessionId, { projectId: project.id, sessionId, taskId: ++nextTaskId, state: "running", settled: false });
       }
     }
@@ -89,6 +91,11 @@ async page => {
 
     function change(sessionId, values) {
       const previous = state.views[sessionId];
+      if (values.status === "running" && previous.status !== "running") {
+        values = { runStartedAt: Date.now() - 8_000, runEndedAt: undefined, ...values };
+      } else if (values.status === "idle" && values.runEndedAt === undefined && previous.status !== "idle") {
+        values = { ...values, runEndedAt: Date.now() };
+      }
       const ops = Object.entries(values).map(([key, value]) => ["s", [key], value]);
       state.views[sessionId] = { ...previous, ...values };
       persist();
@@ -120,14 +127,14 @@ async page => {
       }));
       for (const item of ready) queuedTexts.delete(item.id);
       change(sessionId, { messages: [...view.messages, ...placed, {
-        id: `queued-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant",
+        id: `queued-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant", completed: true,
         timestamp: messageTime + nextFixtureEntryId * 100, blocks: [{ type: "text", text: "Queued work finished." }],
       }], queued: queued.slice(stop), canSteerQueued: false });
     }
 
     function finishSecondaryRun(sessionId) {
       change(sessionId, { messages: [...state.views[sessionId].messages, {
-        id: `secondary-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant",
+        id: `secondary-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant", completed: true,
         timestamp: messageTime + nextFixtureEntryId * 100, blocks: [{ type: "text", text: "Secondary work completed." }],
       }], status: "idle", canSteerQueued: false });
       drainIdleQueue(sessionId);
@@ -142,6 +149,53 @@ async page => {
         { type: "text", text: "Writing the result." },
       ] }] });
     }, { once: true });
+
+    let previousCompletedView;
+    window.addEventListener("pideck-fixture-next-run", ({ detail }) => {
+      const sessionId = state.mainSessionId;
+      if (detail) {
+        previousCompletedView = state.views[sessionId];
+        change(sessionId, { messages: [...previousCompletedView.messages,
+          { id: "next-prompt", role: "user", timestamp: messageTime + 100_000, blocks: [{ type: "text", text: "Check the next request." }] },
+          { id: "live-assistant", role: "assistant", timestamp: messageTime + 100_500, blocks: [{ type: "text", text: "Checking the next request…" }] },
+        ], status: "running" });
+      } else change(sessionId, previousCompletedView);
+    });
+
+    let controlsBase;
+    let continuedRequests = new Set();
+    window.addEventListener("pideck-fixture-run-controls", ({ detail }) => {
+      const sessionId = state.mainSessionId;
+      const view = state.views[sessionId];
+      if (detail === "start") {
+        controlsBase = view;
+        continuedRequests = new Set();
+        change(sessionId, { messages: [...view.messages,
+          { id: "controls-prompt", entryId: ++nextFixtureEntryId, role: "user", timestamp: messageTime + 110_000,
+            blocks: [{ type: "text", text: "Verify cancellation and continue the work." }] },
+          { id: "controls-tools", role: "assistant", timestamp: messageTime + 110_500, blocks: [
+            { type: "tool", id: "controls-command", taskId: 9_001, name: "bash", status: "running",
+              arguments: { command: "npm run verify:slow" }, output: "The long-running verification has started." },
+          ] },
+        ], status: "running", canSteerQueued: true, canContinue: undefined, runOutcome: undefined, error: undefined });
+      } else if (detail === "next-tool") {
+        change(sessionId, { messages: [...view.messages,
+          { id: "controls-next-tool", role: "assistant", timestamp: messageTime + 112_000, blocks: [
+            { type: "tool", id: "controls-next-command", taskId: 9_002, name: "bash", status: "running",
+              arguments: { command: "npm run verify:remaining" }, output: "Verifying the remaining work." },
+          ] },
+        ] });
+      } else if (detail === "fail") {
+        change(sessionId, { status: "idle", canContinue: true, canSteerQueued: false,
+          runOutcome: { kind: "failed", taskId: 9_003, message: "The provider connection failed." }, error: "The provider connection failed." });
+      } else if (detail === "finish") {
+        change(sessionId, { messages: [...view.messages.filter(message => message.id !== "controls-continuing"),
+          { id: "controls-final", entryId: ++nextFixtureEntryId, role: "assistant", completed: true,
+            timestamp: messageTime + 115_000,
+            blocks: [{ type: "text", text: "Native controls completed. The result is verified." }] },
+        ], status: "idle", canSteerQueued: false, canContinue: undefined, runOutcome: undefined, error: undefined });
+      } else if (detail === "restore") change(sessionId, controlsBase);
+    });
 
     function addSession(title, view = { messages: [], status: "idle" }, id = crypto.randomUUID()) {
       const session = { id, projectId: project.id, title: title ?? "Untitled session",
@@ -429,6 +483,54 @@ async page => {
             change(sessionId, { queued, canSteerQueued: true });
             return;
           }
+          case "chat:task-cancel": {
+            const view = state.views[payload.sessionId];
+            const active = view?.messages.flatMap(message => message.blocks).find(block => block.taskId === payload.taskId);
+            if (payload.projectId !== project.id || view.status !== "running" || active?.type !== "tool") {
+              throw new Error("The selected tool is no longer running.");
+            }
+            const replace = values => view.messages.map(message => ({ ...message, blocks: message.blocks.map(block =>
+              block.taskId === payload.taskId ? { ...block, ...values } : block) }));
+            change(payload.sessionId, { messages: replace({ cancelling: true }) });
+            await new Promise(resolve => setTimeout(resolve, 30));
+            change(payload.sessionId, { messages: [...replace({ taskId: undefined, cancelling: undefined, cancelled: true,
+              status: "error", output: "The tool was cancelled. The rest of the run can continue." }),
+              { id: "controls-progress", role: "assistant", timestamp: messageTime + 111_000,
+                blocks: [{ type: "text", text: "Continuing after the tool cancellation." }] },
+            ] });
+            document.body.dataset.cancelledTask = String(payload.taskId);
+            return;
+          }
+          case "chat:cancel": {
+            const view = state.views[payload.sessionId];
+            if (payload.projectId !== project.id || view.status !== "running") throw new Error("No run is active.");
+            const withdrawn = view.queued?.length ?? 0;
+            change(payload.sessionId, { status: "cancelling" });
+            await new Promise(resolve => setTimeout(resolve, 30));
+            for (const item of view.queued ?? []) queuedTexts.delete(item.id);
+            change(payload.sessionId, { status: "idle", messages: view.messages.map(message => ({ ...message,
+              blocks: message.blocks.map(block => block.taskId === undefined ? block : { ...block, taskId: undefined,
+                cancelling: undefined, cancelled: true, status: "error", output: "The run was cancelled." }),
+            })), queued: [], canSteerQueued: false, canContinue: true, error: undefined,
+              runOutcome: { kind: "cancelled", taskId: 9_002, message: "Run cancelled." } });
+            document.body.dataset.withdrawnInputs = String(withdrawn);
+            return;
+          }
+          case "chat:continue": {
+            const view = state.views[payload.sessionId];
+            if (continuedRequests.has(payload.requestId)) return;
+            if ("text" in payload || "images" in payload) throw new Error("Native Continue must not submit composer content.");
+            if (payload.projectId !== project.id || view.status !== "idle" || !view.canContinue || !payload.requestId) {
+              throw new Error("There is no unfinished work to continue.");
+            }
+            continuedRequests.add(payload.requestId);
+            document.body.dataset.continueRequests = String(continuedRequests.size);
+            change(payload.sessionId, { status: "running", runStartedAt: Date.now(), canContinue: undefined, runOutcome: undefined, error: undefined,
+              messages: [...view.messages.filter(message => message.id !== "controls-continuing"), { id: "controls-continuing", role: "assistant", timestamp: messageTime + 113_000,
+                blocks: [{ type: "text", text: "Continuing the unfinished work…" }] }] });
+            await new Promise(resolve => setTimeout(resolve, 40));
+            return;
+          }
           case "chat:queue-read": {
             const item = state.views[payload.sessionId]?.queued?.find(({ id }) => id === payload.id);
             if (!item || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
@@ -496,6 +598,7 @@ async page => {
             }
             change(sessionId, { queued });
             if (action === "steer") {
+              if (controlsBase) return;
               const result = queued.map(({ delivery, id }) => [delivery, queuedTexts.get(id)]);
               if (JSON.stringify(result) !== JSON.stringify([
                 ["steer", "Prefer a focused check."],
@@ -503,7 +606,7 @@ async page => {
                 ["follow-up", "Report the final verification."],
               ])) throw new Error("Queue operations did not leave the expected order and content.");
               window.addEventListener("pideck-fixture-finish-queue", () => {
-                const reply = { id: "reply", entryId: 8, role: "assistant", timestamp: messageTime + 95_000, durationMs: 95_000, blocks: [
+                const reply = { id: "reply", entryId: 8, role: "assistant", completed: true, timestamp: messageTime + 95_000, blocks: [
                   { type: "text", text: "I updated the status and checked the result.\n\n[Review source](example.ts#L1) · [Project source](/workspace/sample/example.ts#L1) · [Project guide](README.md) · [Unchanged line](example.ts#L30) · [Node docs](https://nodejs.org/api/assert.html) · [Unsafe link](javascript:alert%281%29) · [Outside file](/workspace/elsewhere/private.txt)" },
                   { type: "tool", name: "edit", id: "edit", path: "example.ts", status: "done", patch },
                   { type: "tool", name: "edit", id: "large-edit", path: "second.ts", status: "done", patch: largePatch },
@@ -511,7 +614,16 @@ async page => {
                   { type: "tool", name: "bash", id: "failed-bash", status: "error", output: "Lint reported an error.", arguments: { command: "npm run lint" } },
                 ] };
                 for (const { id } of queued) queuedTexts.delete(id);
-                change(sessionId, { messages: [state.views[sessionId].messages[0], reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
+                const progress = [
+                  { id: "inspection", entryId: 3, role: "assistant", timestamp: messageTime + 1_000, blocks: [
+                    { type: "text", text: "Inspecting the project before making the change." },
+                    { type: "tool", name: "bash", id: "inspection", status: "done", output: "Working tree inspected.", arguments: { command: "git status --short" } },
+                  ] },
+                  { id: "verification", entryId: 5, role: "assistant", timestamp: messageTime + 3_000, blocks: [
+                    { type: "tool", name: "bash", id: "verification", status: "done", output: "Node version verified.", arguments: { command: "node --version" } },
+                  ] },
+                ];
+                change(sessionId, { messages: [state.views[sessionId].messages[0], ...progress, reply], status: "idle", canSteerQueued: false, queued: [], hasEarlier: true });
               }, { once: true });
             }
             return;

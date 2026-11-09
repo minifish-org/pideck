@@ -208,6 +208,10 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.updateQueuedInput(payload);
     case "chat:cancel":
       return runtime.cancel(payload);
+    case "chat:continue":
+      return runtime.continue(payload);
+    case "chat:task-cancel":
+      return runtime.cancelTask(payload);
     case "chat:fork":
       return runtime.fork(payload, payload.entryId, payload.title);
     case "chat:unwatch":

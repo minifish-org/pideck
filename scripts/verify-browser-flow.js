@@ -52,6 +52,238 @@ async page => {
     await page.evaluate(preference => window.dispatchEvent(new CustomEvent("pideck-fixture-appearance", { detail: preference })), preference);
     await page.waitForFunction(resolved => document.documentElement.dataset.colorMode === resolved, resolved);
   };
+  async function footerGeometry(message) {
+    return message.evaluate(article => {
+      const footer = article.querySelector('.message-footer');
+      const time = footer.querySelector('time');
+      const bounds = footer.getBoundingClientRect();
+      const timestamp = time.getBoundingClientRect();
+      const buttons = [...footer.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+      if (Math.abs(timestamp.left - bounds.left) > 1 || Math.abs(bounds.left - article.getBoundingClientRect().left) > 1
+        || buttons.some(button => button.left < timestamp.right || button.right > bounds.right + 1)
+        || bounds.top < article.querySelector('.message-content').getBoundingClientRect().bottom - 1) {
+        throw new Error('AI metadata must start with its timestamp at the left edge, below the output and without overflow.');
+      }
+      return { font: getComputedStyle(time).fontSize, timeWidth: timestamp.width,
+        buttons: buttons.map(button => ({ width: button.width, height: button.height })) };
+    });
+  }
+  async function expectQuietMetadata(message) {
+    await prompt.focus();
+    await page.mouse.move(0, 0);
+    const metadata = message.locator(".message-footer time, .message-footer button");
+    if (!await metadata.evaluateAll(items => items.length > 1 && items.every(item => getComputedStyle(item).opacity === "0"))) {
+      throw new Error("Message timestamps and actions should be hidden together until hover or keyboard focus.");
+    }
+    await message.hover();
+    if (!await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1"))) {
+      throw new Error("Hover must reveal both the timestamp and all message actions.");
+    }
+    await prompt.focus();
+    await page.mouse.move(0, 0);
+    await message.locator(".message-footer button").first().focus();
+    if (!await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1"))) {
+      throw new Error("Keyboard focus must reveal the timestamp together with Copy and Fork.");
+    }
+  }
+  async function runClock() {
+    return page.locator(".run-clock").evaluate(clock => {
+      const startedAt = Number(clock.dataset.startedAt);
+      const endedAt = clock.dataset.endedAt === undefined ? undefined : Number(clock.dataset.endedAt);
+      const parts = clock.textContent.trim().split(":").map(Number);
+      const seconds = parts.reduce((total, part) => total * 60 + part, 0);
+      const elapsed = Math.floor(Math.max(0, (endedAt ?? Date.now()) - startedAt) / 1000);
+      if (!Number.isFinite(startedAt) || !Number.isFinite(seconds) || parts.length < 2
+        || endedAt !== undefined && (!Number.isFinite(endedAt) || endedAt < startedAt)
+        || (endedAt === undefined ? Math.abs(elapsed - seconds) > 1 : elapsed !== seconds) || getComputedStyle(clock).opacity !== "1"
+        || clock.getAttribute("role") !== "timer" || clock.getAttribute("aria-live") !== "off") {
+        throw new Error("The visible elapsed clock must reflect the native run start, without per-second announcements.");
+      }
+      return { startedAt, endedAt, seconds };
+    });
+  }
+  async function checkAssistantFooter(kind) {
+    const message = page.locator('.chat-entry--assistant[data-message-id="reply"]');
+    const viewport = page.viewportSize();
+    for (const width of [1280, 720]) for (const theme of ['dark', 'light']) {
+      await page.setViewportSize({ width, height: 900 });
+      await appearance(theme);
+      await message.hover();
+      if (kind === 'finished') {
+        const measured = await footerGeometry(message);
+        if (measured.font !== '11px' || measured.buttons.length !== 2
+          || measured.buttons.some(button => button.width !== 24 || button.height !== 24)) {
+          throw new Error('The final AI timestamp and actions must use the common footer sizes.');
+        }
+        if (await page.locator('.chat-entry--assistant > .message-footer').count() !== 1) {
+          throw new Error('Only the final answer should have AI message controls.');
+        }
+        await expectQuietMetadata(message);
+      } else if (await page.locator('.chat-entry--assistant > .message-footer').count()) {
+        throw new Error('Intermediate AI text and tool messages must not show timestamps, copy or branch actions.');
+      }
+      if (width === 1280) await message.screenshot({ path: `output/playwright/pideck-footer-${kind}-${theme}.png` });
+    }
+    await appearance('dark');
+    await page.setViewportSize(viewport);
+  }
+
+  async function checkNativeRunControls() {
+    const viewport = page.viewportSize();
+    const ordinaryDraft = await prompt.inputValue();
+    const run = detail => page.evaluate(detail => window.dispatchEvent(new CustomEvent("pideck-fixture-run-controls", { detail })), detail);
+    const originalPositions = new Map();
+    const clockPositions = new Map();
+    async function capture(stage, action) {
+      if (stage !== "running") await page.locator(".run-clock[data-ended-at]").waitFor();
+      const frozen = stage === "running" ? undefined : await runClock();
+      for (const width of [1280, 720]) for (const theme of ["dark", "light"]) {
+        await page.setViewportSize({ width, height: 900 });
+        await appearance(theme);
+        {
+          const button = page.getByRole("button", { name: action ?? "Cancel run", exact: true });
+          await button.waitFor();
+          // Responsive panel and textarea sizing settle after ResizeObserver.
+          // Hover waits for a stable target rather than sampling its old frame.
+          await button.hover();
+          await button.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const position = await button.evaluate(button => {
+            const row = button.closest(".composer-run");
+            const wrap = row.closest(".composer-wrap");
+            const form = wrap.querySelector("form.composer").getBoundingClientRect();
+            const bounds = row.getBoundingClientRect();
+            const queue = wrap.querySelector(".queued-messages")?.getBoundingClientRect();
+            const control = button.getBoundingClientRect();
+            if (bounds.bottom > form.top + 1 || form.top - bounds.bottom > 10
+              || queue && bounds.top < queue.bottom - 1
+              || control.right > form.right + 1 || control.left < form.left) {
+              throw new Error("Run controls must sit directly above the input, below the queue, without overflow.");
+            }
+            return { x: control.x, y: control.y, width: control.width, height: control.height };
+          });
+          const key = `${width}/${theme}`;
+          if (stage === "running") originalPositions.set(key, position);
+          else {
+            const before = originalPositions.get(key);
+            if (Object.keys(before).some(key => Math.abs(before[key] - position[key]) > 1)) {
+              throw new Error(`Cancel and Continue moved when the queued messages were withdrawn at ${key}: ${JSON.stringify({ before, after: position })}`);
+            }
+          }
+          if (await page.locator(".composer-run-control").count() !== 1 || await page.locator(".chat-run-error").count()) {
+            throw new Error("The same run has duplicated controls or a second transcript status banner.");
+          }
+          if (stage === "completed") {
+            if (!await button.isDisabled() || await page.getByRole("button", { name: "Continue run", exact: true }).count()
+              || await page.locator('.composer-run[data-run-state="completed"]').count() !== 1
+              || !await button.evaluate(button => {
+                const style = getComputedStyle(button);
+                const clock = button.closest(".composer-run").querySelector(".run-clock");
+                return button.dataset.action === "cancel" && Boolean(button.querySelector("svg rect"))
+                  && Number(style.opacity) > 0 && Number(style.opacity) <= .5
+                  && style.color === getComputedStyle(clock).color;
+              })) throw new Error("Completed work must retain one muted, disabled Cancel button beside its frozen clock.");
+          } else if (!await button.isEnabled()) throw new Error("Running Cancel and eligible Continue controls must be enabled.");
+        }
+        await page.locator(".run-clock").hover();
+        await page.locator(".run-clock").evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const clock = await runClock();
+        if (stage === "running" ? clock.endedAt !== undefined : clock.endedAt === undefined) {
+          throw new Error("Run clocks must tick while active and carry the native end timestamp when settled.");
+        }
+        const clockPosition = await page.locator(".run-clock").boundingBox();
+        const clockKey = `${width}/${theme}`;
+        if (stage === "running") clockPositions.set(clockKey, clockPosition);
+        else {
+          const original = clockPositions.get(clockKey);
+          if (["x", "y", "width", "height"].some(key => Math.abs(original[key] - clockPosition[key]) > 1)) {
+            throw new Error(`The settled clock moved from its running position at ${clockKey}.`);
+          }
+        }
+        if (stage === "running") await page.locator('[data-message-id="controls-tools"]').hover();
+        if (width === 1280) await page.screenshot({ path: `output/playwright/pideck-run-controls-${stage}-${theme}.png` });
+      }
+      await appearance("dark");
+      await page.setViewportSize(viewport);
+      if (frozen) {
+        await page.waitForTimeout(1_100);
+        if (JSON.stringify(await runClock()) !== JSON.stringify(frozen)) throw new Error("A settled run clock kept counting.");
+      }
+    }
+    await run("start");
+    const controlTool = page.locator('[data-message-id="controls-tools"]');
+    const cancelTool = controlTool.getByRole("button", { name: "Cancel this tool", exact: true });
+    await cancelTool.waitFor();
+    await prompt.fill("This queued message should be withdrawn by Cancel.");
+    await page.getByRole("button", { name: "Queue next", exact: true }).click();
+    const controlsQueue = page.getByRole("list", { name: "Queued messages", exact: true });
+    await controlsQueue.getByText("This queued message should be withdrawn by Cancel.", { exact: true }).waitFor();
+    const draft = "Keep this ordinary draft while cancelling and continuing.";
+    await prompt.fill(draft);
+    const userMessages = await page.getByRole("article", { name: "You", exact: true }).allTextContents();
+    await capture("running", "Cancel run");
+    await prompt.focus();
+    await page.mouse.move(0, 0);
+    const initialClock = await runClock();
+    await page.waitForFunction(previous => {
+      const clock = document.querySelector(".run-clock");
+      return clock && clock.textContent.trim().split(":").map(Number).reduce((total, part) => total * 60 + part, 0) > previous;
+    }, initialClock.seconds);
+    if ((await runClock()).startedAt !== initialClock.startedAt) throw new Error("The active stopwatch restarted on its own.");
+    await controlsQueue.getByRole("button", { name: "Steer current run", exact: true }).click();
+    await controlsQueue.getByText("Steering", { exact: true }).waitFor();
+    if ((await runClock()).startedAt !== initialClock.startedAt) throw new Error("Steering reset the active run stopwatch.");
+    await cancelTool.click();
+    await page.waitForFunction(() => document.body.dataset.cancelledTask === "9001");
+    await page.getByText("Continuing after the tool cancellation.", { exact: true }).waitFor();
+    if (await page.getByRole("button", { name: "Cancel run", exact: true }).count() !== 1
+      || await controlsQueue.count() !== 1 || await prompt.inputValue() !== draft
+      || await controlTool.locator(".message-footer").count()
+      || await controlTool.locator('.tool-state[aria-label="Cancelled"]').count() !== 1) {
+      throw new Error("Cancelling one tool changed the run, queue, draft, or intermediate footer scope.");
+    }
+    if ((await runClock()).startedAt !== initialClock.startedAt) throw new Error("A tool result reset the active run stopwatch.");
+    await run("next-tool");
+    await page.getByRole("button", { name: "Cancel run", exact: true }).click();
+    await page.getByRole("button", { name: "Continue run", exact: true }).waitFor();
+    await controlsQueue.waitFor({ state: "detached" });
+    if (await page.evaluate(() => document.body.dataset.withdrawnInputs) !== "1" || await prompt.inputValue() !== draft) {
+      throw new Error("Cancelling a run did not withdraw its queue while retaining the draft.");
+    }
+    await capture("cancelled", "Continue run");
+    await page.getByRole("button", { name: "Continue run", exact: true }).click();
+    await page.getByText("Continuing the unfinished work…", { exact: true }).waitFor();
+    await page.locator(".run-clock").waitFor();
+    if ((await runClock()).startedAt <= initialClock.startedAt) throw new Error("Continue did not start a new run stopwatch.");
+    if (await page.evaluate(() => document.body.dataset.continueRequests) !== "1"
+      || JSON.stringify(await page.getByRole("article", { name: "You", exact: true }).allTextContents()) !== JSON.stringify(userMessages)
+      || await prompt.inputValue() !== draft) throw new Error("Continue inserted a user message or sent the ordinary draft.");
+    await run("fail");
+    await page.locator('.composer-run[data-run-state="failed"] .run-state[role="alert"]')
+      .getByText("The provider connection failed.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Continue run", exact: true }).waitFor();
+    if (await page.getByText("The provider connection failed.", { exact: true }).count() !== 1) {
+      throw new Error("A failed run repeats the same error in multiple places.");
+    }
+    await capture("failed", "Continue run");
+    await page.getByRole("button", { name: "Continue run", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.continueRequests === "2");
+    await run("finish");
+    const final = page.locator('[data-message-id="controls-final"]');
+    await final.locator(".message-footer").waitFor();
+    await page.locator('.composer-run[data-run-state="completed"]').waitFor();
+    if (await page.locator(".message-duration").count()
+      || await page.getByRole("button", { name: "Continue run", exact: true }).count()
+      || await prompt.inputValue() !== draft
+      || JSON.stringify(await page.getByRole("article", { name: "You", exact: true }).allTextContents()) !== JSON.stringify(userMessages)) {
+      throw new Error("Continue completion lost its final footer or changed user-authored content.");
+    }
+    await final.hover();
+    await capture("completed");
+    await run("restore");
+    await prompt.fill(ordinaryDraft);
+    await appearance("dark");
+    await page.setViewportSize(viewport);
+  }
 
   const open = page.getByRole("button", { name: /^Open (?:a project )?folder$/i });
   await open.waitFor();
@@ -659,12 +891,8 @@ async page => {
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Queue next" }).waitFor();
-  const copyOutput = page.getByRole("button", { name: "Copy output", exact: true });
-  await copyOutput.focus();
-  await copyOutput.press("Enter");
-  await page.getByRole("button", { name: "Output copied", exact: true }).waitFor();
-  if (await page.evaluate(() => document.body.dataset.copiedText) !== "Running the status check…") {
-    throw new Error("Copy output included text beyond the independent tool result.");
+  if (await page.locator('.chat-entry--assistant > .message-footer').count()) {
+    throw new Error("A running tool message already shows AI message controls.");
   }
   if (await page.getByRole("button", { name: "Steer run", exact: true }).count()) throw new Error("The composer exposes a second send action.");
   const queue = page.getByRole("list", { name: "Queued messages" });
@@ -858,9 +1086,11 @@ async page => {
   await page.getByText("Running the status check…", { exact: true }).waitFor({ state: "hidden" });
   await successfulCommand.press("Enter");
   await page.getByText("Running the status check…", { exact: true }).waitFor();
+  await checkAssistantFooter('tools');
   await page.evaluate(() => window.dispatchEvent(new Event("pideck-fixture-write-result")));
   await page.getByRole("status").getByText("Writing response…", { exact: true }).waitFor();
   await page.locator(".tool-output").filter({ hasText: "Verified step 8." }).waitFor();
+  await checkAssistantFooter('mixed');
   await page.setViewportSize({ width: queueViewport.width, height: 420 });
   const transcript = page.locator(".chat-scroll");
   await page.waitForFunction(() => {
@@ -930,6 +1160,17 @@ async page => {
   }
   const userMessage = page.getByRole("article", { name: "You", exact: true }).filter({ hasText: "Update and verify the status." });
   const assistantMessage = page.getByRole("article", { name: "Pideck", exact: true }).filter({ hasText: "I updated the status and checked the result." });
+  await checkAssistantFooter('finished');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('pideck-fixture-next-run', { detail: true })));
+  await page.getByText('Checking the next request…', { exact: true }).waitFor();
+  if (await page.locator('.chat-entry--assistant > .message-footer').count() !== 1
+    || await assistantMessage.locator('.message-footer').count() !== 1
+    || await page.locator('[data-message-id="live-assistant"] .message-footer').count()) {
+    throw new Error('Starting another run must retain the previous final footer without adding live controls.');
+  }
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('pideck-fixture-next-run', { detail: false })));
+  await page.getByText('Checking the next request…', { exact: true }).waitFor({ state: 'detached' });
+  await checkNativeRunControls();
   if (await assistantMessage.getByRole("link", { name: "Unsafe link", exact: true }).count()
     || await assistantMessage.getByRole("link", { name: "Outside file", exact: true }).count()) {
     throw new Error("Unsafe schemes or paths outside the project became clickable message links.");
@@ -1095,11 +1336,14 @@ async page => {
       throw new Error("Copying a message included controls or lost its text/tool result.");
     }
   }
-  const duration = assistantMessage.locator(".message-duration");
-  if (await page.locator(".message-duration").count() !== 1
-    || await duration.getAttribute("aria-label") !== "Total working time"
-    || (await duration.textContent()).trim() !== "1m 35s" || !await duration.getAttribute("title")) {
-    throw new Error("The finished interaction should display its total working time exactly once.");
+  if (await page.locator(".message-duration").count()) throw new Error("Duration must stay out of the message footer.");
+  await page.locator(".run-clock[data-ended-at]").waitFor();
+  const retainedClock = await runClock();
+  if (retainedClock.endedAt === undefined) throw new Error("The completed conversation lost its frozen total.");
+  for (const theme of ["light", "dark"]) {
+    await appearance(theme);
+    await expectQuietMetadata(userMessage);
+    await expectQuietMetadata(assistantMessage);
   }
   await userMessage.hover();
   if (await page.getByRole("article", { name: "You", exact: true })

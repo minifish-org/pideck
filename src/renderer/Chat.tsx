@@ -8,6 +8,7 @@ import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
 import { QueuedMessages } from './QueuedMessages';
+import { RunClock } from './RunClock';
 import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import { completeAttempt, retainQueueEditText } from './preferences';
@@ -45,12 +46,15 @@ const thinkingLabels: Record<Thinking, string> = {
   off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum',
 };
 
-function ToolCard({ block, onReview, expanded, onExpand }: {
+function ToolCard({ block, onReview, expanded, onExpand, onCancel }: {
   block: ToolBlock;
   onReview: (selection: ReviewSelection) => void;
   expanded?: boolean;
   onExpand: (id: string, expanded: boolean) => void;
+  onCancel?: (taskId: number) => Promise<void>;
 }) {
+  const [cancellingTask, setCancellingTask] = useState<number>();
+  const [cancelError, setCancelError] = useState<string>();
   const command = block.arguments?.command;
   const argPath = block.arguments?.path;
   const path = block.path ?? (typeof argPath === 'string' ? argPath : undefined);
@@ -60,15 +64,20 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   const label = toolLabels[block.name] ?? block.name;
   const showReview = (block.name === 'edit' || block.name === 'write') && path && block.status === 'done';
   const active = block.status === 'pending' || block.status === 'running';
-  const status = block.status === 'error' ? 'Failed' : shell && block.status === 'done' ? 'Succeeded' : undefined;
+  const cancelling = block.cancelling || cancellingTask === block.taskId && cancellingTask !== undefined;
+  const status = block.cancelled ? 'Cancelled' : block.status === 'error' ? 'Failed' : shell && block.status === 'done' ? 'Succeeded' : undefined;
   const output = block.output?.trimEnd();
   const shortOutput = output && output.length <= 420 && output.split('\n', 7).length <= 6;
   const open = expanded ?? (Boolean(block.patch) || block.status === 'error' || (shell && Boolean(active || shortOutput)));
+  useEffect(() => {
+    if (!active || cancellingTask !== block.taskId) setCancellingTask(undefined);
+    setCancelError(undefined);
+  }, [active, block.taskId]);
 
   return (
     <details className="tool-card" open={open} data-command-expanded={shell && expanded === true || undefined}>
       <summary title={target} aria-label={[label, target].filter(Boolean).join(' ')}
-        aria-description={active ? block.status === 'running' ? 'Running' : 'Queued' : status} onClick={(event) => {
+        aria-description={active ? cancelling ? 'Cancelling' : block.status === 'running' ? 'Running' : 'Queued' : status} onClick={(event) => {
         event.preventDefault();
         const selection = shell && event.detail > 0 ? window.getSelection() : null;
         if (selection && !selection.isCollapsed && selection.containsNode(event.currentTarget, true)) return;
@@ -78,12 +87,34 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
           className={active ? 'tool-spinner' : undefined} /></span>
         {(!knownTool || !target) && <span className="tool-label">{label}</span>}
         {target && <span className={shell ? 'tool-target tool-target--command' : 'tool-target'}>{target}</span>}
-        {status && <span className="tool-state" data-status={block.status} role="status" aria-label={status} title={status}>
-          <Icon name={block.status === 'error' ? 'alert' : 'check'} width={14} height={14} />
+        {status && <span className="tool-state" data-status={block.cancelled ? 'cancelled' : block.status} role="status" aria-label={status} title={status}>
+          <Icon name={block.cancelled ? 'stop' : block.status === 'error' ? 'alert' : 'check'} width={14} height={14} />
         </span>}
+        {active && block.taskId !== undefined && onCancel && <button className="icon-button tool-cancel" type="button"
+          aria-label="Cancel this tool" title={cancelling ? 'Cancelling this tool…' : 'Cancel this tool'}
+          disabled={Boolean(cancelling)} aria-busy={cancelling || undefined}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.stopPropagation();
+              if (event.repeat) event.preventDefault();
+            }
+          }} onClick={async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.detail > 1 || cancelling || block.taskId === undefined) return;
+            setCancellingTask(block.taskId);
+            setCancelError(undefined);
+            try { await onCancel(block.taskId); }
+            catch (error) {
+              setCancelError(readableError(error));
+              setCancellingTask(undefined);
+              onExpand(block.id, true);
+            }
+          }}><Icon name={cancelling ? 'spinner' : 'stop'} className={cancelling ? 'tool-spinner' : undefined} width={13} height={13} /></button>}
         <Icon className="tool-caret" name="chevron" width={12} height={12} />
       </summary>
       <div className="tool-detail">
+        {cancelError && <div className="tool-action-error" role="alert">{cancelError}</div>}
         {block.patch
           ? <Suspense fallback={<div className="panel-loading" role="status">Loading diff…</div>}>
               <InlineDiff patch={block.patch} onOpen={() => onReview({ path, patch: block.patch })} />
@@ -99,13 +130,14 @@ function ToolCard({ block, onReview, expanded, onExpand }: {
   );
 }
 
-const Message = memo(function Message({ message, project, onReview, onFork, toolDisclosure, onToolExpand }: {
+const Message = memo(function Message({ message, project, onReview, onFork, toolDisclosure, onToolExpand, onCancelTool }: {
   message: ChatMessage;
   project: Project;
   onReview: (selection: ReviewSelection) => void;
   onFork?: (entryId: number) => void;
   toolDisclosure: ReadonlyMap<string, boolean>;
   onToolExpand: (id: string, expanded: boolean) => void;
+  onCancelTool?: (taskId: number) => Promise<void>;
 }) {
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   const author = message.role === 'user' ? 'You' : 'Pideck';
@@ -129,12 +161,12 @@ const Message = memo(function Message({ message, project, onReview, onFork, tool
               return <ImageBlock image={block} alt="Attached image" key={index} />;
             case 'tool':
               return <ToolCard block={block} onReview={onReview} key={block.id}
-                expanded={toolDisclosure.get(block.id)} onExpand={onToolExpand} />;
+                expanded={toolDisclosure.get(block.id)} onExpand={onToolExpand} onCancel={onCancelTool} />;
           }
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
-      <MessageFooter message={message} onFork={onFork} toolOnly={toolOnly} />
+      {(message.role === 'user' || message.completed) && <MessageFooter message={message} onFork={onFork} toolOnly={toolOnly} />}
     </article>
   );
 });
@@ -249,6 +281,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     useConversation({ projectId: project.id, sessionId: session?.id }, currentPosition);
   const connected = !session || watchConnected;
   const [stopping, setStopping] = useState(false);
+  const [continuing, setContinuing] = useState(false);
+  const [runControlError, setRunControlError] = useState<string>();
+  const runControlPending = useRef<'cancel' | 'continue' | undefined>(undefined);
+  const continueRequest = useRef<{ failureTaskId?: number; requestId: string } | undefined>(undefined);
   const [jumpVisible, setJumpVisible] = useState(false);
   const [readingHistory, setReadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
@@ -296,10 +332,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const hasDraft = Boolean(text.trim() || attachments.length);
   const startingSession = !session && draft.sending;
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
-  const canSend = !queueEdit && connected && !agentCompacting && !stopping && !draft.sending && !draft.reading
+  const canSend = !queueEdit && connected && !agentCompacting && !stopping && !continuing && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured || awaitingSavedModel)
     && hasDraft && (!attachments.length || canAttach);
-  const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !queueSaving && !draft.sending
+  const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !continuing && !queueSaving && !draft.sending
     && view?.status !== 'cancelling' && view?.queued?.some(item => item.id === queueEdit.id)
     && queueReady === queueEdit.token && (queueEdit.text.trim() || queueEdit.hasImages));
   const gaps = view?.gaps ?? [];
@@ -307,6 +343,16 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   useEffect(() => {
     if (!connected || (!busy && !agentCompacting)) setStopping(false);
   }, [agentCompacting, busy, connected]);
+
+  useEffect(() => {
+    if (busy || !view?.canContinue || view.runOutcome?.taskId !== continueRequest.current?.failureTaskId) setContinuing(false);
+    setRunControlError(undefined);
+  }, [busy, view?.canContinue, view?.runOutcome?.taskId]);
+
+  const cancelTool = useCallback(async (taskId: number) => {
+    if (!session) return;
+    await window.pideck.invoke('chat:task-cancel', { projectId: project.id, sessionId: session.id, taskId });
+  }, [project.id, session?.id]);
 
   function update(patch: Partial<Draft>) {
     updateDraft((current) => ({ ...current, ...patch }));
@@ -510,14 +556,41 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   }
 
   async function cancel() {
-    if (!selection) return;
+    if (!selection || runControlPending.current) return;
+    runControlPending.current = 'cancel';
     setStopping(true);
-    update({ error: undefined });
+    setRunControlError(undefined);
     try {
       await window.pideck.invoke('chat:cancel', selection);
     } catch (error) {
-      update({ error: readableError(error) });
+      setRunControlError(readableError(error));
       setStopping(false);
+    } finally {
+      runControlPending.current = undefined;
+    }
+  }
+
+  async function continueRun() {
+    if (!selection || !view?.canContinue || runControlPending.current || busy) return;
+    runControlPending.current = 'continue';
+    setContinuing(true);
+    setRunControlError(undefined);
+    const failureTaskId = view.runOutcome?.taskId;
+    if (!continueRequest.current || continueRequest.current.failureTaskId !== failureTaskId) {
+      continueRequest.current = { failureTaskId, requestId: crypto.randomUUID() };
+    }
+    try {
+      const catalog = awaitingSavedModel ? await onLoadSavedModels() : models;
+      const destination = resolveModel(catalog);
+      if (!destination?.configured) throw new Error('Connect this model provider or choose an available model.');
+      await window.pideck.invoke('chat:continue', { ...selection, requestId: continueRequest.current.requestId,
+        model: { provider: destination.provider, id: destination.id }, thinking: resolveThinking(destination) });
+      jumpToLatest();
+    } catch (error) {
+      setRunControlError(readableError(error));
+      setContinuing(false);
+    } finally {
+      runControlPending.current = undefined;
     }
   }
 
@@ -580,12 +653,24 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const retryTime = view?.activity?.kind === 'retrying' && view.activity.retryAt
     ? new Date(view.activity.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined;
   const progress = busy && view ? runPhase(view.messages) : undefined;
-  const runStatus = stopping || view?.status === 'cancelling' ? 'Stopping…'
+  const runOutcome = !busy && !agentCompacting ? view?.runOutcome : undefined;
+  const runState = continuing ? 'continuing' : stopping || view?.status === 'cancelling' ? 'cancelling'
+    : busy || agentCompacting ? 'running' : runOutcome?.kind ?? (view?.error || runControlError ? 'failed' : view?.canContinue ? 'ready' : undefined);
+  const runStatus = runControlError ?? (continuing ? 'Continuing…'
+    : stopping || view?.status === 'cancelling' ? 'Cancelling…'
     : agentCompacting ? 'Summarizing context…'
     : view?.activity?.kind === 'retrying' ? retryTime ? `Model retry scheduled for ${retryTime}` : 'Retrying the model…'
     : view?.activity?.kind === 'waiting' ? 'Waiting for the provider…'
-    : progress?.label;
+    : progress?.label ?? (runOutcome?.kind === 'cancelled' ? 'Cancelled' : runOutcome?.message ?? view?.error
+      ?? (view?.canContinue ? 'Ready to continue' : undefined)));
   const runDetail = progress?.label === runStatus ? progress?.detail : undefined;
+  const queuedCount = view?.queued?.length ?? 0;
+  const cancelScope = queuedCount ? `Cancel also withdraws ${queuedCount} queued message${queuedCount === 1 ? '' : 's'}.` : undefined;
+  const controlIsContinue = continuing || !busy && !agentCompacting && !stopping && Boolean(view?.canContinue);
+  const showRunControl = busy || agentCompacting || stopping || continuing || view?.canContinue;
+  const runControlEnabled = showRunControl && connected && !stopping && !continuing && view?.status !== 'cancelling' && !draft.sending && !queueSaving;
+  const showRunClock = view?.runStartedAt !== undefined && Number.isFinite(view.runStartedAt)
+    && (view.runEndedAt === undefined || Number.isFinite(view.runEndedAt));
   const composerStatus = draft.sending ? awaitingSavedModel ? 'Loading saved models…' : 'Sending…'
     : draft.reading ? 'Attaching images…'
     : attachments.length > 0 && model && !model.supportsImages ? 'Choose a model that accepts images.'
@@ -649,28 +734,19 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
               <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
                 {renderGaps(message.id)}
                 <Message message={message} project={project} onReview={onReview} onFork={connected && !forking ? fork : undefined}
-                  toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded} />
+                  toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded}
+                  onCancelTool={connected && !stopping && view?.status !== 'cancelling' ? cancelTool : undefined} />
               </div>
             ))}
             {renderGaps()}
-            {view?.error && <div className="notice chat-run-error" role="alert"><Icon name="alert" /><span>{view.error}</span></div>}
           </div>
         ) : null}
       </div>
       {jumpVisible && <div className="chat-jump-anchor"><button className="chat-jump" type="button" aria-label="Latest"
         title="Jump to latest message" onClick={jumpToLatest}><Icon name="arrowDown" /></button></div>}
       <div className="composer-wrap">
-        {runStatus && <div className="composer-run">
-          <div className="run-state" role="status">
-            <span className="run-state-dot" /><span>{runStatus}</span>
-            {runDetail && <code className="run-detail" title={runDetail}>{runDetail}</code>}
-          </div>
-          <button className="composer-stop" type="button" onClick={cancel}
-            title={agentCompacting ? 'Stop current work' : 'Stop the run'} aria-label={agentCompacting ? 'Stop current work' : 'Stop the run'}
-            disabled={!connected || stopping || view?.status === 'cancelling'}><Icon name="stop" /></button>
-        </div>}
         {selection && <QueuedMessages selection={selection} items={view?.queued} canSteer={Boolean(view?.canSteerQueued)}
-          enabled={connected && !stopping && view?.status !== 'cancelling'}
+          enabled={connected && !stopping && !continuing && view?.status !== 'cancelling'}
           editingId={queueEdit?.id} onEdit={editQueuedMessage}
           onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />}
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
@@ -682,6 +758,26 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             ? <button className="inline-action" type="button" onClick={onRetryModels}>Retry models</button>
             : <button className="icon-button" type="button" aria-label="Dismiss chat notice"
               onClick={() => update({ error: undefined })}><Icon name="close" /></button>}
+        </div>}
+        {(runStatus || showRunClock) && <div className="composer-run" data-run-state={runState ?? 'completed'}>
+          <div className="run-state" role={runStatus ? runControlError || runState === 'failed' ? 'alert' : 'status' : undefined}>
+            {(busy || agentCompacting || continuing || stopping) && !runControlError && <span className="run-state-dot" />}
+            {runStatus && <span className="run-state-label">{runStatus}</span>}
+            {runDetail && <code className="run-detail" title={runDetail}>{runDetail}</code>}
+            {(busy || agentCompacting) && cancelScope && <span className="run-cancel-scope">{cancelScope}</span>}
+          </div>
+          {showRunClock && <RunClock startedAt={view!.runStartedAt!} endedAt={view?.runEndedAt} />}
+          {(showRunControl || showRunClock) && <button
+            className="composer-run-control" data-action={controlIsContinue ? 'continue' : 'cancel'} type="button"
+            title={controlIsContinue ? 'Continue unfinished work' : cancelScope ? `Cancel run. ${cancelScope}` : 'Cancel run'}
+            aria-label={controlIsContinue ? 'Continue run' : 'Cancel run'}
+            disabled={!runControlEnabled} aria-busy={stopping || continuing || undefined}
+            onKeyDown={event => {
+              if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+            }} onClick={event => {
+              if (event.detail > 1) return;
+              void (controlIsContinue ? continueRun() : cancel());
+            }}><Icon name={controlIsContinue ? 'play' : 'stop'} /></button>}
         </div>}
         <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void (queueEdit ? saveQueueEdit() : send()); }}>
           {!queueEdit && attachments.length > 0 && <div className="attachments">
@@ -748,7 +844,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                   disabled={startingSession || draft.reading || attachments.length >= 4}
                   onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
               </>}
-              {busy || agentCompacting ? modelName && <span className="composer-current-model" title={modelDescription}>{modelLabel}</span> : setupRequired
+              {busy || agentCompacting || continuing ? modelName && <span className="composer-current-model" title={modelDescription}>{modelLabel}</span> : setupRequired
                 ? <button className="button provider-setup-trigger" type="button" onClick={() => onSettings(desiredProvider)}>
                     <Icon name="key" width={14} height={14} /> Connect a provider
                   </button>

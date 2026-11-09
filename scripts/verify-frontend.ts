@@ -16,6 +16,10 @@ const workspaceScreens = ["welcome", "first-draft", "providers", "provider-sign-
   "providers-change", "light-providers-change", "providers-key", "light-providers-key", "light-provider-sign-in", "linked-file", "queue-edit", "light-queue-edit",
   "file-preview", "light-file-preview"]
   .map(stage => `${output}/pideck-ui-${stage}.png`);
+workspaceScreens.push(...["tools-dark", "tools-light", "mixed-dark", "mixed-light", "finished-dark", "finished-light"]
+  .map(stage => `${output}/pideck-footer-${stage}.png`));
+workspaceScreens.push(...["running", "cancelled", "failed", "completed"].flatMap(stage => ["dark", "light"]
+  .map(theme => `${output}/pideck-run-controls-${stage}-${theme}.png`)));
 const log = `${output}/${name}.log`;
 const flowLog = `${output}/${name}-flow.log`;
 const snapshotLog = `${output}/${name}-snapshot.log`;
@@ -70,13 +74,13 @@ try {
   const selection = { projectId: project.id, sessionId: session.id };
   const finishedText = "Browser verification finished.";
   fixture.faux.setResponses([
-    toolResponse("bash", { command, timeout: 120 }),
+    toolResponse("bash", { command, timeout: 180 }),
     ...workspaceScreens.map(path => toolResponse("read", { path: resolve(path) })),
     fauxAssistantMessage(finishedText),
   ]);
   const finished = waitForView(runtime, selection, view => view.status === "idle" && view.messages.some(
     message => message.blocks.some(block => block.type === "text" && block.text === finishedText),
-  ), 135_000);
+  ), 195_000);
   await runtime.send(fixture.input(selection, "Start the dev server and verify the renderer with an isolated browser."));
   const result = await finished;
   const blocks = result.messages.flatMap(message => message.blocks);

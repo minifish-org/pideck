@@ -62,6 +62,64 @@ async function expectPaint(target, expected) {
   }, expected);
 }
 
+async function readRunClock(page) {
+  const clock = page.locator(".run-clock");
+  await clock.waitFor();
+  return clock.evaluate(clock => {
+    const startedAt = Number(clock.dataset.startedAt);
+    const endedAt = clock.dataset.endedAt === undefined ? undefined : Number(clock.dataset.endedAt);
+    const parts = clock.textContent.trim().split(":").map(Number);
+    const seconds = parts.reduce((total, part) => total * 60 + part, 0);
+    const elapsed = Math.floor(Math.max(0, (endedAt ?? Date.now()) - startedAt) / 1000);
+    if (!Number.isFinite(startedAt) || !Number.isFinite(seconds) || parts.length < 2
+      || (endedAt === undefined ? Math.abs(elapsed - seconds) > 1 : elapsed !== seconds)
+      || endedAt !== undefined && (!Number.isFinite(endedAt) || endedAt < startedAt)
+      || getComputedStyle(clock).opacity !== "1" || clock.getAttribute("role") !== "timer" || clock.getAttribute("aria-live") !== "off") {
+      throw new Error("The active run clock must visibly follow the persisted native start without live announcements.");
+    }
+    return { startedAt, endedAt, seconds };
+  });
+}
+
+async function readFrozenClock(page) {
+  await page.locator(".run-clock[data-ended-at]").waitFor();
+  const clock = await readRunClock(page);
+  assert.ok(clock.endedAt !== undefined, "The settled run lost its final elapsed time.");
+  return clock;
+}
+
+async function expectCompletedRunControl(page, expectedPosition) {
+  const button = page.getByRole("button", { name: "Cancel run", exact: true });
+  await button.waitFor();
+  assert.equal(await page.locator(".composer-run-control").count(), 1);
+  assert.equal(await page.getByRole("button", { name: "Continue run", exact: true }).count(), 0);
+  assert.equal(await button.isDisabled(), true);
+  await button.hover();
+  assert.ok(await button.evaluate(button => {
+    const style = getComputedStyle(button);
+    const clock = button.closest(".composer-run").querySelector(".run-clock");
+    return button.dataset.action === "cancel" && Boolean(button.querySelector("svg rect"))
+      && Number(style.opacity) > 0 && Number(style.opacity) <= .5 && style.color === getComputedStyle(clock).color;
+  }), "Completed work must keep a muted, disabled stop icon next to the frozen total.");
+  const position = await button.boundingBox();
+  if (expectedPosition) assert.ok(["x", "y", "width", "height"].every(key => Math.abs(position[key] - expectedPosition[key]) <= 1),
+    "The completed Cancel button moved from its running position.");
+  return position;
+}
+
+async function expectQuietNativeMetadata(page, message) {
+  await page.getByRole("textbox", { name: "Message Pideck", exact: true }).focus();
+  await page.mouse.move(0, 0);
+  const metadata = message.locator(".message-footer time, .message-footer button");
+  assert.ok(await metadata.evaluateAll(items => items.length > 1 && items.every(item => getComputedStyle(item).opacity === "0")));
+  await message.hover();
+  assert.ok(await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1")));
+  await page.getByRole("textbox", { name: "Message Pideck", exact: true }).focus();
+  await page.mouse.move(0, 0);
+  await message.locator(".message-footer button").first().focus();
+  assert.ok(await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1")));
+}
+
 async function waitForQueuedEditor(page, text) {
   await page.waitForFunction(expected => {
     const editor = document.querySelector('textarea[aria-label="Edit queued message"]');
@@ -459,18 +517,19 @@ try {
 
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Package stream", { exact: true }).waitFor();
+  assert.equal(await page.locator(".chat-entry--assistant > .message-footer").count(), 0);
   assert.equal(await page.locator(".composer-models .model-summary-thinking").count(), 0);
   await page.getByText("Package stream verified with the real coding tools.").waitFor();
   const sentMessage = page.getByRole("article", { name: "You", exact: true }).filter({ hasText: "Edit example.ts and verify it." });
   const finalMessage = page.getByRole("article", { name: "Pideck", exact: true })
     .filter({ has: page.getByText("Package stream verified with the real coding tools.", { exact: true }) });
-  await finalMessage.locator(".message-duration").waitFor();
-  assert.equal(await page.locator(".message-duration").count(), 1);
-  const duration = finalMessage.locator(".message-duration");
-  const durationText = (await duration.innerText()).trim();
-  assert.match(durationText, /^(?:<1s|\d+h(?: \d+m)?(?: \d+s)?|\d+m(?: \d+s)?|\d+s)$/);
-  assert.equal(await duration.getAttribute("aria-label"), "Total working time");
-  assert.equal(await duration.getAttribute("title"), `Total working time: ${durationText}`);
+  await finalMessage.locator(".message-footer").waitFor();
+  await page.locator('.composer-run[data-run-state="completed"]').waitFor();
+  const completedClock = await readFrozenClock(page);
+  await new Promise(resolve => setTimeout(resolve, 1_100));
+  assert.deepEqual(await readFrozenClock(page), completedClock, "The finished stopwatch kept advancing.");
+  assert.equal(await page.locator(".message-duration").count(), 0);
+  await expectCompletedRunControl(page);
   for (const message of [sentMessage, finalMessage]) {
     const time = message.locator(".message-footer time");
     assert.match((await time.innerText()).trim(), /^(?:[01]\d|2[0-3]):[0-5]\d$/);
@@ -480,6 +539,14 @@ try {
   }
   assert.equal(await sentMessage.getByRole("button", { name: "Branch from here" }).count(), 0);
   assert.equal(await finalMessage.locator(".message-footer").getByRole("button", { name: "Branch from here" }).count(), 1);
+  for (const theme of ["light", "dark"]) {
+    await chooseAppearance(app, page, theme);
+    await expectCompletedRunControl(page);
+    await expectQuietNativeMetadata(page, sentMessage);
+    await expectQuietNativeMetadata(page, finalMessage);
+  }
+  await finalMessage.hover();
+  await page.screenshot({ path: "output/playwright/pideck-native-completed-footer.png" });
   await app.evaluate(({ clipboard }) => {
     globalThis.__pideckSmokeCopy = { original: clipboard.writeText, text: undefined };
     clipboard.writeText = text => { globalThis.__pideckSmokeCopy.text = text; };
@@ -494,13 +561,8 @@ try {
     const shellMessage = page.getByRole("article", { name: "Pideck", exact: true })
       .filter({ has: page.locator(".tool-card summary").filter({ hasText: "cat example.ts" }) });
     assert.equal(await shellMessage.getAttribute("data-tools-only"), "true");
-    await shellMessage.hover();
-    await shellMessage.getByRole("button", { name: "Copy output", exact: true }).click();
-    await shellMessage.getByRole("button", { name: "Output copied", exact: true }).waitFor();
-    const copiedOutput = await app.evaluate(() => globalThis.__pideckSmokeCopy.text);
-    assert.equal(copiedOutput, await readFile(join(project, "example.ts"), "utf8"));
-    assert.equal(copiedOutput, await shellMessage.locator(".tool-output").textContent());
-    assert.doesNotMatch(copiedOutput, /"command"|"arguments"|^bash\b/);
+    assert.equal(await shellMessage.locator(".message-footer").count(), 0);
+    assert.equal(await page.locator(".chat-entry--assistant > .message-footer").count(), 1);
   } finally {
     await app.evaluate(({ clipboard }) => {
       clipboard.writeText = globalThis.__pideckSmokeCopy.original;
@@ -971,6 +1033,7 @@ try {
   async function finishQueueHold(held, save, extra = []) {
     await page.getByRole("button", { name: save ? "Save queued message" : "Cancel queue edit", exact: true }).click();
     await heldQueue.waitFor({ state: "detached" });
+    await page.locator(".chat-turn").last().locator(".chat-entry--assistant > .message-footer").waitFor();
     await heldRunningBadge.waitFor({ state: "hidden" });
     assert.deepEqual(queueInputRequests(held), [save ? held.revised : held.original, ...held.following, ...extra],
       "Saving or cancelling must release the original queue in order exactly once.");
@@ -1003,7 +1066,7 @@ try {
   await finishQueueHold(cancelledHold, false);
 
   const stoppedHold = await beginQueueHold("STOP");
-  await page.getByRole("button", { name: "Stop the run", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel run", exact: true }).click();
   await heldQueue.waitFor({ state: "detached" });
   await heldRunningBadge.waitFor({ state: "hidden" });
   assert.deepEqual(queueInputRequests(stoppedHold), [], "Stop must abort held inputs rather than briefly releasing them.");
@@ -1020,9 +1083,14 @@ try {
   modelServer.releaseGate(stoppedHold.marker);
 
   const restartedHold = await beginQueueHold("RESTART");
+  const beforeHostRestartClock = await readRunClock(page);
   await restartWorkspaceHost();
   await modelServer.waitForGate(restartedHold.marker, 2);
   await terminalRegion.getByText("Shell running").waitFor();
+  const afterHostRestartClock = await readRunClock(page);
+  assert.equal(afterHostRestartClock.startedAt, beforeHostRestartClock.startedAt,
+    "Workspace recovery must retain the original run stopwatch epoch.");
+  assert.ok(afterHostRestartClock.seconds >= beforeHostRestartClock.seconds);
   await expectHeldAfterMain(restartedHold);
   await finishQueueHold(restartedHold, true);
 
@@ -1089,6 +1157,7 @@ try {
   await prompt.fill("Resume this draft after reopening.");
   await chooseAppearance(app, page, "light");
   const savedWindow = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
+  const clockBeforeFullReopen = await readFrozenClock(page);
   await app.close();
   app = undefined;
 
@@ -1108,6 +1177,8 @@ try {
   }
   const reopenedPrompt = reopenedPage.getByRole("textbox", { name: "Message Pideck" });
   await reopenedPrompt.waitFor();
+  assert.deepEqual(await readFrozenClock(reopenedPage), clockBeforeFullReopen,
+    "Reopening the application changed the retained finished stopwatch.");
   assert.equal(await reopenedPrompt.inputValue(), "Resume this draft after reopening.");
   assert.equal((await reopenedPage.evaluate(() => window.pideck.invoke("project:list")))[0].id, projectId);
   assert.equal((await reopenedPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), projectId))[0].id, conversation.id);
@@ -1184,6 +1255,148 @@ try {
   const [readded] = await restoredPage.evaluate(() => window.pideck.invoke("project:list"));
   assert.notEqual(readded.id, projectId);
   assert.deepEqual(await restoredPage.evaluate(id => window.pideck.invoke("session:list", { projectId: id }), readded.id), []);
+  async function verifyNativeRunControls(targetPage) {
+    const previousBounds = await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      const previous = window.getBounds();
+      window.setBounds({ ...previous, width: 1280, height: 820 });
+      return previous;
+    });
+    const input = targetPage.getByRole("textbox", { name: "Message Pideck", exact: true });
+    const takeControlScreenshots = async stage => {
+      for (const theme of ["dark", "light"]) {
+        await chooseAppearance(app, targetPage, theme);
+        if (stage === "tool-running") await tool.hover();
+        if (stage === "completed") await expectCompletedRunControl(targetPage);
+        await targetPage.screenshot({ path: `output/playwright/pideck-native-run-controls-${stage}-${theme}.png` });
+      }
+      await chooseAppearance(app, targetPage, "dark");
+    };
+    await input.fill("Native tool cancellation.");
+    await targetPage.getByRole("button", { name: "Send", exact: true }).click();
+    const tool = targetPage.locator(".tool-card").filter({ hasText: "NATIVE_TOOL_READY" });
+    await tool.locator(".tool-output").filter({ hasText: "NATIVE_TOOL_READY" }).waitFor();
+    const cancelTool = tool.getByRole("button", { name: "Cancel this tool", exact: true });
+    await cancelTool.waitFor();
+    assert.equal(await targetPage.getByRole("button", { name: "Cancel run", exact: true }).count(), 1);
+    await input.focus();
+    await targetPage.mouse.move(0, 0);
+    const initialClock = await readRunClock(targetPage);
+    assert.equal(initialClock.endedAt, undefined);
+    const initialRunButtonPosition = await targetPage.getByRole("button", { name: "Cancel run", exact: true }).boundingBox();
+    const initialRunClockPosition = await targetPage.locator(".run-clock").boundingBox();
+    await targetPage.waitForFunction(previous => {
+      const clock = document.querySelector(".run-clock");
+      return clock && clock.textContent.trim().split(":").map(Number).reduce((total, part) => total * 60 + part, 0) > previous;
+    }, initialClock.seconds);
+    assert.equal((await readRunClock(targetPage)).startedAt, initialClock.startedAt);
+    await targetPage.reload();
+    await cancelTool.waitFor();
+    const reattachedClock = await readRunClock(targetPage);
+    assert.equal(reattachedClock.startedAt, initialClock.startedAt, "Reopening the active view reset the run stopwatch.");
+    assert.ok(reattachedClock.seconds >= initialClock.seconds);
+    await takeControlScreenshots("tool-running");
+    await cancelTool.click();
+    const toolFinished = targetPage.getByRole("article", { name: "Pideck", exact: true })
+      .filter({ hasText: "The long command was cancelled; the rest of the work completed." });
+    await toolFinished.locator(".message-footer").waitFor();
+    await targetPage.locator('.composer-run[data-run-state="completed"]').waitFor();
+    const toolCompletedClock = await readFrozenClock(targetPage);
+    assert.equal(toolCompletedClock.startedAt, initialClock.startedAt);
+    assert.equal(await readFile(join(project, "tool-cancel-result.txt"), "utf8"), "Tool cancelled; remaining work completed.\n");
+    assert.equal(await targetPage.getByRole("button", { name: "Continue run", exact: true }).count(), 0);
+    assert.equal(await cancelTool.count(), 0);
+    assert.equal(await tool.locator('.tool-state[aria-label="Cancelled"]').count(), 1);
+    assert.ok(!(await tool.locator(".tool-output").textContent()).includes("CANCEL_WAS_MISSED"));
+    assert.equal(await targetPage.locator(".message-duration").count(), 0);
+    await expectCompletedRunControl(targetPage, initialRunButtonPosition);
+    const initialCompletedClockPosition = await targetPage.locator(".run-clock").boundingBox();
+    assert.ok(["x", "y", "width", "height"].every(key => Math.abs(initialCompletedClockPosition[key] - initialRunClockPosition[key]) <= 1),
+      "The frozen clock moved from its running position.");
+
+    const continuationStart = modelServer.requests.length;
+    await input.fill("Native continue check.");
+    await targetPage.getByRole("button", { name: "Send", exact: true }).click();
+    await targetPage.locator(".tool-output").filter({ hasText: "NATIVE_RUN_READY" }).waitFor();
+    const beforeCancelClock = await readRunClock(targetPage);
+    assert.equal(beforeCancelClock.endedAt, undefined);
+    assert.ok(beforeCancelClock.startedAt > toolCompletedClock.startedAt, "A new input retained the previous run's clock.");
+    await input.fill("This queued input must be withdrawn.");
+    await targetPage.getByRole("button", { name: "Queue next", exact: true }).click();
+    const controlsQueue = targetPage.getByRole("list", { name: "Queued messages", exact: true });
+    await controlsQueue.getByText("This queued input must be withdrawn.", { exact: true }).waitFor();
+    const draft = "Keep this unsent control draft.";
+    await input.fill(draft);
+    const usersBeforeContinue = await targetPage.getByRole("article", { name: "You", exact: true }).allTextContents();
+    const cancelRun = targetPage.getByRole("button", { name: "Cancel run", exact: true });
+    await cancelRun.hover();
+    const buttonPosition = await cancelRun.boundingBox();
+    const beforeCancelClockPosition = await targetPage.locator(".run-clock").boundingBox();
+    await cancelRun.click();
+    await controlsQueue.waitFor({ state: "detached" });
+    const continueRun = targetPage.getByRole("button", { name: "Continue run", exact: true });
+    await continueRun.waitFor();
+    assert.equal(await continueRun.isEnabled(), true);
+    await continueRun.hover();
+    const continuePosition = await continueRun.boundingBox();
+    assert.ok(Math.abs(buttonPosition.x - continuePosition.x) <= 1 && Math.abs(buttonPosition.y - continuePosition.y) <= 1,
+      "Cancelling queued work moved the shared run-control position.");
+    const cancelledClockPosition = await targetPage.locator(".run-clock").boundingBox();
+    assert.ok(["x", "y", "width", "height"].every(key => Math.abs(cancelledClockPosition[key] - beforeCancelClockPosition[key]) <= 1),
+      "Cancelling queued work moved the frozen clock.");
+    assert.equal(await input.inputValue(), draft);
+    assert.equal(await targetPage.locator(".chat-run-error").count(), 0);
+    const cancelledClock = await readFrozenClock(targetPage);
+    assert.equal(cancelledClock.startedAt, beforeCancelClock.startedAt);
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    assert.deepEqual(await readFrozenClock(targetPage), cancelledClock, "The cancelled run's stopwatch kept counting.");
+    assert.deepEqual(await targetPage.getByRole("article", { name: "You", exact: true }).allTextContents(), usersBeforeContinue);
+    await takeControlScreenshots("cancelled");
+
+    await targetPage.reload();
+    await continueRun.waitFor();
+    assert.deepEqual(await readFrozenClock(targetPage), cancelledClock, "Reopening a cancelled run lost its frozen duration.");
+    assert.equal(await input.inputValue(), draft, "Reattaching a cancelled run lost the draft.");
+    await continueRun.click();
+    await targetPage.waitForFunction(previousStart => {
+      const clock = document.querySelector(".run-clock");
+      return clock && !clock.hasAttribute("data-ended-at") && Number(clock.dataset.startedAt) > previousStart;
+    }, beforeCancelClock.startedAt);
+    const continuedClock = await readRunClock(targetPage);
+    assert.equal(continuedClock.endedAt, undefined);
+    assert.ok(continuedClock.startedAt > beforeCancelClock.startedAt, "Continue reused the cancelled run's elapsed-time origin.");
+    const continued = targetPage.getByRole("article", { name: "Pideck", exact: true })
+      .filter({ hasText: "Continued the cancelled run and verified the result." });
+    await continued.locator(".message-footer").waitFor();
+    await targetPage.locator('.composer-run[data-run-state="completed"]').waitFor();
+    const finishedContinueClock = await readFrozenClock(targetPage);
+    assert.equal(finishedContinueClock.startedAt, continuedClock.startedAt);
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    assert.deepEqual(await readFrozenClock(targetPage), finishedContinueClock);
+    assert.equal(await targetPage.locator(".message-duration").count(), 0);
+    await expectCompletedRunControl(targetPage, buttonPosition);
+    const continuedClockPosition = await targetPage.locator(".run-clock").boundingBox();
+    assert.ok(["x", "y", "width", "height"].every(key => Math.abs(continuedClockPosition[key] - beforeCancelClockPosition[key]) <= 1),
+      "Completing Continue moved the frozen clock.");
+    assert.equal(await continued.getByRole("button", { name: "Branch from here", exact: true }).count(), 1);
+    assert.equal(await readFile(join(project, "continue-result.txt"), "utf8"), "Continued work completed.\n");
+    assert.equal(await input.inputValue(), draft, "Continue submitted or erased the ordinary draft.");
+    assert.deepEqual(await targetPage.getByRole("article", { name: "You", exact: true }).allTextContents(), usersBeforeContinue,
+      "Native Continue must not append another user message.");
+    assert.equal(await targetPage.locator('.composer-run[data-run-state="completed"]').count(), 1);
+    assert.ok(modelServer.requests.slice(continuationStart).every(request => lastProviderInput(request) === "Native continue check."),
+      "Continue sent a draft, synthetic instruction, or withdrawn queued message to the model.");
+    await continued.hover();
+    await takeControlScreenshots("completed");
+    await targetPage.reload();
+    await continued.locator(".message-footer").waitFor();
+    assert.deepEqual(await readFrozenClock(targetPage), finishedContinueClock);
+    assert.equal(await targetPage.locator(".message-duration").count(), 0);
+    await expectCompletedRunControl(targetPage, buttonPosition);
+    assert.equal(await input.inputValue(), draft);
+    await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), previousBounds);
+  }
+  await verifyNativeRunControls(restoredPage);
   async function beginDetachedQueueHold(targetPage, name) {
     const marker = `Queue hold ${name}`;
     const original = `${name} original queued input`;
@@ -1227,6 +1440,7 @@ try {
   async function finishDetachedQueueHold(targetPage, held, save) {
     await targetPage.getByRole("button", { name: save ? "Save queued message" : "Cancel queue edit", exact: true }).click();
     await targetPage.getByRole("list", { name: "Queued messages" }).waitFor({ state: "detached" });
+    await targetPage.locator(".chat-turn").last().locator(".chat-entry--assistant > .message-footer").waitFor();
     await targetPage.locator(".chat-running").waitFor({ state: "detached" });
     assert.deepEqual(modelServer.requests.slice(held.requestStart).map(lastProviderInput),
       [held.marker, save ? held.revised : held.original, held.following],
@@ -1268,7 +1482,7 @@ try {
   await finishDetachedQueueHold(resumedEdit.window, quitHold, false);
   assert.deepEqual(errors, []);
   assert.deepEqual(modelServer.failures, []);
-  console.log("Packaged Electron verified: native menus, coding and host recovery, native PTY, and permanent workspace and session removal.");
+  console.log("Packaged Electron verified: native menus, coding and host recovery, native run Continue and tool cancellation, native PTY, and permanent workspace and session removal.");
 } catch (error) {
   if (errors.length) console.error("Renderer errors:", errors);
   if (modelServer?.failures.length) console.error("Provider fixture errors:", modelServer.failures);

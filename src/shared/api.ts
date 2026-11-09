@@ -83,12 +83,17 @@ export type ChatBlock =
       patch?: string;
       path?: string;
       status: "pending" | "running" | "done" | "error";
+      taskId?: number;
+      cancelling?: true;
+      cancelled?: true;
     };
 export type ChatMessage = {
   id: string;
   entryId?: number;
   requestId?: string;
   timestamp?: number;
+  /** This assistant entry is the native final answer of a settled interaction. */
+  completed?: true;
   durationMs?: number;
   role: "user" | "assistant";
   blocks: ChatBlock[];
@@ -104,10 +109,14 @@ export type QueueUpdate =
 export type ChatView = {
   messages: ChatMessage[];
   status: "idle" | "running" | "cancelling";
+  runStartedAt?: number;
+  runEndedAt?: number;
   model?: ModelRef;
   thinking?: Thinking;
   error?: string;
   failureTaskId?: number;
+  runOutcome?: { kind: "cancelled" | "failed"; taskId: number; message: string };
+  canContinue?: true;
   latestEntryId?: number;
   hasEarlier?: boolean;
   gaps?: ChatGap[];
@@ -169,6 +178,8 @@ export type Commands = {
   "chat:queue-edit-finish": [QueueEditRef & { text?: string }, void];
   "chat:queue-update": [QueuedInputRef & QueueUpdate, void];
   "chat:cancel": [Selection, void];
+  "chat:continue": [Selection & { requestId: string; model?: ModelRef; thinking?: Thinking }, void];
+  "chat:task-cancel": [Selection & { taskId: number }, void];
   "chat:fork": [Selection & { entryId: number; title?: string }, Session];
   "review:list": [{ projectId: string }, ReviewFile[]];
   "review:patch": [{ projectId: string; path: string }, ReviewPatch];

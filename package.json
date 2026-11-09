@@ -1,6 +1,6 @@
 {
   "name": "pideck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A desktop workspace for coding with Pi Durable.",
   "license": "AGPL-3.0-only",
   "private": true,
