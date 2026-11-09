@@ -4,7 +4,7 @@ Pideck is an experimental desktop coding workspace. Each project opens in a loca
 
 ## Install and requirements
 
-Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.1 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
+Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.2 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
 
 Install Git and keep it on `PATH` for change review. Windows also needs [Git for Windows](https://gitforwindows.org/) with Git Bash for the agent's `bash` tool; PowerShell alone does not provide that tool. Packaged builds include their own Node.js, npm, npx, and Playwright CLI, so a separate Node.js installation is unnecessary for normal packaged use. The first browser task needs an internet connection to obtain Playwright's matching browser and FFmpeg directly from their upstream download services; later tasks reuse the application-data cache.
 
@@ -85,7 +85,9 @@ Packaged Pideck includes a fixed standalone Node.js runtime with npm and npx, th
 | Navigate sidebar rows | ↑/↓, then Enter to select |
 | Request removal of a sidebar row | Delete while the row has focus |
 
-Choose **Check for Updates…** from the Pideck menu on macOS or the File menu on Windows and Linux. Pideck anonymously compares the installed version with a public stable GitHub release and opens the release page on request. Private repositories cannot be checked anonymously; use the offered release page in your signed-in browser to download them manually. Automatic download and installation are not implemented.
+On macOS, **Check for Updates…** opens the native updater. It downloads and verifies a new version inside the app, then offers to install and relaunch. The same menu becomes **Restart and Update…** if you defer a restart while work is open. Restarting closes the workspace and terminal shells cleanly and preserves projects, sessions, drafts and held queue edits. There are no updater settings in the workspace. Background checks are enabled; downloads and restarts require your choice. Windows and Linux builds currently retain the release-page check.
+
+The first updater-enabled macOS build must be installed once manually: v0.1.1 and earlier contain no installer. Later updater-enabled releases use Sparkle with a public update-verification key embedded in the app. Both the update feed and archives require Ed25519 signatures; invalid or unsigned updates fail closed. This supports the current ad-hoc application signature without bypassing system protections or obtaining an Apple certificate. This does not add Apple notarization or remove first-install restrictions.
 
 ## Verify and package
 
@@ -107,9 +109,12 @@ The default packaging command creates an unpacked local bundle. To prepare macOS
 
 ```sh
 npm run package -- --mac dmg zip --arm64 --publish never
+npm run sign:update -- release/Pideck-VERSION-arm64-mac.zip
 ```
 
 Before a release, verify the final artifact's licenses and dependency inventory, install it with an isolated application profile and a disposable project, and run the packaged coding/browser workflow. Keep temporary reports and screenshots outside source commits. A build or a unit-test pass is not an installation or native acceptance result. Nothing in the validation workflow publishes a release.
+
+Publish the signed `appcast.xml` beside the versioned macOS ZIP and other release attachments. `sign:update` runs Sparkle's upstream signing tools, using the `works.pideck.desktop.update-signing` account in the release builder's login Keychain. The application contains only its public key (`resources/updater-public-key.txt`), never the signing tools or private key. Keep that signing identity backed up securely; changing the embedded public key requires an authenticated key-rotation release. Package preparation downloads checksum-pinned Sparkle and Electron headers, builds the small main-process native bridge with Apple Command Line Tools, and includes Sparkle's license and notices. No compiler or extra setup is needed on the user's computer.
 
 Packaging prepares Node.js and Playwright resources for the actual target and copies them into the app before signing. It verifies the final app's manifest, Node/npm/npx, CLI dependencies, and license notices rather than checking only the staging directory. Browser executables, profiles, and browser download caches are excluded from the app package. Supported targets are macOS and Linux on x64 or arm64, and Windows on x64. Other targets, including macOS universal and Windows arm64, fail explicitly. Linux still requires the operating-system libraries supported by the downloaded browser; preparation does not install system packages. Node.js downloads are checked against pinned SHA-256 values from the official release, and first-use browser downloads use the pinned Playwright installer's matching revision. Resource publication preserves relative symbolic links and rejects links that are absolute, broken, or escape the resource tree. Runtime profiles and output belong in application data; packaged automation resources are not an install or download cache.
 

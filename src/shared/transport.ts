@@ -37,8 +37,12 @@ export type HostResult = {
   "removal:plan": RemovalPreview;
   "removal:execute": RemovalResult;
   "owner:close": void;
-  "host:status": { active: boolean; activities: SessionActivity[] };
+  "host:status": { active: boolean; activities: SessionActivity[]; terminalCount: number };
 };
+export type HostCloseResult =
+  | { status: "graceful" }
+  | { status: "forced"; reason: "timeout" | "request-failed"; exited: boolean }
+  | { status: "failed"; reason: "cleanup-failed" | "unexpected-exit"; message: string };
 export type HostRequest = {
   [C in HostCommand]: { type: "request"; id: number; owner: number; windowId?: number; command: C; payload: HostInput[C] }
 }[HostCommand];
@@ -47,11 +51,13 @@ export type ToHost =
   | ({ type: "credential:snapshot"; id: number } & ({ credentials: Record<string, Credential> } | { error: string }))
   | { type: "credential:result"; id: number; error?: string }
   | { type: "shutdown" }
+  | { type: "shutdown:exit" }
   | HostRequest;
 export type FromHost =
   | { type: "activity"; items: SessionActivity[]; baseline: boolean }
   | { type: "ready" }
   | { type: "fatal"; error: string }
+  | { type: "shutdown:complete"; error?: string }
   | { type: "result"; id: number; value?: unknown; error?: string }
   | { type: "credential:read"; id: number }
   | { type: "credential:write"; id: number; provider: string; credential: Credential | null }

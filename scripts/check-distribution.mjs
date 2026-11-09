@@ -5,6 +5,7 @@ import asar from "@electron/asar";
 import semver from "semver";
 import { validateAutomationResources } from "./package-assets.mjs";
 import { validatePackagedLicenses } from "./licenses.mjs";
+import { validateUpdaterResources } from "./update-assets.mjs";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
 const advisoryEndpoint = "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk";
@@ -123,6 +124,11 @@ export async function checkDistribution(input = defaultApplication(), options = 
     if (rootLicense !== asar.extractFile(archive, "dist/licenses/Pideck-LICENSE.txt").toString("utf8")) throw new Error("The application-root LICENSE differs from its distributed AGPL license.");
     const licenseInventory = await validatePackagedLicenses(archive);
     report.checks.licenses = licenseInventory.dependencies.length;
+    const packagedManifest = JSON.parse(asar.extractFile(archive, "package.json").toString("utf8"));
+    if (resources.endsWith(`${process.platform === "win32" ? "\\" : "/"}Contents${process.platform === "win32" ? "\\" : "/"}Resources`)
+      && semver.gte(packagedManifest.version, "0.1.2")) {
+      report.checks.updater = await validateUpdaterResources(dirname(resources));
+    }
     report.checks.automation = await validateAutomationResources(join(resources, "automation"));
     const resourceEntries = await filesUnder(resources);
     report.pathIssues = distributionPathIssues([

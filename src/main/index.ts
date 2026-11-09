@@ -17,6 +17,8 @@ import type { DesktopContext, DesktopNavigation, Project, Selection, Session } f
 import { projectArguments, QuitGuard, workspaceTitle } from "./native-workspace";
 import { createNativeNotifications } from "./native-notifications";
 import { activityNotificationLaunchId } from "./activity-notifications";
+import { loadMacUpdater, type MacUpdater, type NativeUpdateEvent } from "./mac-updater";
+import { UpdateInstallation } from "./update-install";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -59,6 +61,30 @@ let reminders: ReturnType<typeof createNativeNotifications> | undefined;
 let notificationLaunch: string | undefined;
 const pendingFolders: string[] = [];
 let openingFolders = false;
+let macUpdater: MacUpdater | undefined;
+let updaterStartupError: unknown;
+let updateInstallation: UpdateInstallation | undefined;
+let preparingUpdate = false;
+let pendingUpdateInstall = false;
+
+function refreshUpdateMenu() {
+  const item = Menu.getApplicationMenu()?.getMenuItemById("check-for-updates");
+  if (!item || process.platform !== "darwin" || !app.isPackaged) return;
+  item.label = pendingUpdateInstall ? "Restart and Update…" : "Check for Updates…";
+  item.enabled = !exiting && !preparingUpdate && (pendingUpdateInstall || !macUpdater || macUpdater.canCheck());
+}
+
+function nativeUpdateEvent(event: NativeUpdateEvent) {
+  if (shuttingDown) return;
+  if (event.type === "install-requested") {
+    pendingUpdateInstall = true;
+    void updateInstallation?.request();
+  } else if (event.type === "aborted") {
+    pendingUpdateInstall = false;
+    void updateInstallation?.aborted();
+  }
+  refreshUpdateMenu();
+}
 
 function revealWindow() {
   if (!host || !windowState || exiting) return;
@@ -117,13 +143,36 @@ async function openResult(selection: Selection) {
 
 function shutdownHost() {
   if (exiting || !host) return;
+  const client = host;
   exiting = true;
   if (mainWindow) windowState.capture(mainWindow);
-  void Promise.allSettled([host.close(), windowState.flush(), appearance.flush()]).finally(() => {
+  const finish = () => {
     reminders?.dispose();
     appearance.dispose();
     shutdownComplete = true;
     app.quit();
+  };
+  const closing = client.close();
+  const pending = [closing, windowState.flush(), appearance.flush()] as const;
+  if (!macUpdater) {
+    void Promise.allSettled(pending).finally(finish);
+    return;
+  }
+  // Sparkle may have a user-approved install waiting for ordinary app quit.
+  // Termination is therefore also an installation boundary, even when this
+  // particular Quit was not initiated by the updater's relaunch callback.
+  void Promise.all(pending).then(([closed]) => {
+    if (closed.status !== "graceful") throw new Error("The workspace could not close safely. Pideck will stay open.");
+    finish();
+  }).catch(async error => {
+    exiting = false;
+    shutdownComplete = false;
+    let message = error instanceof Error ? error.message : "The workspace could not close safely.";
+    try { await client.reopenAfterClose(); }
+    catch (recovery) { message += `\n\n${recovery instanceof Error ? recovery.message : "The workspace could not reopen."}`; }
+    revealWindow();
+    refreshUpdateMenu();
+    dialog.showErrorBox("Pideck could not close safely", message);
   });
 }
 
@@ -134,6 +183,14 @@ function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, wi
 }
 
 async function showUpdateCheck(window?: BrowserWindow) {
+  if (process.platform === "darwin" && app.isPackaged) {
+    if (pendingUpdateInstall) await updateInstallation?.request();
+    else if (macUpdater) macUpdater.check();
+    else dialog.showErrorBox("Updates could not start", updaterStartupError instanceof Error
+      ? updaterStartupError.message : "The installed updater is unavailable. Reinstall Pideck from its official release.");
+    refreshUpdateMenu();
+    return;
+  }
   const version = app.getVersion();
   const update = await checkForUpdate(version, (input, init) => net.fetch(input, init));
   if (exiting) return;
@@ -347,6 +404,7 @@ async function initialize() {
     const requestOwner = owner;
     if (!window || window.isDestroyed() || !ownsFrame(event, window)) throw new Error("Unauthorized window.");
     if (!isCommand(command)) throw new Error("Invalid workspace request.");
+    if (exiting || preparingUpdate) throw new Error("Pideck is preparing to restart. Your draft stays saved.");
 
     if (command === "desktop:ready") {
       if (!validPayload(command, payload)) throw new Error("Invalid desktop request.");
@@ -448,6 +506,51 @@ async function initialize() {
     const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
     return result.response === 1;
   });
+  updateInstallation = new UpdateInstallation({
+    seal() { preparingUpdate = true; refreshUpdateMenu(); },
+    unseal() {
+      if (shuttingDown) return;
+      preparingUpdate = false;
+      exiting = false;
+      shutdownComplete = false;
+      refreshUpdateMenu();
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:resume" });
+    },
+    async confirm() {
+      const work = await client.request(0, "host:status", undefined);
+      if (!work.active && !work.terminalCount) return true;
+      const options: MessageBoxOptions = { type: "warning", message: "Restart while work is open?",
+        detail: "AI work and open terminal shells will stop. Your conversations, queued edits and drafts stay saved.",
+        buttons: ["Keep Working", "Restart and Update"], defaultId: 0, cancelId: 0, noLink: true };
+      const window = mainWindow;
+      const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
+      return result.response === 1;
+    },
+    async flush() {
+      if (mainWindow && !mainWindow.isDestroyed()) windowState.capture(mainWindow);
+      await Promise.all([windowState.flush(), appearance.flush()]);
+    },
+    closeHost: () => client.close(),
+    async recover() {
+      if (shuttingDown) return;
+      exiting = false;
+      shutdownComplete = false;
+      await client.reopenAfterClose();
+      revealWindow();
+    },
+    install() {
+      if (shuttingDown) return false;
+      // Sparkle may synchronously ask AppKit to terminate the application.
+      // Its native installation handler is released only after a clean host exit.
+      exiting = true;
+      shutdownComplete = true;
+      return macUpdater?.resumeInstall() ?? false;
+    },
+    failed(error) {
+      if (shuttingDown) return;
+      dialog.showErrorBox("The update was not installed", error instanceof Error ? error.message : "The workspace could not close safely. Try again.");
+    },
+  });
   powerMonitor.on("lock-screen", () => { locked = true; });
   powerMonitor.on("unlock-screen", () => {
     locked = false;
@@ -466,6 +569,13 @@ async function initialize() {
     app.quit();
   });
   openWindow();
+  if (process.platform === "darwin" && app.isPackaged) {
+    try {
+      macUpdater = loadMacUpdater(process.resourcesPath);
+      macUpdater.start(nativeUpdateEvent);
+    } catch (error) { macUpdater = undefined; updaterStartupError = error; }
+    refreshUpdateMenu();
+  }
   void drainFolders();
 }
 
@@ -483,6 +593,7 @@ else {
     if (shutdownComplete || !host) return;
     event.preventDefault();
     if (exiting) return;
+    if (preparingUpdate && !shuttingDown) return;
     // System shutdown bypasses an outstanding confirmation, but repeated Cmd+Q
     // cannot bypass either the confirmation or asynchronous host cleanup.
     if (shuttingDown || !quitGuard) { shutdownHost(); return; }

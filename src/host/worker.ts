@@ -17,6 +17,8 @@ let runtime: Runtime | undefined;
 let auth: AuthFlows | undefined;
 let starting = false;
 let closing = false;
+let opening: Promise<Runtime> | undefined;
+let shutdownReceipt: { error?: string } | undefined;
 let removing: RemovalTarget | undefined;
 const closedOwners = new Set<number>();
 const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>();
@@ -139,7 +141,7 @@ async function handle(request: HostRequest): Promise<unknown> {
   }
   switch (command) {
     case "host:status":
-      return { active: runtime.hasActiveWork(), activities: runtime.sessionActivities() };
+      return { active: runtime.hasActiveWork(), activities: runtime.sessionActivities(), terminalCount: terminals.liveCount() };
     case "owner:close":
       return closeOwner(owner, windowId, payload?.preserveQueueEdits);
     case "project:list":
@@ -333,9 +335,11 @@ port.on("message", ({ data }: { data: ToHost }) => {
       send({ type: "credential:read", id });
       return result.promise;
     } : undefined);
-    void Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows,
-      data.automationDirectory ? { resourcesDirectory: data.automationDirectory, stateDirectory: join(data.dataDir, "automation") } : undefined).then(opened => {
+    opening = Runtime.open(data.dataDir, {}, undefined, credentials, () => process.exit(1), data.lifetimeId, data.closedWindows,
+      data.automationDirectory ? { resourcesDirectory: data.automationDirectory, stateDirectory: join(data.dataDir, "automation") } : undefined);
+    void opening.then(opened => {
       runtime = opened;
+      if (closing) return;
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
       // Native completion reminders outlive renderer subscriptions and windows.
       let baseline = true;
@@ -345,7 +349,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
       });
       send({ type: "ready" });
     }, error => {
-      send({ type: "fatal", error: messageOf(error) });
+      if (!closing) send({ type: "fatal", error: messageOf(error) });
     });
   } else if (data.type === "credential:snapshot") {
     if (credentialRead?.id !== data.id) return;
@@ -367,10 +371,24 @@ port.on("message", ({ data }: { data: ToHost }) => {
     closing = true;
     for (const jobs of reviews.values()) for (const job of jobs) job.controller.abort();
     const owners = new Set([...watches.keys(), ...activityWatches.keys(), ...reviewWatches.keys()]);
-    const detached = Promise.allSettled([...owners].map(owner => closeOwner(owner, owner, true)));
-    const stoppedTerminals = terminals.closeAll();
-    auth?.close();
-    void Promise.allSettled([detached, stoppedTerminals]).then(() => runtime?.detachQueueEdits())
-      .then(() => runtime?.close()).finally(() => process.exit(0));
+    void (async () => {
+      const errors: unknown[] = [];
+      const settle = async (operations: (() => unknown)[]) => {
+        const results = await Promise.allSettled(operations.map(operation => Promise.resolve().then(operation)));
+        for (const result of results) if (result.status === "rejected") errors.push(result.reason);
+      };
+      await settle([() => opening]);
+      await settle([...owners].map(owner => () => closeOwner(owner, owner, true)));
+      await settle([() => terminals.closeAll(), () => auth?.close()]);
+      // A failed detach must not prevent the store from flushing/closing. Keep
+      // each failure visible to main so an updater never treats it as success.
+      await settle([() => runtime?.detachQueueEdits()]);
+      await settle([() => runtime?.close()]);
+      shutdownReceipt = errors.length ? { error: errors.map(messageOf).join("\n") } : {};
+      try { send({ type: "shutdown:complete", ...shutdownReceipt }); }
+      catch { process.exit(1); }
+    })();
+  } else if (data.type === "shutdown:exit" && shutdownReceipt) {
+    process.exit(shutdownReceipt.error ? 1 : 0);
   }
 });

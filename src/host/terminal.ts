@@ -46,6 +46,12 @@ export class Terminals {
 
   constructor(private emit: (owner: number, event: HostEvent) => void) {}
 
+  // This counts shells, including detached/closing ones, not foreground jobs.
+  liveCount(): number {
+    return [...this.terminals.values()].filter(terminal => !terminal.exited).length
+      + [...this.closing.values()].reduce((count, shells) => count + shells.size, 0);
+  }
+
   open(owner: number, projectId: string, cwd: string, cols: number, rows: number): TerminalOpen {
     for (const [terminalId, terminal] of this.terminals) {
       if (terminal.projectId !== projectId || (terminal.owner !== undefined && terminal.owner !== owner)) continue;

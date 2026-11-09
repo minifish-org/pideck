@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { CredentialVault } from "./credentials";
 import { hostEnvironment } from "./host-env";
+import { closeWorkspaceProcess } from "./native-workspace";
 import type { HostEvent, SessionActivity } from "../shared/api";
-import type { FromHost, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
+import type { FromHost, HostCloseResult, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void };
 
@@ -15,6 +16,7 @@ export class HostClient {
   private pending = new Map<number, Pending>();
   private nextId = 0;
   private stopping = false;
+  private closing?: Promise<HostCloseResult>;
   private restartAttempts = 0;
   private readonly lifetimeId = randomUUID();
   // Re-send dead window IDs after a host crash so their edit leases detach even
@@ -146,15 +148,23 @@ export class HostClient {
     return response as Promise<HostResult[C]>;
   }
 
-  async close() {
+  close(): Promise<HostCloseResult> {
+    if (this.closing) return this.closing;
     this.stopping = true;
     const child = this.process;
-    if (!child) return;
-    await new Promise<void>(resolve => {
-      const timeout = setTimeout(() => { child.kill(); resolve(); }, 8000);
-      child.once("exit", () => { clearTimeout(timeout); resolve(); });
-      this.post(child, { type: "shutdown" });
-    });
+    this.closing = child ? closeWorkspaceProcess(child) : Promise.resolve({ status: "graceful" });
+    return this.closing;
+  }
+
+  async reopenAfterClose(): Promise<void> {
+    if (!this.closing) throw new Error("The workspace has not been closed.");
+    await this.closing;
+    if (this.process) throw new Error("The previous workspace process has not stopped.");
+    this.stopping = false;
+    this.closing = undefined;
+    this.restartAttempts = 1;
+    this.start();
+    await this.ready;
   }
 
   private post(child: UtilityProcess, message: ToHost) {

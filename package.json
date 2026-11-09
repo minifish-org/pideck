@@ -1,6 +1,6 @@
 {
   "name": "pideck",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A desktop workspace for coding with Pi Durable.",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -21,7 +21,9 @@
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
     "smoke:credentials": "node scripts/smoke-credentials.mjs",
     "check:licenses": "node scripts/licenses.mjs",
-    "check:distribution": "node scripts/check-distribution.mjs"
+    "check:distribution": "node scripts/check-distribution.mjs",
+    "prepare:update": "node scripts/update-assets.mjs",
+    "sign:update": "node scripts/sign-update.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.5.0",
@@ -84,6 +86,13 @@
       "category": "public.app-category.developer-tools",
       "minimumSystemVersion": "14.0",
       "extendInfo": {
+        "SUFeedURL": "https://github.com/minifish-org/pideck/releases/latest/download/appcast.xml",
+        "SUVerifyUpdateBeforeExtraction": true,
+        "SURequireSignedFeed": true,
+        "SUSignedFeedFailureExpirationInterval": 0,
+        "SUEnableAutomaticChecks": true,
+        "SUAllowsAutomaticUpdates": false,
+        "SUEnableSystemProfiling": false,
         "CFBundleDocumentTypes": [{
           "CFBundleTypeName": "Project Folder",
           "LSItemContentTypes": ["public.folder"],

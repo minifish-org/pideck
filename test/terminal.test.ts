@@ -136,7 +136,9 @@ test("closing a window keeps its shell and drains bounded output until another o
     if (event.type === "terminal:data" || event.type === "terminal:exit") frames.push({ owner, event });
   });
   t.after(() => terminals.closeAll());
+  assert.equal(terminals.liveCount(), 0);
   const opened = openTestTerminal(terminals, 1, projectId);
+  assert.equal(terminals.liveCount(), 1);
   terminals.input(1, projectId, opened.terminalId, "PIDECK_SESSION=retained; printf '\\nBEFORE_%s:%s\\n' detach $$\r");
   const output = () => frames.flatMap(({ event }) => event.type === "terminal:data" ? [event.data] : []).join("");
   await waitFor(() => /\nBEFORE_detach:(\d+)\r?\n/.test(output()));
@@ -148,6 +150,7 @@ test("closing a window keeps its shell and drains bounded output until another o
   terminals.input(1, projectId, opened.terminalId,
     `yes retained | head -n 180000; printf '\\nDETACHED_%s\\n' DONE; : > '${done.replaceAll("'", "'\\''")}'\r`);
   terminals.closeOwner(1);
+  assert.equal(terminals.liveCount(), 1, "A detached idle shell remains live without proving a foreground job is busy.");
   const eventCount = frames.length;
   assert.throws(() => terminals.input(1, projectId, opened.terminalId, "x"), /no longer open/);
   assert.throws(() => terminals.resize(1, projectId, opened.terminalId, 80, 24), /no longer open/);
@@ -156,6 +159,7 @@ test("closing a window keeps its shell and drains bounded output until another o
   const attached = openTestTerminal(terminals, 2, projectId);
   assert.equal(attached.terminalId, opened.terminalId);
   assert.equal(attached.exited, false);
+  assert.equal(terminals.liveCount(), 1);
   assert.ok(attached.data.length <= 1024 * 1024 + 64);
   assert.match(attached.data, /Earlier terminal output omitted/);
   assert.match(attached.data, /DETACHED_DONE/);

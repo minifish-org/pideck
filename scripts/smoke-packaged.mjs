@@ -182,6 +182,54 @@ async function mockProjectPicker(app, directory) {
 }
 
 async function verifyNativeUpdateMenu(app) {
+  if (process.platform === "darwin") {
+    const state = await app.evaluate(({ app, Menu }) => {
+      const { createRequire } = process.getBuiltinModule("node:module");
+      const { join } = process.getBuiltinModule("node:path");
+      const { readFileSync } = process.getBuiltinModule("node:fs");
+      const menu = Menu.getApplicationMenu();
+      const item = menu.getMenuItemById("check-for-updates");
+      const section = menu.items.find(entry => entry.submenu?.items.includes(item));
+      const all = [];
+      function visit(items) {
+        for (const entry of items) {
+          all.push(entry);
+          if (entry.submenu) visit(entry.submenu.items);
+        }
+      }
+      visit(menu.items);
+      const require = createRequire(join(process.resourcesPath, "app.asar", "package.json"));
+      const addonPath = require.resolve(join(process.resourcesPath, "native", "pideck-sparkle.node"));
+      // Inspect the addon already initialized by real application startup.
+      // Loading a fresh instance here could hide a failed startup integration.
+      const updater = require.cache[addonPath]?.exports;
+      const manifest = JSON.parse(readFileSync(join(process.resourcesPath, "updater", "manifest.json"), "utf8"));
+      return {
+        packaged: app.isPackaged, arch: process.arch,
+        section: section?.label.replace("&", ""), label: item?.label, enabled: item?.enabled,
+        entries: all.filter(entry => entry.id === "check-for-updates").length,
+        updateLabels: all.filter(entry => /^(?:Check for Updates|Restart and Update|Download Update|Install Update|View Release|Open Releases)/i.test(entry.label)).map(entry => entry.label),
+        loaded: Boolean(updater),
+        methods: ["start", "check", "canCheck", "resumeInstall", "dispose"].every(method => typeof updater?.[method] === "function"),
+        ready: updater?.canCheck(),
+        manifest: { platform: manifest.platform, arch: manifest.arch, native: manifest.native },
+      };
+    });
+    assert.equal(state.packaged, true);
+    assert.equal(state.section, "Pideck");
+    assert.equal(state.label, "Check for Updates…");
+    assert.equal(state.entries, 1);
+    assert.deepEqual(state.updateLabels, ["Check for Updates…"]);
+    assert.equal(state.loaded, true, "Application startup did not load the native updater.");
+    assert.equal(state.methods, true);
+    assert.equal(state.ready, true, "The initialized native updater is not ready for a user update check.");
+    assert.equal(state.enabled, true);
+    assert.deepEqual(state.manifest, { platform: "darwin", arch: state.arch, native: "Resources/native/pideck-sparkle.node" });
+    // The dedicated update acceptance flow exercises native UI against a signed
+    // local feed. This broad smoke must never contact the production feed or
+    // replace Sparkle with a fabricated Electron message box.
+    return;
+  }
   const results = await app.evaluate(async ({ app, BrowserWindow, dialog, Menu, net, shell }) => {
     const menu = Menu.getApplicationMenu();
     const item = menu.getMenuItemById("check-for-updates");
@@ -326,7 +374,7 @@ try {
   const launch = async () => {
     const running = await _electron.launch({
       executablePath: path,
-      args: [`--user-data-dir=${data}`],
+      args: [`--user-data-dir=${data}`, ...(process.platform === "darwin" ? ["-SUEnableAutomaticChecks", "NO"] : [])],
       env: { ...process.env, AZURE_OPENAI_API_KEY: "pideck-smoke-key",
         AZURE_OPENAI_BASE_URL: modelServer.endpoint, PIDECK_SMOKE_PRIVATE: "secret-marker",
         ...(process.platform === "darwin" ? { SHELL: "/bin/zsh", ZDOTDIR: shellProfile } : {}) },

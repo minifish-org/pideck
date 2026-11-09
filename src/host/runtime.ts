@@ -160,7 +160,7 @@ export class Runtime {
       const models = suppliedModels ?? builtinModels({
         credentials,
         modelsStore: metadata.modelsStore,
-        identity: { userAgent: { custom: "Pideck/0.1.1" } },
+        identity: { userAgent: { custom: "Pideck/0.1.2" } },
       });
       const savedCredentials = credentials instanceof PersistentCredentials ? credentials : undefined;
       const restoreCatalogs = () => models.refresh({ allowNetwork: false });

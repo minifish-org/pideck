@@ -28,6 +28,7 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   let window: BrowserWindow | undefined;
   let state: MenuState | undefined;
   let pending: MenuAction | undefined;
+  let checkingUpdates = false;
 
   function dispatch(action: MenuAction) {
     if (!menu.getMenuItemById(action)?.enabled) return;
@@ -56,9 +57,14 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
   const updates: MenuItemConstructorOptions = {
     id: "check-for-updates", label: "Check for Updates…",
     click(item) {
-      if (!item.enabled) return;
-      item.enabled = false;
-      void checkForUpdates(window).catch(() => {}).finally(() => { item.enabled = true; });
+      if (!item.enabled || checkingUpdates) return;
+      checkingUpdates = true;
+      const nativeUpdater = mac && app.isPackaged;
+      if (!nativeUpdater) item.enabled = false;
+      void checkForUpdates(window).catch(() => {}).finally(() => {
+        checkingUpdates = false;
+        if (!nativeUpdater) item.enabled = true;
+      });
     },
   };
   const template: MenuItemConstructorOptions[] = [];

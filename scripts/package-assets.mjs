@@ -10,6 +10,7 @@ import { x as extractTar } from "tar";
 import { utils } from "playwright-core/lib/coreBundle";
 import { npmVersion, prepareNpmRuntime } from "./npm-runtime.mjs";
 import { validateInstalledLicenses } from "./licenses.mjs";
+import { prepareUpdaterAssets } from "./update-assets.mjs";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
 const nodeVersion = "22.23.4";
@@ -215,6 +216,7 @@ export default async function beforePack(context) {
     throw new Error("Bundled browser automation requires a separate macOS x64 or arm64 package; universal packages are not supported.");
   }
   await prepareAutomation(context.packager.platform.nodeName, Arch[context.arch], context.packager.projectDir);
+  await prepareUpdaterAssets(context.packager.platform.nodeName, Arch[context.arch], context.packager.projectDir);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

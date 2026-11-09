@@ -18,6 +18,7 @@ Include the Pideck version and build commit, operating system and architecture, 
 - Inference requests go to the selected model endpoint and may contain source code, images, and command output. That service's privacy and retention policies apply.
 - Browser automation uses isolated conversation profiles. Isolation from your normal browser profile does not make visited pages or saved browser state safe to publish.
 - Local macOS builds are ad-hoc signed and are not Apple-notarized releases. Do not disable operating-system security controls to run an unfamiliar build.
+- Updater-enabled macOS builds use Sparkle in the trusted main process. Both update feeds and archives must authenticate against the Ed25519 public key embedded in the installed application; invalid signatures fail closed. This update signature is separate from Apple code signing. The private update-signing key remains in the release builder's Keychain and is never shipped. The renderer cannot choose a feed or request filesystem installation. Installation waits for a clean workspace shutdown and preference flush.
 
 ## Validation
 
