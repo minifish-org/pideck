@@ -108,6 +108,6 @@ test("initial HTML and native canvas use the resolved appearance before renderer
     assert.match(document, new RegExp(`name="color-scheme" content="${resolved}"`));
     assert.match(document, /<body><div id="root"><\/div><\/body>/);
     assert.ok(!document.includes("<script"));
-    assert.equal(appearanceBackground(state), resolved === "light" ? "#ffffff" : "#0d1117");
+    assert.equal(appearanceBackground(state), resolved === "light" ? "#fdfdfd" : "#0a0a0a");
   }
 });

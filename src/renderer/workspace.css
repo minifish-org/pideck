@@ -1,5 +1,5 @@
 .workspace-review {
-  --diff-surface: var(--control-bgColor-rest);
+  --diff-surface: var(--panel-bgColor);
   container: review / inline-size;
   display: flex;
   flex: 1 1 auto;
@@ -17,7 +17,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bgColor-inset);
+  background: var(--terminal-bgColor);
 }
 
 .workspace-terminal[hidden] { display: none; }
@@ -29,7 +29,7 @@
   min-height: 40px;
   gap: 8px;
   padding-inline: var(--workspace-inset, 16px);
-  background: var(--control-bgColor-rest);
+  background: var(--panel-bgColor);
 }
 
 .workspace-panel-header h2 {
@@ -290,9 +290,9 @@
   overflow: hidden;
   padding: 6px 6px 2px var(--workspace-inset, 16px);
 }
-.workspace-terminal-body > .xterm { height: 100%; background-color: var(--bgColor-inset); }
-.workspace-terminal-body .xterm .xterm-viewport { background-color: var(--bgColor-inset); }
-.workspace-terminal-body .xterm .composition-view { background: var(--bgColor-inset); color: var(--fgColor-default); }
+.workspace-terminal-body > .xterm { height: 100%; background-color: var(--terminal-bgColor); }
+.workspace-terminal-body .xterm .xterm-viewport { background-color: var(--terminal-bgColor); }
+.workspace-terminal-body .xterm .composition-view { background: var(--terminal-bgColor); color: var(--fgColor-default); }
 .workspace-terminal-body .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   /* Keep xterm's full hit area for dragging. */
   border-inline: 2px solid transparent;

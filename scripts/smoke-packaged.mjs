@@ -50,7 +50,7 @@ async function chooseAppearance(app, page, preference) {
   }));
   assert.equal(menu.source, preference);
   assert.deepEqual(menu.selected, [preference]);
-  assert.ok((state.resolved === "light" ? ["#ffffff", "#ffffffff"] : ["#0d1117", "#ff0d1117"]).includes(menu.background));
+  assert.ok((state.resolved === "light" ? ["#fdfdfd", "#fffdfdfd"] : ["#0a0a0a", "#ff0a0a0a"]).includes(menu.background));
   return state;
 }
 
@@ -842,9 +842,9 @@ try {
   await page.waitForFunction(dark => [...document.querySelectorAll('#review-panel diffs-container')]
     .flatMap(container => [...container.shadowRoot.querySelectorAll('[data-line] span[style]')])
     .some(element => element.textContent.includes("export") && getComputedStyle(element).color !== dark), darkToken);
-  assert.equal(await navigation.evaluate(element => getComputedStyle(element).backgroundColor), "rgb(246, 248, 250)");
-  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).backgroundColor), "rgb(230, 234, 239)");
-  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).color), "rgb(31, 35, 40)");
+  assert.equal(await navigation.evaluate(element => getComputedStyle(element).backgroundColor), "rgb(222, 223, 224)");
+  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).backgroundColor), "rgb(247, 247, 247)");
+  assert.equal(await sentMessage.locator(".message-content").evaluate(element => getComputedStyle(element).color), "rgb(23, 23, 23)");
   for (const [type, line, gutter] of [["addition", "#dafbe1", "#aceebb"], ["deletion", "#ffebe9", "#ffcecb"]]) {
     await expectPaint(review.locator(`[data-line][data-line-type="change-${type}"]`).first(), line);
     await expectPaint(review.locator(`[data-column-number][data-line-type="change-${type}"]`).first(), gutter);
@@ -854,9 +854,9 @@ try {
   await terminalToggle.click();
   await terminalRows.getByText("PTY_OK", { exact: true }).waitFor();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
-    .backgroundColor === "rgb(246, 248, 250)");
+    .backgroundColor === "rgb(222, 223, 224)");
   assert.ok(await terminalRegion.evaluate(region => [...region.querySelectorAll(".xterm, .xterm-viewport")]
-    .every(element => getComputedStyle(element).backgroundColor === "rgb(246, 248, 250)")),
+    .every(element => getComputedStyle(element).backgroundColor === "rgb(222, 223, 224)")),
   "Light terminal roots and unused viewport space must not expose xterm's default black background.");
   assert.equal(await terminal.getAttribute("data-appearance-fixture"), "same");
   assert.equal(await page.evaluate(() => document.documentElement.dataset.ptyId), firstPty);

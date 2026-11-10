@@ -20,11 +20,12 @@ async page => {
       return editor?.getAttribute("aria-label") === "Edit queued message" && !editor.readOnly;
     });
   }
-  const canvas = "rgb(13, 17, 23)";
-  const panel = "rgb(33, 40, 48)";
-  const inputSurface = "rgb(21, 27, 35)";
-  const overlay = "rgb(1, 4, 9)";
-  const foreground = "rgb(240, 246, 252)";
+  const canvas = "rgb(10, 10, 10)";
+  const panel = "rgb(34, 34, 34)";
+  const control = "rgb(42, 42, 42)";
+  const inputSurface = "rgb(27, 27, 27)";
+  const overlay = "rgb(38, 38, 38)";
+  const foreground = "rgb(243, 243, 243)";
   const green = "rgb(35, 134, 54)";
   async function expectColors(target, expected, pseudo) {
     const readColors = () => target.evaluate((element, { expected, pseudo }) => {
@@ -305,7 +306,7 @@ async page => {
   await appearance("dark");
   if (await open.count() !== 1 || await nav.count()) throw new Error("Welcome has duplicate workspace navigation.");
   await expectColors(page.locator("html"), {
-    "--bgColor-default": "#0d1117",
+    "--bgColor-default": "#0a0a0a",
     "--button-primary-bgColor-rest": "#238636",
     "background-color": canvas,
     "color": foreground,
@@ -380,12 +381,12 @@ async page => {
     }
   }
   await provider.locator('option[value="openai"]').waitFor({ state: "attached" });
-  await expectColors(settings, { "background-color": overlay, "border-top-color": "rgba(61, 68, 77, 0.7)", "color": foreground });
-  await expectColors(settings, { "background-color": "rgba(33, 40, 48, 0.4)" }, "::backdrop");
-  await expectColors(provider, { "background-color": canvas, "border-top-color": "rgb(61, 68, 77)", "color": foreground });
+  await expectColors(settings, { "background-color": overlay, "border-top-color": "rgb(58, 58, 58)", "color": foreground });
+  await expectColors(settings, { "background-color": "rgba(0, 0, 0, 0.55)" }, "::backdrop");
+  await expectColors(provider, { "background-color": canvas, "border-top-color": "rgb(58, 58, 58)", "color": foreground });
   await appearance("light");
-  await expectColors(settings, { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
-  await expectColors(provider, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await expectColors(settings, { "background-color": "rgb(255, 255, 255)", "color": "rgb(23, 23, 23)" });
+  await expectColors(provider, { "background-color": "rgb(253, 253, 253)", "color": "rgb(23, 23, 23)" });
   await page.screenshot({ path: "output/playwright/pideck-ui-light-providers.png" });
   await appearance("dark");
   await page.keyboard.press("Escape");
@@ -458,7 +459,7 @@ async page => {
       throw new Error("Connection method choices repeat provider names or explanatory text.");
     }
     await page.mouse.move(0, 0);
-    const neutral = theme === "light" ? "rgb(246, 248, 250)" : panel;
+    const neutral = theme === "light" ? "rgb(244, 244, 244)" : control;
     for (const option of [apiKeyOption, subscriptionOption]) await expectColors(option, { "background-color": neutral });
     const optionStyle = async option => option.evaluate(button => {
       const style = getComputedStyle(button);
@@ -494,7 +495,7 @@ async page => {
   for (const theme of ["light", "dark"]) {
     await appearance(theme);
     await page.mouse.move(0, 0);
-    await expectColors(singleKeyOption, { "background-color": theme === "light" ? "rgb(246, 248, 250)" : panel });
+    await expectColors(singleKeyOption, { "background-color": theme === "light" ? "rgb(244, 244, 244)" : control });
   }
   await singleKeyOption.click();
   const keyPrompt = settings.getByLabel("API key", { exact: true });
@@ -570,8 +571,8 @@ async page => {
   await configuredModelOption.getByText("128k", { exact: true }).waitFor();
   if (!await configuredModelOption.locator('[title="Supports images"] svg').count()) throw new Error("The image-capability glyph is missing.");
   await appearance("light");
-  await expectColors(picker, { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
-  await expectColors(modelSearch, { "background-color": "rgb(255, 255, 255)", "color": "rgb(37, 41, 46)" });
+  await expectColors(picker, { "background-color": "rgb(255, 255, 255)", "color": "rgb(23, 23, 23)" });
+  await expectColors(modelSearch, { "background-color": "rgb(253, 253, 253)", "color": "rgb(23, 23, 23)" });
   await page.screenshot({ path: "output/playwright/pideck-ui-light-model-menu.png" });
   await appearance("dark");
   if (await picker.getByRole("button", { name: "Browse all models", exact: true }).count()) {
@@ -704,7 +705,7 @@ async page => {
   await thinkingLevel.selectOption("high");
   await model.getByText("High", { exact: true }).waitFor();
   await expectColors(picker.locator('.model-option[aria-current="true"]'), {
-    "background-color": "rgba(101, 108, 118, 0.2)",
+    "background-color": "rgba(255, 255, 255, 0.08)",
     "border-top-color": "rgba(0, 0, 0, 0)",
   });
   if (!(await model.getAttribute("aria-description"))?.endsWith(" · Thinking high")) {
@@ -1318,7 +1319,7 @@ async page => {
     if (!aligned) throw new Error("User messages should sit on the right and assistant output should start on the left.");
   }
   await expectTranscriptLayout();
-  await expectColors(userMessage.locator(".message-content"), { "background-color": "rgb(61, 68, 77)", "border-width": "0px" });
+  await expectColors(userMessage.locator(".message-content"), { "background-color": inputSurface, "border-width": "0px" });
   for (const [message, timestamp] of [[userMessage, Date.parse("2026-11-07T05:04:00Z")],
     [assistantMessage, Date.parse("2026-11-07T05:05:35Z")]]) {
     const time = message.locator(".message-footer time");
@@ -1433,7 +1434,7 @@ async page => {
     }
   }
   const selectedToggleColors = {
-    "background-color": "rgba(101, 108, 118, 0.2)",
+    "background-color": "rgba(255, 255, 255, 0.08)",
     "color": foreground,
     "border-top-color": "rgba(0, 0, 0, 0)",
   };
@@ -1582,9 +1583,16 @@ async page => {
     review.locator(".workspace-panel-header"), review.locator(".workspace-review-scroll")]) {
     await expectColors(surface, { "background-color": panel });
   }
-  await expectColors(nav.locator('.nav-session-row[aria-current="true"]'), { "background-color": "rgb(61, 68, 77)" });
-  await expectColors(sidebar, selectedToggleColors);
-  await expectColors(changes, selectedToggleColors);
+  const selectedSession = nav.locator('.nav-session-row[aria-current="true"]');
+  await expectColors(selectedSession, { "background-color": "rgb(56, 56, 56)" });
+  await selectedSession.hover();
+  await expectColors(selectedSession, { "background-color": "rgb(56, 56, 56)", "color": foreground });
+  for (const toggle of [sidebar, changes]) {
+    await expectColors(toggle, selectedToggleColors);
+    await toggle.hover();
+    await expectColors(toggle, selectedToggleColors);
+  }
+  await prompt.hover();
   await expectColors(singleDiff.locator('[data-line-type="change-addition"] [data-diff-span]').first(), {
     "background-color": "rgba(46, 160, 67, 0.4)",
   });
@@ -1702,8 +1710,10 @@ async page => {
   if ((await terminal.boundingBox()).width < 755 || await tools.getAttribute("data-docked") !== null) {
     throw new Error("The compact terminal does not use the full workspace.");
   }
-  await expectColors(terminal.locator(".workspace-panel-header"), { "background-color": panel });
-  await expectColors(terminal.locator(".xterm-scrollable-element"), { "background-color": "rgb(1, 4, 9)" });
+  for (const surface of [terminal, terminal.locator(".workspace-panel-header"),
+    terminal.locator(".xterm"), terminal.locator(".xterm-scrollable-element")]) {
+    await expectColors(surface, { "background-color": panel });
+  }
   await changes.click();
   await back.waitFor();
   await expectActiveTool("changes");
@@ -1749,11 +1759,29 @@ async page => {
   const darkSyntax = await reviewCode.evaluate(element => getComputedStyle(element).color);
   await appearance("light");
   await expectRetainedReview();
-  await expectColors(page.locator("html"), { "background-color": "rgb(255, 255, 255)", "color": "rgb(31, 35, 40)" });
-  await expectColors(nav, { "background-color": "rgb(246, 248, 250)" });
-  await expectColors(review.locator(".workspace-review-scroll"), { "background-color": "rgb(246, 248, 250)" });
+  await expectColors(page.locator("html"), { "background-color": "rgb(253, 253, 253)", "color": "rgb(23, 23, 23)" });
+  await expectColors(page.locator(".titlebar"), { "background-color": "rgb(253, 253, 253)" });
+  for (const surface of [nav, page.locator(".titlebar-leading"), tools, review,
+    review.locator(".workspace-panel-header"), review.locator(".workspace-review-scroll")]) {
+    await expectColors(surface, { "background-color": "rgb(222, 223, 224)" });
+  }
+  await expectColors(composer, { "background-color": "rgb(245, 245, 245)", "border-top-color": "rgba(0, 0, 0, 0.1)" });
+  await expectColors(prompt, { "color": "rgb(23, 23, 23)" });
+  await selectedSession.hover();
+  await expectColors(selectedSession, { "background-color": "rgb(213, 215, 217)", "color": "rgb(23, 23, 23)" });
+  const luminance = color => color.match(/\d+/g).slice(0, 3)
+    .map(channel => Number(channel) / 255)
+    .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+  const mutedLuminance = luminance(await nav.locator(".nav-header h2").evaluate(element => getComputedStyle(element).color));
+  for (const surface of [nav, selectedSession]) {
+    const background = luminance(await surface.evaluate(element => getComputedStyle(element).backgroundColor));
+    const contrast = (background + 0.05) / (mutedLuminance + 0.05);
+    if (!(contrast >= 4.5)) throw new Error(`Light sidebar muted text contrast is below 4.5:1: ${contrast}.`);
+  }
+  await prompt.hover();
   await expectColors(userMessage.locator(".message-content"), {
-    "background-color": "rgb(230, 234, 239)", "color": "rgb(31, 35, 40)", "border-width": "0px",
+    "background-color": "rgb(247, 247, 247)", "color": "rgb(23, 23, 23)", "border-width": "0px",
   });
   await page.waitForFunction(dark => [...document.querySelectorAll('#review-panel diffs-container')]
     .flatMap(container => [...container.shadowRoot.querySelectorAll('[data-line] span[style]')])
@@ -1779,14 +1807,16 @@ async page => {
   await expectActiveTool("terminal");
   await expectSameShell();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
-    .backgroundColor === "rgb(246, 248, 250)")
+    .backgroundColor === "rgb(222, 223, 224)")
     .catch(async error => { throw new Error(`Light terminal background did not update: ${await terminal.locator('.xterm-scrollable-element').evaluate(element => getComputedStyle(element).backgroundColor)}.`, { cause: error }); });
-  await expectColors(terminal.locator(".xterm"), { "background-color": "rgb(246, 248, 250)" });
+  for (const surface of [terminal, terminal.locator(".workspace-panel-header"), terminal.locator(".xterm")]) {
+    await expectColors(surface, { "background-color": "rgb(222, 223, 224)" });
+  }
   const lightViewport = terminal.locator(".xterm-viewport");
-  if (await lightViewport.count()) await expectColors(lightViewport, { "background-color": "rgb(246, 248, 250)" });
+  if (await lightViewport.count()) await expectColors(lightViewport, { "background-color": "rgb(222, 223, 224)" });
   const composition = terminal.locator(".composition-view");
   if (await composition.count()) await expectColors(composition, {
-    "background-color": "rgb(246, 248, 250)", "color": "rgb(31, 35, 40)",
+    "background-color": "rgb(222, 223, 224)", "color": "rgb(23, 23, 23)",
   });
   await expectTerminalToolbar();
   await page.screenshot({ path: "output/playwright/pideck-ui-light-terminal.png" });
@@ -1794,7 +1824,7 @@ async page => {
   await expectSameShell();
   await expectTerminalToolbar();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('#workspace-terminal .xterm-scrollable-element'))
-    .backgroundColor === "rgb(1, 4, 9)");
+    .backgroundColor === "rgb(34, 34, 34)");
   await changes.click();
   await expectRetainedReview();
   await terminalToggle.click();

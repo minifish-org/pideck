@@ -22,7 +22,7 @@ function terminalPalette(container: HTMLElement) {
   const tokens = getComputedStyle(container);
   const token = (name: string) => tokens.getPropertyValue(name).trim();
   const accent = token("--fgColor-accent");
-  const background = token("--bgColor-inset");
+  const background = token("--terminal-bgColor");
   return {
     fontFamily: token("--mono"),
     theme: {

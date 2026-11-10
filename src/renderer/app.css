@@ -1,5 +1,7 @@
 :root {
   color-scheme: light dark;
+  --panel-bgColor: var(--control-bgColor-rest);
+  --terminal-bgColor: var(--bgColor-inset);
   --message-bgColor: var(--bgColor-emphasis);
   --navigation-bgColor-selected: var(--bgColor-emphasis);
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -8,11 +10,81 @@
   color: var(--fgColor-default);
   font: 14px/1.5 var(--font);
 }
-:root[data-color-mode='dark'] { color-scheme: dark; }
+:root[data-color-mode='dark'] {
+  color-scheme: dark;
+  /* Neutral surfaces: matching sidebars frame the near-black conversation.
+     Keep Primer's semantic accents for links, focus, status and code changes. */
+  --panel-bgColor: #222222;
+  --terminal-bgColor: var(--panel-bgColor);
+  --message-bgColor: var(--bgColor-muted);
+  --bgColor-default: #0a0a0a;
+  --bgColor-muted: #1b1b1b;
+  --bgColor-inset: #141414;
+  --bgColor-emphasis: #383838;
+  --bgColor-disabled: #262626;
+  --bgColor-neutral-muted: #ffffff14;
+  --fgColor-default: #f3f3f3;
+  --fgColor-muted: #a0a0a0;
+  --fgColor-disabled: #666666;
+  --borderColor-default: #3a3a3a;
+  --borderColor-muted: #303030;
+  --borderColor-emphasis: #5a5a5a;
+  --borderColor-disabled: #ffffff0d;
+  --control-bgColor-rest: #2a2a2a;
+  --control-bgColor-hover: #303030;
+  --control-bgColor-active: #383838;
+  --control-borderColor-selected: var(--fgColor-default);
+  --control-transparent-bgColor-hover: #ffffff0f;
+  --control-transparent-bgColor-active: #ffffff1a;
+  --control-transparent-bgColor-selected: #ffffff14;
+  --overlay-bgColor: #262626;
+  --overlay-borderColor: var(--borderColor-default);
+  --overlay-backdrop-bgColor: #0000008c;
+  --shadow-resting-medium: 0 1px 1px 0 #00000066, 0 3px 6px 0 #000000cc;
+  --shadow-floating-small: 0 0 0 1px var(--borderColor-default), 0 6px 12px -3px #00000066, 0 6px 18px 0 #00000066;
+  --shadow-floating-medium: 0 0 0 1px var(--borderColor-default), 0 8px 16px -4px #00000066, 0 4px 32px -4px #00000066, 0 24px 48px -12px #00000066, 0 48px 96px -24px #00000066;
+  --shadow-floating-large: 0 0 0 1px var(--borderColor-default), 0 24px 48px 0 #000000;
+  --ansi-black: #3a3a3a;
+  --ansi-blackBright: #7a7a7a;
+  --ansi-white: var(--fgColor-default);
+}
 :root[data-color-mode='light'] {
   color-scheme: light;
-  --message-bgColor: var(--control-bgColor-active);
-  --navigation-bgColor-selected: var(--control-bgColor-active);
+  /* Soft gray sidebars frame a near-white conversation, without blue-gray chrome. */
+  --panel-bgColor: #dedfe0;
+  --terminal-bgColor: var(--panel-bgColor);
+  --message-bgColor: #f7f7f7;
+  --navigation-bgColor-selected: #d5d7d9;
+  --bgColor-default: #fdfdfd;
+  --bgColor-muted: #f5f5f5;
+  --bgColor-inset: #f0f0f0;
+  --bgColor-emphasis: #242424;
+  --bgColor-disabled: #ededed;
+  --bgColor-neutral-muted: #00000008;
+  --fgColor-default: #171717;
+  --fgColor-muted: #5d5d5d;
+  --fgColor-disabled: #939393;
+  --borderColor-default: #0000001a;
+  --borderColor-muted: #00000014;
+  --borderColor-emphasis: #a3a3a3;
+  --borderColor-disabled: #0000000d;
+  --control-bgColor-rest: #f4f4f4;
+  --control-bgColor-hover: #eeeeee;
+  --control-bgColor-active: #e7e7e7;
+  --control-fgColor-rest: var(--fgColor-default);
+  --control-transparent-bgColor-hover: #0000000a;
+  --control-transparent-bgColor-active: #0000001a;
+  --control-transparent-bgColor-selected: #00000014;
+  --overlay-bgColor: #ffffff;
+  --overlay-borderColor: var(--borderColor-default);
+  --overlay-backdrop-bgColor: #00000033;
+  --shadow-resting-medium: 0 1px 1px 0 #0000000a, 0 3px 6px 0 #00000014;
+  --shadow-floating-small: 0 0 0 1px var(--borderColor-default), 0 6px 12px -3px #0000000f, 0 6px 18px 0 #0000000f;
+  --shadow-floating-medium: 0 0 0 1px var(--borderColor-default), 0 8px 16px -4px #00000014, 0 4px 32px -4px #00000014, 0 24px 48px -12px #00000014, 0 48px 96px -24px #00000014;
+  --shadow-floating-large: 0 0 0 1px var(--borderColor-default), 0 24px 48px 0 #0000001f;
+  --ansi-black: var(--fgColor-default);
+  --ansi-blackBright: #4a4a4a;
+  --ansi-white: var(--fgColor-muted);
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -85,7 +157,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   padding-right: 10px;
   border-bottom: 0;
   border-right: 1px solid var(--borderColor-muted);
-  background: var(--control-bgColor-rest);
+  background: var(--panel-bgColor);
 }
 .titlebar-content {
   display: flex; min-width: 0; flex: 1; align-items: center; gap: 16px;
@@ -123,7 +195,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background: var(--control-transparent-bgColor-hover); color: var(--fgColor-default);
 }
 .icon-button[data-draft='true'] { width: auto; padding-inline: 5px; font-size: 11px; }
-.panel-toggle:is([aria-pressed='true'], [aria-expanded='true']) {
+.panel-toggle:is([aria-pressed='true'], [aria-expanded='true']):not(:disabled) {
   background: var(--control-transparent-bgColor-selected); color: var(--fgColor-default);
 }
 .panel-toggle:active:not(:disabled) { background: var(--control-transparent-bgColor-active); }
@@ -131,7 +203,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .app-body { display: flex; flex: 1; min-height: 0; position: relative; }
 .navigation {
   display: flex; flex-direction: column; flex: 0 0 var(--nav-width); min-width: 0;
-  position: relative; z-index: 5; border-right: 1px solid var(--borderColor-muted); background: var(--control-bgColor-rest);
+  position: relative; z-index: 5; border-right: 1px solid var(--borderColor-muted); background: var(--panel-bgColor);
 }
 .app--drawer .navigation {
   position: absolute; inset: 0 auto 0 0; width: var(--drawer-width);
@@ -175,7 +247,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .nav-project-row .nav-new-session { position: absolute; top: 4px; right: 3px; width: 28px; height: 28px; }
 .nav-project-row .nav-new-session[data-draft] { width: 36px; }
 .nav-row:hover:not(:disabled) { background: var(--control-transparent-bgColor-hover); color: var(--fgColor-default); }
-.nav-row[aria-current='true'] { background: var(--navigation-bgColor-selected); color: var(--fgColor-default); }
+.nav-row[aria-current='true']:not(:disabled) { background: var(--navigation-bgColor-selected); color: var(--fgColor-default); }
 .nav-row svg { flex: none; }
 .nav-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
 .nav-footer { flex: none; margin-top: auto; padding: 8px 12px; }
@@ -191,7 +263,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--control-bgColor-rest);
+  background: var(--panel-bgColor);
 }
 .workspace-tools[hidden] { display: none; }
 .workspace-tools[data-docked] {

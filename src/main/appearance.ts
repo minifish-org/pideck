@@ -85,7 +85,7 @@ export async function openAppearance(directory: string, native: NativeAppearance
 }
 
 export function appearanceBackground(state: AppearanceState) {
-  return state.resolved === "dark" ? "#0d1117" : "#ffffff";
+  return state.resolved === "dark" ? "#0a0a0a" : "#fdfdfd";
 }
 
 export function appearanceDocument(html: string, state: AppearanceState) {
