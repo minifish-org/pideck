@@ -7,7 +7,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   AgentDoc, configure, ConversationTranscript, createRegistry, defineExtension, GenerationTask, Harness, InboxDoc, LiveDoc, section, ToolTask,
-  type Conversation, type ConversationId, type ConversationView, type EntryId, type InboxState, type InputSubmissionDraft, type LiveState, type TaskGraph, type TaskId, type TranscriptView,
+  type Conversation, type ConversationId, type ConversationView, type EntryId, type InboxState, type InputSubmissionDraft, type LiveState, type TaskGraph, type TaskId, type TranscriptView, type Tx,
 } from "@earendil-works/pi-durable";
 import { err, ExecutionError, FileError, ok, type ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -15,7 +15,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type {
-  ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueEditRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
+  ChatGap, ChatView, EditChat, ModelCatalog, ModelOption, QueuedInputRef, QueueEditRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat, Commands,
 } from "../shared/api.js";
 import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
@@ -91,7 +91,8 @@ class ToolEnvironment extends NodeExecutionEnv {
 
 type RemovalPlan = RemovalPreview & RemovalResult & { roots: ConversationId[]; conversations: ConversationId[] };
 
-function chatSubmission(input: StartChat | SendChat): InputSubmissionDraft {
+function chatSubmission(input: { text: string; images?: readonly { mimeType: string; data: string }[];
+  requestId?: string; delivery?: SendChat["delivery"] }): InputSubmissionDraft {
   const images = input.images ?? [];
   const delivery = ("delivery" in input && input.delivery) || "send";
   const { requestId } = input;
@@ -107,6 +108,15 @@ function chatSubmission(input: StartChat | SendChat): InputSubmissionDraft {
   };
 }
 
+async function requireEditIdle(tx: Tx, conversationId: ConversationId) {
+  const live = await tx.doc(LiveDoc, conversationId);
+  if (live.run || live.compactions?.length) throw new Error("Stop the current run before resending an edited message.");
+  const inbox = await tx.doc(InboxDoc, conversationId);
+  if (inbox.items.length || (await tx.doc(QueueEditDoc, conversationId)).edit) {
+    throw new Error("Finish or remove queued messages before resending an edited message.");
+  }
+}
+
 export type ChatWatch = {
   dispose(): void;
   loadEarlier(): Promise<void>;
@@ -119,6 +129,7 @@ export class Runtime {
   private readonly admissions = new Set<Promise<unknown>>();
   private activeAdmissions = 0;
   private readonly starting = new Map<string, { projectId: string; result: Promise<Session> }>();
+  private readonly editing = new Map<string, { source: string; result: Promise<Session> }>();
   private readonly activities = new SessionActivities(id => this.metadata.sessionSelection(id), {
     load: () => this.metadata.sessionActivities(),
     save: (id, activity) => this.metadata.saveSessionActivity(id, activity),
@@ -413,6 +424,87 @@ export class Runtime {
     return this.metadata.finishSessionStart(requestId);
   }
 
+  private async editableMessage(selection: Selection, entryId: number) {
+    this.requireProject(selection.projectId);
+    const conversation = await this.conversation(selection);
+    // Read fork-aware history, not an arbitrary global entry ID or the bounded
+    // renderer projection (which may omit earlier image data).
+    const at = entryId as EntryId;
+    const entry = (await conversation.entries({ minEntryId: at, maxEntryId: at }, 1, undefined, context)).items[0];
+    const user = entry?.model?.[0];
+    if (!entry || !["pi.user", inputEntryKind].includes(entry.kind) || entry.model?.length !== 1 || user?.role !== "user") {
+      throw new Error("Choose a committed user message in this session.");
+    }
+    const content = typeof user.content === "string" ? { text: user.content, images: [] }
+      : { text: user.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n\n"),
+        images: user.content.flatMap(block => block.type === "image" ? [{ mimeType: block.mimeType, data: block.data }] : []) };
+    return { conversation, content };
+  }
+
+  readMessageForEdit(input: Commands["chat:edit-read"][0]): Promise<Commands["chat:edit-read"][1]> {
+    return this.admit(async () => (await this.editableMessage(input, input.entryId)).content);
+  }
+
+  edit(input: EditChat): Promise<Session> {
+    return this.admit(async () => {
+      const source = `${input.projectId}/${input.sessionId}/${input.entryId}`;
+      const pending = this.editing.get(input.requestId);
+      if (pending) {
+        if (pending.source !== source) throw new Error("This edit belongs to another message.");
+        return pending.result;
+      }
+      const result = this.resubmitMessage(input);
+      this.editing.set(input.requestId, { source, result });
+      try { return await result; }
+      finally { this.editing.delete(input.requestId); }
+    }, true);
+  }
+
+  private async resubmitMessage(input: EditChat): Promise<Session> {
+    const { conversation, content } = await this.editableMessage(input, input.entryId);
+    const source = this.metadata.session(input.projectId, input.sessionId);
+    const existing = this.metadata.findSession(input.requestId);
+    if (existing) {
+      if (existing.projectId !== input.projectId) throw new Error("This edit belongs to another project.");
+      const receipt = await this.harness.commit(async tx => {
+        const accepted = await tx.submissionByRequest(existing.conversationId, input.requestId);
+        const data = accepted?.type === "input" && accepted.entry !== undefined ? (await tx.entry(accepted.entry))?.data : undefined;
+        if (!data || typeof data !== "object" || Array.isArray(data)
+            || data.editedSessionId !== input.sessionId || data.editedEntryId !== input.entryId) {
+          throw new Error("This request already belongs to another action.");
+        }
+        return (await tx.conversation(existing.conversationId))?.parent;
+      }, context);
+      return { ...this.metadata.finishSessionStart(input.requestId),
+        ...(receipt ? { parentSessionId: source.id, forkEntryId: receipt.at } : {}) };
+    }
+    if (!input.text.trim() && !content.images.length) throw new Error("Enter a message or keep an attached image.");
+    const submission = { ...input, images: content.images };
+    const model = await this.validateChatModel(submission);
+    await conversation.commit(tx => requireEditIdle(tx, conversation.id), context);
+    const previous = (await conversation.entries({ maxEntryId: (input.entryId - 1) as EntryId }, 1, undefined, context)).items[0];
+    // Durable forks include their checkpoint. Fork immediately BEFORE the
+    // edited input so neither it nor its old answer enters the new context.
+    // The very first input has no checkpoint, so it starts an empty session.
+    const branch = previous
+      ? await conversation.fork(previous.id, { ownership: { kind: "ownerless" } }, context)
+      : await this.harness.createConversation({ ownership: { kind: "ownerless" },
+        agent: { cwd: this.requireProject(input.projectId).directory } }, context);
+    await branch.commit(async tx => {
+      await requireEditIdle(tx, conversation.id);
+      await configure(tx, branch.id, { model: { provider: model.provider, modelId: model.id }, thinkingLevel: input.thinking });
+      await branch.submit(tx, { ...chatSubmission(submission), entry: { kind: inputEntryKind,
+        data: { requestId: input.requestId, editedSessionId: input.sessionId, editedEntryId: input.entryId } } });
+      this.requireProject(input.projectId);
+      // Use the existing first-admission recovery path: an acknowledgement lost
+      // to a restart must reopen this branch, never fork or execute it twice.
+      this.metadata.createSession(input.projectId, branch.id,
+        previous ? branchTitle(source.title) : firstSessionTitle(input.text), false, input.requestId);
+    }, context);
+    return { ...this.metadata.finishSessionStart(input.requestId),
+      ...(previous ? { parentSessionId: source.id, forkEntryId: previous.id } : {}) };
+  }
+
   readQueuedInput(selection: QueuedInputRef): Promise<Commands["chat:queue-read"][1]> {
     return this.admit(async () => {
       this.requireProject(selection.projectId);
@@ -487,7 +579,7 @@ export class Runtime {
     });
   }
 
-  private async validateChatModel(input: StartChat | SendChat) {
+  private async validateChatModel(input: Pick<SendChat, "model" | "thinking"> & { images?: readonly unknown[] }) {
     await this.savedCredentials?.unlock();
     const model = this.models.getModel(input.model.provider, input.model.id);
     if (!model) throw new Error("The selected model is unavailable.");
@@ -584,7 +676,7 @@ export class Runtime {
       const model = input.model ?? (agent?.model ? { provider: agent.model.provider, id: agent.model.modelId } : undefined);
       if (!model) throw new Error("Choose a model before continuing.");
       const thinking = input.thinking ?? agent?.thinkingLevel ?? "off";
-      await this.validateChatModel({ ...input, model, thinking, text: "" });
+      await this.validateChatModel({ ...input, model, thinking });
       const current = await conversation.context(context);
       const last = current.messages.findLast(message => message.role !== "system");
       const tail = current.entries.at(-1)?.id;

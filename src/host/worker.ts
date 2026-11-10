@@ -205,6 +205,10 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.start(payload);
     case "chat:send":
       return runtime.send(payload);
+    case "chat:edit-read":
+      return runtime.readMessageForEdit(payload);
+    case "chat:edit":
+      return runtime.edit(payload);
     case "chat:queue-read":
       return runtime.readQueuedInput(payload);
     case "chat:queue-edit-start":
