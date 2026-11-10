@@ -75,7 +75,6 @@ export type SendChat = Selection & {
   delivery?: "send" | "follow-up" | "steer";
 };
 export type StartChat = Omit<SendChat, "sessionId" | "delivery" | "requestId"> & { requestId: string };
-export type EditChat = Selection & { entryId: number; text: string; requestId: string; model: ModelRef; thinking: Thinking };
 export type ChatBlock =
   | { type: "text" | "thinking"; text: string }
   | { type: "image"; mimeType: string; data: string }
@@ -183,8 +182,6 @@ export type Commands = {
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
   "chat:start": [StartChat, Session];
   "chat:send": [SendChat, void];
-  "chat:edit-read": [Selection & { entryId: number }, QueuedInputContent];
-  "chat:edit": [EditChat, Session];
   "chat:queue-read": [QueuedInputRef, QueuedInputContent];
   "chat:queue-edit-start": [QueueEditRef, QueuedInputContent & { token: string }];
   "chat:queue-edit-finish": [QueueEditRef & { text?: string }, void];

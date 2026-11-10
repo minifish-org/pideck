@@ -531,8 +531,11 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
     }
     refreshSessions((current) => current + 1);
   }, [selectSession]);
-  const attachBranchedSession = useCallback((forked: Session) => {
-    if (!projectId || !session || removed.current.projects.has(projectId)) return;
+  const forkSession = useCallback(async (entryId: number) => {
+    if (!projectId || !session || (removalInProgress.current?.projectId === projectId
+      && (!removalInProgress.current.sessionId || removalInProgress.current.sessionId === session.id))) return;
+    const forked = await api.invoke('chat:fork', { projectId, sessionId: session.id, entryId });
+    if (removed.current.projects.has(projectId)) return;
     sessionListGeneration.current += 1;
     setSessionLists((previous) => !removed.current.sessions.has(forked.id)
       ? { ...previous, [projectId]: [forked, ...(previous[projectId] ?? []).filter(item => item.id !== forked.id)] } : previous);
@@ -542,12 +545,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
       setFocusedSession({ projectId, sessionId: forked.id });
     }
     refreshSessions((current) => current + 1);
-  }, [projectId, selectSession, session]);
-  const forkSession = useCallback(async (entryId: number) => {
-    if (!projectId || !session || (removalInProgress.current?.projectId === projectId
-      && (!removalInProgress.current.sessionId || removalInProgress.current.sessionId === session.id))) return;
-    attachBranchedSession(await api.invoke('chat:fork', { projectId, sessionId: session.id, entryId }));
-  }, [api, projectId, session, attachBranchedSession]);
+  }, [api, projectId, selectSession, session]);
 
   async function finishRename(title: string | undefined, restoreFocus: boolean) {
     if (!renaming) return;
@@ -1094,7 +1092,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                       onRetryModels={() => refreshModels((current) => current + 1)}
                       onSettings={(provider) => setSettings({ provider })}
                       onReview={openReview} onWorkspaceChange={refreshReview}
-                      onSent={() => refreshSessions((current) => current + 1)} onStarted={attachStartedSession} onFork={forkSession} onEdited={attachBranchedSession} />
+                      onSent={() => refreshSessions((current) => current + 1)} onStarted={attachStartedSession} onFork={forkSession} />
                   : sessionsIssue
                     ? <EmptyScene icon="chat" title="Couldn’t load sessions">
                         <p role="alert">{sessionsIssue}</p>

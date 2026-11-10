@@ -81,6 +81,17 @@ test("IPC accepts supported thinking and bounded image input", () => {
   assert.equal(validPayload("chat:start", { ...first, text: " " }), false);
 });
 
+test("IPC removes committed-message editing while retaining queue editing and explicit branches", () => {
+  assert.equal(isCommand("chat:edit"), false);
+  assert.equal(isCommand("chat:edit-read"), false);
+  const selection = { projectId, sessionId };
+  const lease = { ...selection, id: 10, token: randomUUID() };
+  assert.equal(validPayload("chat:queue-edit-start", lease), true);
+  assert.equal(validPayload("chat:queue-edit-finish", { ...lease, text: "Revised queued message" }), true);
+  assert.equal(validPayload("chat:fork", { ...selection, entryId: 42 }), true);
+  assert.equal(validPayload("chat:continue", { ...selection, requestId: randomUUID() }), true);
+});
+
 test("IPC validates queue item identity, edits, and relative moves", () => {
   const queued = { projectId, sessionId, id: 10 };
   assert.equal(validPayload("chat:queue-read", queued), true);

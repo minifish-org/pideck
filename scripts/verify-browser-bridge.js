@@ -639,36 +639,6 @@ async page => {
             }
             return;
           }
-          case "chat:edit-read": {
-            const message = state.views[payload.sessionId]?.messages.find(message => message.entryId === payload.entryId);
-            if (message?.role !== "user") throw new Error("Choose a committed user message in this session.");
-            return { text: message.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n\n"),
-              images: message.blocks.flatMap(block => block.type === "image" ? [{ mimeType: block.mimeType, data: block.data }] : []) };
-          }
-          case "chat:edit": {
-            const existing = state.sessions.find(session => session.id === payload.requestId);
-            if (existing) return { ...existing };
-            const view = state.views[payload.sessionId];
-            const index = view.messages.findIndex(message => message.entryId === payload.entryId && message.role === "user");
-            if (index === -1) throw new Error("Choose a committed user message in this session.");
-            if (view.status !== "idle") throw new Error("Stop the current run before resending an edited message.");
-            const content = await window.pideck.invoke("chat:edit-read", payload);
-            if (!payload.text.trim() && !content.images.length) throw new Error("Enter a message or keep an attached image.");
-            const title = state.sessions.find(session => session.id === payload.sessionId).title;
-            const revised = { id: `edited-${payload.requestId}`, entryId: ++nextFixtureEntryId, requestId: payload.requestId,
-              role: "user", timestamp: Date.now(), blocks: [...(payload.text ? [{ type: "text", text: payload.text }] : []),
-                ...content.images.map(image => ({ type: "image", ...image }))] };
-            const branch = addSession(index ? title + " (fork)" : payload.text || "Image request", {
-              messages: [...view.messages.slice(0, index), revised], status: "running", model: payload.model, thinking: payload.thinking,
-            }, payload.requestId);
-            if (index) state.parents[branch.id] = payload.sessionId;
-            persist();
-            setTimeout(() => change(branch.id, { messages: [...state.views[branch.id].messages, {
-              id: `edited-answer-${payload.requestId}`, entryId: ++nextFixtureEntryId, role: "assistant", completed: true,
-              timestamp: Date.now(), blocks: [{ type: "text", text: "Edited request executed again." }],
-            }], status: "idle" }), 100);
-            return { ...branch, ...(index ? { parentSessionId: payload.sessionId, forkEntryId: view.messages[index - 1].entryId } : {}) };
-          }
           case "chat:fork": {
             const view = state.views[payload.sessionId];
             const index = view.messages.findIndex((message) => message.entryId === payload.entryId);

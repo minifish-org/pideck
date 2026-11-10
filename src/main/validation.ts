@@ -122,11 +122,6 @@ const validators = {
   "chat:send": (value) => object(value) && selection(value) && chatInput(value)
     && (value.requestId === undefined || match(value.requestId, id))
     && (value.delivery === undefined || value.delivery === "send" || value.delivery === "follow-up" || value.delivery === "steer"),
-  "chat:edit-read": (value) => object(value) && selection(value) && entry(value.entryId),
-  // Images are retained from the committed message in the trusted host.
-  "chat:edit": (value) => object(value) && selection(value) && entry(value.entryId)
-    && match(value.requestId, id) && string(value.text, 200_000) && modelInput(value)
-    && value.images === undefined && value.delivery === undefined,
   "chat:queue-read": (value) => object(value) && selection(value) && entry(value.id),
   "chat:queue-edit-start": (value) => object(value) && selection(value) && entry(value.id) && match(value.token, id),
   "chat:queue-edit-finish": (value) => object(value) && selection(value) && entry(value.id) && match(value.token, id)

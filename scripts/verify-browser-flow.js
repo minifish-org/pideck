@@ -1350,6 +1350,10 @@ async page => {
   for (const theme of ["light", "dark"]) {
     await appearance(theme);
     await userMessage.getByRole("button", { name: "Copy message", exact: true }).waitFor();
+    if (await page.locator('.chat-entry--user .message-footer button:not(.message-copy)').count()
+      || await page.getByRole('textbox', { name: 'Edit sent message', exact: true }).count()) {
+      throw new Error('Committed user messages must expose Copy only, without editing or automatic branching.');
+    }
     await expectVisibleMetadata(userMessage);
     await expectVisibleMetadata(assistantMessage);
     await userMessage.screenshot({ path: `output/playwright/pideck-footer-user-${theme}.png` });

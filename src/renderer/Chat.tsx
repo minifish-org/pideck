@@ -1,10 +1,9 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ChatBlock, ChatGap, ChatMessage, ChatView, Commands, ImageInput, ModelOption, Project, Selection, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, Commands, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { ImagePreview } from './ImagePreview';
 import { MessageFooter } from './MessageFooter';
-import { MessageEditor } from './MessageEditor';
 import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
 import { ModelPicker, modelKey, providerLabel } from './ModelPicker';
@@ -131,24 +130,15 @@ function ToolCard({ block, onReview, expanded, onExpand, onCancel }: {
   );
 }
 
-const Message = memo(function Message({ message, project, onReview, onFork, selection, editing, onEdit, editDisabled, editDisabledReason,
-  onResend, onEditPending, toolDisclosure, onToolExpand, onCancelTool }: {
+const Message = memo(function Message({ message, project, onReview, onFork, toolDisclosure, onToolExpand, onCancelTool }: {
   message: ChatMessage;
   project: Project;
   onReview: (selection: ReviewSelection) => void;
   onFork?: (entryId: number) => void;
-  selection?: Selection;
-  editing?: boolean;
-  onEdit: (entryId?: number) => void;
-  editDisabled?: boolean;
-  editDisabledReason?: string;
-  onResend?: (entryId: number, text: string, requestId: string) => Promise<void>;
-  onEditPending: (pending: boolean) => void;
   toolDisclosure: ReadonlyMap<string, boolean>;
   onToolExpand: (id: string, expanded: boolean) => void;
   onCancelTool?: (taskId: number) => Promise<void>;
 }) {
-  const article = useRef<HTMLElement>(null);
   if (message.role === 'assistant' && !message.blocks.length && !message.error) return null;
   const author = message.role === 'user' ? 'You' : 'Pideck';
   const toolOnly = message.role === 'assistant' && message.blocks.some(block => block.type === 'tool')
@@ -157,12 +147,7 @@ const Message = memo(function Message({ message, project, onReview, onFork, sele
   const readingEntry = entryId ?? /^(\d+):\d+$/.exec(message.id)?.[1];
   return (
     <article className={`chat-entry chat-entry--${message.role}`} aria-label={author} data-message-id={message.id} data-tools-only={toolOnly || undefined}
-      data-reading-entry={readingEntry} ref={article} data-editing={editing || undefined}>
-      {editing && selection && entryId !== undefined && onResend ? <MessageEditor selection={selection} entryId={entryId}
-        disabledReason={editDisabledReason} onSend={onResend} onPending={onEditPending} onCancel={() => {
-          onEdit(undefined);
-          requestAnimationFrame(() => article.current?.querySelector<HTMLButtonElement>('.message-edit')?.focus({ preventScroll: true }));
-        }} /> : <>
+      data-reading-entry={readingEntry}>
       <div className="message-content">
         {message.blocks.map((block, index) => {
           switch (block.type) {
@@ -181,9 +166,7 @@ const Message = memo(function Message({ message, project, onReview, onFork, sele
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
       </div>
-      {(message.role === 'user' || message.completed) && <MessageFooter message={message} onFork={onFork}
-        onEdit={selection ? onEdit : undefined} editDisabled={editDisabled} toolOnly={toolOnly} />}
-      </>}
+      {(message.role === 'user' || message.completed) && <MessageFooter message={message} onFork={onFork} toolOnly={toolOnly} />}
     </article>
   );
 });
@@ -268,7 +251,7 @@ function sameGap(left: ChatGap, right: ChatGap) {
 }
 
 export function Chat({ project, session, activityReceipt, models, modelsReady, modelsError, savedConnectionsPending, defaultModel, draft, updateDraft,
-  readingPosition, onReadingPosition, onModelChosen, onSettings, onRetryModels, onLoadSavedModels, onReview, onWorkspaceChange, onSent, onStarted, onFork, onEdited }: {
+  readingPosition, onReadingPosition, onModelChosen, onSettings, onRetryModels, onLoadSavedModels, onReview, onWorkspaceChange, onSent, onStarted, onFork }: {
   project: Project;
   session?: Session;
   activityReceipt?: SessionActivity;
@@ -290,9 +273,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   onSent: () => void;
   onStarted: (session: Session) => void;
   onFork: (entryId: number) => Promise<void>;
-  onEdited: (session: Session) => void;
 }) {
-  const selection = useMemo(() => session ? { projectId: project.id, sessionId: session.id } : undefined, [project.id, session?.id]);
+  const selection = session ? { projectId: project.id, sessionId: session.id } : undefined;
   const currentPosition = useRef(readingPosition);
   const lastWatch = useRef<string | undefined>(undefined);
   const { view, watchId, connected: watchConnected, error: connectionError, retry, loadEarlier } =
@@ -307,8 +289,6 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [readingHistory, setReadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
   const [forking, setForking] = useState(false);
-  const [editingEntry, setEditingEntry] = useState<number>();
-  const [resending, setResending] = useState(false);
   const [queueSaving, setQueueSaving] = useState(false);
   // Queue images remain in Durable, not the persisted ordinary draft. Reload
   // them with the edit lease on session switches, reopening and watch recovery.
@@ -356,7 +336,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const hasDraft = Boolean(text.trim() || attachments.length);
   const startingSession = !session && draft.sending;
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
-  const canSend = editingEntry === undefined && !queueEdit && connected && !agentCompacting && !stopping && !continuing && !draft.sending && !draft.reading
+  const canSend = !queueEdit && connected && !agentCompacting && !stopping && !continuing && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured || awaitingSavedModel)
     && hasDraft && !draft.imagesUnavailable && (!attachments.length || canAttach);
   const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !continuing && !queueSaving && !draft.sending
@@ -669,20 +649,6 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     }
   }
 
-  const editDisabledReason = !connected ? 'Reconnect to resend this message.'
-    : busy || agentCompacting || stopping || continuing ? 'Stop the current run before resending.'
-    : queueEdit || view?.queued?.length ? 'Finish or remove queued messages before resending.'
-    : !model?.configured && !awaitingSavedModel ? 'Choose a connected model to resend this message.' : undefined;
-
-  async function resendMessage(entryId: number, text: string, requestId: string) {
-    if (!selection || editDisabledReason || draft.sending || queueSaving) throw new Error(editDisabledReason ?? 'Wait for the current message to finish sending.');
-    const destination = awaitingSavedModel ? resolveModel(await onLoadSavedModels()) : model;
-    if (!destination?.configured) throw new Error('Choose a connected model to resend this message.');
-    const edited = await window.pideck.invoke('chat:edit', { ...selection, entryId, text, requestId,
-      model: { provider: destination.provider, id: destination.id }, thinking: resolveThinking(destination) });
-    onEdited(edited);
-  }
-
   const fork = useCallback(async (entryId: number) => {
     if (!connected || forking) return;
     setForking(true);
@@ -721,7 +687,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const cancelScope = queuedCount ? `Cancel also withdraws ${queuedCount} queued message${queuedCount === 1 ? '' : 's'}.` : undefined;
   const controlIsContinue = continuing || !busy && !agentCompacting && !stopping && Boolean(view?.canContinue);
   const showRunControl = busy || agentCompacting || stopping || continuing || view?.canContinue;
-  const runControlEnabled = showRunControl && connected && !stopping && !continuing && view?.status !== 'cancelling' && !draft.sending && !queueSaving && !resending;
+  const runControlEnabled = showRunControl && connected && !stopping && !continuing && view?.status !== 'cancelling' && !draft.sending && !queueSaving;
   const showRunClock = view?.runStartedAt !== undefined && Number.isFinite(view.runStartedAt)
     && (view.runEndedAt === undefined || Number.isFinite(view.runEndedAt));
   const composerStatus = draft.sending ? awaitingSavedModel ? 'Loading saved models…' : 'Sending…'
@@ -786,10 +752,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             {view?.messages.map((message) => (
               <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
                 {renderGaps(message.id)}
-                <Message message={message} project={project} onReview={onReview} onFork={connected && !forking && !resending ? fork : undefined}
-                  selection={selection} editing={editingEntry === message.entryId && message.entryId !== undefined} onEdit={setEditingEntry}
-                  editDisabled={!connected || editingEntry !== undefined || resending || forking || draft.sending || Boolean(queueEdit)}
-                  editDisabledReason={editDisabledReason} onResend={editingEntry === message.entryId ? resendMessage : undefined} onEditPending={setResending}
+                <Message message={message} project={project} onReview={onReview} onFork={connected && !forking ? fork : undefined}
                   toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded}
                   onCancelTool={connected && !stopping && view?.status !== 'cancelling' ? cancelTool : undefined} />
               </div>

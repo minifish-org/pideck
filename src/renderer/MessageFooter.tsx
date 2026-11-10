@@ -10,13 +10,7 @@ function messageText(message: ChatMessage) {
   }), ...(message.error ? [message.error] : [])].join('\n\n');
 }
 
-export function MessageFooter({ message, onFork, onEdit, editDisabled, toolOnly = false }: {
-  message: ChatMessage;
-  onFork?: (entryId: number) => void;
-  onEdit?: (entryId: number) => void;
-  editDisabled?: boolean;
-  toolOnly?: boolean;
-}) {
+export function MessageFooter({ message, onFork, toolOnly = false }: { message: ChatMessage; onFork?: (entryId: number) => void; toolOnly?: boolean }) {
   const text = useMemo(() => messageText(message), [message.blocks, message.error]);
   const [copy, setCopy] = useState<'ready' | 'copying' | 'copied' | 'error'>('ready');
   useEffect(() => {
@@ -46,10 +40,6 @@ export function MessageFooter({ message, onFork, onEdit, editDisabled, toolOnly 
           setCopy('error');
         }
       }}><Icon name={copy === 'copied' ? 'check' : 'copy'} width={14} height={14} /></button>
-    {!assistant && onEdit && entryId !== undefined && <button type="button" className="icon-button message-edit"
-      disabled={editDisabled} onClick={() => onEdit(entryId)} title="Edit and resend this message" aria-label="Edit message">
-      <Icon name="edit" width={14} height={14} />
-    </button>}
     {assistant && onFork && entryId !== undefined && <button type="button" className="icon-button message-fork"
       onClick={() => onFork(entryId)} title="Start a new session from this message" aria-label="Branch from here">
       <Icon name="fork" width={14} height={14} />
