@@ -204,9 +204,10 @@ export type Commands = {
   "terminal:sync": [TerminalRef & { through: number; replay?: true }, TerminalEvent[]];
 };
 export type Command = keyof Commands;
-export type MenuAction = "open-project" | "new-session" | "settings" | "toggle-navigation" | "toggle-review" | "toggle-terminal" | "focus-composer";
+export type MenuAction = "open-project" | "search-sessions" | "new-session" | "settings" | "toggle-navigation" | "toggle-review" | "toggle-terminal" | "focus-composer";
 export type MenuState = {
   canOpenProject: boolean;
+  canSearchSessions: boolean;
   canOpenSettings: boolean;
   canCreateSession: boolean;
   canFocusComposer: boolean;

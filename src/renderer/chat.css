@@ -40,10 +40,6 @@
 }
 .message-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 24px; margin-top: 5px; color: var(--fgColor-muted); font-size: 11px; }
 .message-footer .icon-button { width: 24px; height: 24px; border-radius: 5px; }
-.message-footer :is(.icon-button, .message-time) { opacity: 0; }
-.chat-entry:hover > .message-footer :is(.icon-button, .message-time),
-.chat-entry:focus-within > .message-footer :is(.icon-button, .message-time) { opacity: 1; }
-@media (hover: none) { .message-footer :is(.icon-button, .message-time) { opacity: 1; } }
 .message-time { margin-inline-start: 4px; font-variant-numeric: tabular-nums; }
 .chat-entry--assistant .message-time { margin-inline-start: 0; }
 .message-copy-error { color: var(--fgColor-danger); }

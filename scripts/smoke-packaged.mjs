@@ -18,6 +18,14 @@ async function executable() {
   return resolve("release", "linux-unpacked", "pideck");
 }
 
+async function removeFromMenu(page, row, kind) {
+  await page.waitForFunction(() => document.querySelector('.nav-scroll')?.getAttribute('aria-busy') !== 'true');
+  await row.click({ button: 'right' });
+  const menu = page.getByRole('menu');
+  await menu.getByRole('menuitem', { name: `Remove ${kind}…`, exact: true }).click();
+  await menu.waitFor({ state: 'detached' });
+}
+
 async function clickNativeMenu(app, id) {
   await app.evaluate(async ({ BrowserWindow, Menu }, id) => {
     const item = Menu.getApplicationMenu()?.getMenuItemById(id);
@@ -107,17 +115,20 @@ async function expectCompletedRunControl(page, expectedPosition) {
   return position;
 }
 
-async function expectQuietNativeMetadata(page, message) {
+async function expectVisibleNativeMetadata(page, message) {
   await page.getByRole("textbox", { name: "Message Pideck", exact: true }).focus();
   await page.mouse.move(0, 0);
-  const metadata = message.locator(".message-footer time, .message-footer button");
-  assert.ok(await metadata.evaluateAll(items => items.length > 1 && items.every(item => getComputedStyle(item).opacity === "0")));
+  const metadata = message.locator(".message-footer, .message-footer time, .message-footer button");
+  assert.ok(await metadata.evaluateAll(items => items.length > 2 && items.every(item => getComputedStyle(item).opacity === "1")),
+    "Message timestamps and actions must remain visible without hover or keyboard focus.");
   await message.hover();
   assert.ok(await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1")));
   await page.getByRole("textbox", { name: "Message Pideck", exact: true }).focus();
   await page.mouse.move(0, 0);
   await message.locator(".message-footer button").first().focus();
   assert.ok(await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1")));
+  await page.getByRole("textbox", { name: "Message Pideck", exact: true }).focus();
+  await page.mouse.move(0, 0);
 }
 
 async function waitForQueuedEditor(page, text) {
@@ -401,7 +412,7 @@ try {
     return {
       sections: menu.items.map(item => item.label.replace("&", "")),
       roles: menu.items.flatMap(item => item.submenu.items.map(child => child.role?.toLowerCase()).filter(Boolean)),
-      workspaceItemsEnabled: ["new-session", "toggle-review", "toggle-terminal", "focus-composer"].some(id => menu.getMenuItemById(id).enabled),
+      workspaceItemsEnabled: ["new-session", "search-sessions", "toggle-review", "toggle-terminal", "focus-composer"].some(id => menu.getMenuItemById(id).enabled),
     };
   });
   assert.deepEqual(nativeMenu.sections, process.platform === "darwin" ? ["Pideck", "File", "Edit", "View", "Window"] : ["File", "Edit", "View"]);
@@ -477,6 +488,12 @@ try {
   await prompt.blur();
   await clickNativeMenu(app, "focus-composer");
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
+  await clickNativeMenu(app, "search-sessions");
+  const sessionSearch = page.getByRole('dialog', { name: 'Search sessions', exact: true });
+  await sessionSearch.getByText('No sessions yet.', { exact: true }).waitFor();
+  await sessionSearch.getByRole('combobox', { name: 'Search sessions' }).press('Escape');
+  await sessionSearch.waitFor({ state: 'detached' });
+  assert.equal(await prompt.inputValue(), 'Edit example.ts and verify it.');
   const modelCatalog = await command("model:list");
   assert.ok(!JSON.stringify(modelCatalog).includes("pideck-smoke-key"));
   assert.equal(modelCatalog.savedConnectionsPending, false);
@@ -486,7 +503,7 @@ try {
   const providers = page.getByRole("dialog", { name: "Model providers" });
   await providers.waitFor();
   assert.equal(await app.evaluate(async ({ Menu }) => {
-    const ids = ["open-project", "settings", "new-session", "toggle-review", "toggle-terminal"];
+    const ids = ["open-project", "search-sessions", "settings", "new-session", "toggle-review", "toggle-terminal"];
     const disabled = () => ids.every(id => !Menu.getApplicationMenu().getMenuItemById(id).enabled);
     const deadline = Date.now() + 1000;
     while (!disabled() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
@@ -590,10 +607,9 @@ try {
   for (const theme of ["light", "dark"]) {
     await chooseAppearance(app, page, theme);
     await expectCompletedRunControl(page);
-    await expectQuietNativeMetadata(page, sentMessage);
-    await expectQuietNativeMetadata(page, finalMessage);
+    await expectVisibleNativeMetadata(page, sentMessage);
+    await expectVisibleNativeMetadata(page, finalMessage);
   }
-  await finalMessage.hover();
   await page.screenshot({ path: "output/playwright/pideck-native-completed-footer.png" });
   await app.evaluate(({ clipboard }) => {
     globalThis.__pideckSmokeCopy = { original: clipboard.writeText, text: undefined };
@@ -1246,17 +1262,15 @@ try {
   await recoveredMessage.getByRole("button", { name: "Branch from here" }).click();
   const branch = reopenedPage.getByRole("button", { name: "Smoke session (fork)", exact: true });
   await branch.waitFor();
-  const parentRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session", exact: true });
-  await parentRemove.press("Enter");
+  const parentRow = reopenedPage.getByRole('button', { name: 'Smoke session', exact: true });
+  await removeFromMenu(reopenedPage, parentRow, 'session');
   await reopenedPage.getByText("Remove this session’s branches first.", { exact: true }).waitFor();
   assert.equal(await app.evaluate(() => globalThis.removalDialogs), 0);
   await reopenedPage.getByRole("button", { name: "Open branch Smoke session (fork)", exact: true }).click();
   assert.equal(await branch.getAttribute("aria-current"), "true");
 
-  const branchRemove = reopenedPage.getByRole("button", { name: "Remove session Smoke session (fork)", exact: true });
-  await branchRemove.press("Enter");
-  await reopenedPage.waitForFunction(() => document.querySelector("button[aria-label='Remove session Smoke session (fork)']")
-    ?.getAttribute("aria-disabled") !== "true");
+  await removeFromMenu(reopenedPage, branch, 'session');
+  await reopenedPage.waitForFunction(() => document.querySelector('.nav-scroll')?.getAttribute('aria-busy') === 'false');
   assert.equal(await app.evaluate(() => globalThis.removalDialogs), 1);
   assert.equal(await branch.count(), 1);
   await app.evaluate(() => { globalThis.removalConfirmed = true; });
@@ -1266,15 +1280,15 @@ try {
       if (event.type === "chat:reset" && event.sessionId === sessionId) document.documentElement.dataset.survivorReattached = "true";
     });
   }, conversation.id);
-  await branchRemove.press("Enter");
+  await removeFromMenu(reopenedPage, branch, 'session');
   await branch.waitFor({ state: "detached" });
   await reopenedPage.waitForFunction(() => document.documentElement.dataset.survivorReattached === "true");
   await reopenedPage.getByText("Recovered after host restart.", { exact: true }).waitFor();
   await reopenedPage.getByRole("button", { name: "Terminal", exact: true }).click();
   await reopenedPage.getByText("Shell running").waitFor();
-  const removeProject = reopenedPage.getByRole("complementary", { name: "Workspace navigation" })
-    .getByRole("button", { name: "Remove project smoke-project", exact: true });
-  await removeProject.press("Enter");
+  const removeProject = reopenedPage.getByRole('complementary', { name: 'Workspace navigation' })
+    .getByRole('button', { name: 'smoke-project', exact: true });
+  await removeFromMenu(reopenedPage, removeProject, 'project');
   await reopenedPage.getByRole("heading", { name: "Open a project folder", exact: true }).waitFor();
   await reopenedPage.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
   assert.deepEqual(await reopenedPage.evaluate(() => window.pideck.invoke("project:list")), []);

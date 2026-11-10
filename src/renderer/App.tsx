@@ -1,10 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import type { DesktopNavigation, MenuAction, ModelCatalog, Project, Selection, Session, SessionBranch } from '../shared/api';
 import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
 import { SessionName } from './SessionName';
+import { SessionSearch } from './SessionSearch';
+import { NavigationMenu } from './NavigationMenu';
+import type { NavigationMenuTarget } from './NavigationMenu';
 import { sessionTree } from './session-tree';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
@@ -31,31 +34,9 @@ function closePopovers() {
   document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((panel) => panel.hidePopover());
 }
 
-function RemoveRowButton({ label, current, disabled, onClick }: {
-  label: string;
-  current: boolean;
-  disabled: boolean;
-  onClick: (button: HTMLButtonElement) => void;
-}) {
-  return <button className="icon-button nav-remove" type="button" aria-label={label} title={label}
-    tabIndex={current ? 0 : -1} aria-disabled={disabled || undefined}
-    onClick={(event) => { if (!disabled) onClick(event.currentTarget); }}>
-    <Icon name="trash" width={14} height={14} />
-  </button>;
-}
-
 function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
   if (!(event.target instanceof HTMLButtonElement) || !event.target.matches('.nav-item > .nav-row')) return;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  if (event.key === 'Delete' || event.key === 'Backspace') {
-    const remove = event.target.parentElement?.querySelector(':scope > .nav-remove');
-    if (remove instanceof HTMLButtonElement && remove.getAttribute('aria-disabled') !== 'true') {
-      event.preventDefault();
-      remove.focus();
-      remove.click();
-    }
-    return;
-  }
   const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.nav-item > .nav-row')];
   const index = rows.indexOf(event.target);
   const positions: Record<string, number> = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: rows.length - 1 };
@@ -109,6 +90,9 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   const navigationPanel = useRef<HTMLElement>(null);
   const reviewOpener = useRef<HTMLElement | null>(null);
   const [settings, setSettings] = useState<{ provider?: string }>();
+  const [searching, setSearching] = useState(false);
+  const [navigationMenu, setNavigationMenu] = useState<NavigationMenuTarget>();
+  const closeNavigationMenu = useCallback(() => setNavigationMenu(undefined), []);
   const [error, setError] = useState<string>();
   const [workspaceEpoch, refreshWorkspace] = useState(0);
   const [sessionsEpoch, refreshSessions] = useState(0);
@@ -121,7 +105,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   const dockedNavigation = !compactNavigation && navigation && Boolean(project);
   const showNavigation = drawerOpen || dockedNavigation;
   const isExpanded = (id: string) => projectExpansion[id] ?? id === projectId;
-  const sessionScope = projects?.filter(item => item.id === projectId || item.id === removalBlock?.target.projectId
+  const sessionScope = projects?.filter(item => searching || item.id === projectId || item.id === removalBlock?.target.projectId
     || (showNavigation && isExpanded(item.id)))
     .map(({ id }) => id).join(',');
   const sessions = projectId ? sessionLists[projectId] : undefined;
@@ -786,11 +770,57 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
     } else document.getElementById('prompt')?.focus();
   }
 
+  function openSessionSearch() {
+    if (!projects?.length) return;
+    closePopovers();
+    setNavigationMenu(undefined);
+    setSearching(true);
+  }
+
+  function openSearchResult(result: Session) {
+    selectProject(result.projectId);
+    selectSession(result.projectId, result.id);
+    setSearching(false);
+    closeDrawer();
+    revealConversation(result.projectId);
+    setFocusedSession({ projectId: result.projectId, sessionId: result.id });
+  }
+
+  function showNavigationMenu(target: Removal, name: string, trigger: HTMLButtonElement, position?: { x: number; y: number }) {
+    if (removing) return;
+    closePopovers();
+    trigger.focus({ preventScroll: true });
+    const bounds = trigger.getBoundingClientRect();
+    setNavigationMenu({ selection: target, name, trigger, x: position?.x ?? bounds.left + 20, y: position?.y ?? bounds.bottom });
+  }
+
+  function navigationContext(event: ReactMouseEvent<HTMLButtonElement>, target: Removal, name: string) {
+    event.preventDefault();
+    showNavigationMenu(target, name, event.currentTarget, { x: event.clientX, y: event.clientY });
+  }
+
+  function navigationAction(event: ReactKeyboardEvent<HTMLButtonElement>, target: Removal, name: string) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return false;
+    if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
+      event.preventDefault();
+      showNavigationMenu(target, name, event.currentTarget);
+      return true;
+    }
+    if (!event.shiftKey && (event.key === 'Delete' || event.key === 'Backspace')) {
+      event.preventDefault();
+      if (!removing) void remove(target, event.currentTarget);
+      return true;
+    }
+    return false;
+  }
+
   function handleMenuAction(action: MenuAction) {
     if (document.querySelector('dialog[open]')) return;
     closePopovers();
+    setNavigationMenu(undefined);
     switch (action) {
       case 'open-project': void openProject(); break;
+      case 'search-sessions': openSessionSearch(); break;
       case 'new-session': openSessionDraft(); break;
       case 'settings': setSettings({}); break;
       case 'toggle-navigation': if (project) toggleNavigation(); break;
@@ -800,7 +830,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
     }
   }
 
-  const modalOpen = Boolean(settings);
+  const modalOpen = Boolean(settings || searching);
   useEffect(() => {
     const context = { projectId, sessionId, viewing: Boolean(sessionId && !toolsOverlay && !drawerOpen && !nativeModalOpen) };
     void api.invoke('desktop:context', context).catch(() => {});
@@ -822,6 +852,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
       else if (event.code === 'Backquote') action = 'toggle-terminal';
       else if (key === 'o') action = 'open-project';
       else if (key === 'n') action = 'new-session';
+      else if (key === 'k') action = 'search-sessions';
       else if (key === ',') action = 'settings';
       else if (key === 'l') action = 'focus-composer';
       else return;
@@ -841,6 +872,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   useEffect(() => {
     api.updateMenu?.({
       canOpenProject: !opening && !modalOpen,
+      canSearchSessions: Boolean(projects?.length) && !modalOpen,
       canOpenSettings: !modalOpen,
       canCreateSession: canCreateSession && !modalOpen,
       canFocusComposer: canCreateSession && !modalOpen,
@@ -850,7 +882,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
       reviewVisible: reviewOpen,
       terminalVisible,
     });
-  }, [api, opening, modalOpen, canCreateSession, projectId, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
+  }, [api, opening, modalOpen, canCreateSession, projectId, projects?.length, canUseWorkspace, showNavigation, reviewOpen, terminalVisible]);
 
   const panelControls = project && <WorkspacePanelButtons reviewOpen={reviewOpen} terminalVisible={terminalVisible}
     disabled={Boolean(removingProject)} reviewTitle={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`}
@@ -898,10 +930,14 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
             }}>
             <div className="nav-header">
               <h2 id="nav-projects-label">Projects</h2>
-              <button className="icon-button" id="nav-open-project" type="button" aria-label="Open folder…"
-                title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}><Icon name="plus" /></button>
+              <div className="nav-header-actions">
+                <button className="icon-button" id="nav-search-sessions" type="button" aria-label="Search sessions"
+                  title={`Search sessions (${modifier}K)`} onClick={openSessionSearch}><Icon name="search" /></button>
+                <button className="icon-button" id="nav-open-project" type="button" aria-label="Open folder…"
+                  title={`Open folder (${modifier}O)`} disabled={opening} onClick={openProject}><Icon name="plus" /></button>
+              </div>
             </div>
-            <nav className="nav-scroll" aria-labelledby="nav-projects-label" onKeyDown={navigateRows}>
+            <nav className="nav-scroll" aria-labelledby="nav-projects-label" aria-busy={Boolean(removing)} onKeyDown={navigateRows}>
               <ul className="nav-tree">
                 {projects?.map((item) => {
                   const id = item.id;
@@ -921,8 +957,10 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                       </button>
                       <button className="nav-row" id={`nav-project-${id}`} type="button" title={item.directory}
                         aria-description={item.directory} aria-current={active && (!expanded || !sessionId) ? 'true' : undefined}
-                        aria-keyshortcuts="ArrowLeft ArrowRight Delete Backspace"
+                        aria-keyshortcuts="ArrowLeft ArrowRight Delete Backspace ContextMenu Shift+F10"
+                        onContextMenu={event => navigationContext(event, { projectId: id }, item.name)}
                         onKeyDown={(event) => {
+                          if (navigationAction(event, { projectId: id }, item.name)) return;
                           if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
                           event.preventDefault();
@@ -944,8 +982,6 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                         disabled={removing?.projectId === id && !removing.sessionId} onClick={() => openSessionDraft(id)}>
                         {unsent ? 'Draft' : <Icon name="plus" width={14} height={14} />}
                       </button>
-                      <RemoveRowButton label={`Remove project ${item.name}`} current={active} disabled={Boolean(removing)}
-                        onClick={(button) => void remove({ projectId: id }, button)} />
                     </div>
                     {expanded && <ul className="nav-children" id={branchId} aria-label={`${item.name} sessions`}>
                       {branch && sessionTree(branch, collapsedSessions).map(({ session: chat, depth, hasChildren, parentId }) => {
@@ -966,9 +1002,11 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                             ? <SessionName title={chat.title} onFinish={finishRename} />
                             : <button className="nav-row nav-session-row" id={`nav-session-${chat.id}`} type="button"
                               title={dockedNavigation ? `${chat.title} · Double-click or press F2 to rename` : chat.title}
-                              aria-current={current ? 'true' : undefined} aria-keyshortcuts="F2 ArrowLeft ArrowRight Delete Backspace"
+                              aria-current={current ? 'true' : undefined} aria-keyshortcuts="F2 ArrowLeft ArrowRight Delete Backspace ContextMenu Shift+F10"
+                              onContextMenu={event => navigationContext(event, { projectId: id, sessionId: chat.id }, chat.title)}
                               aria-description={[parentId && `Branch of ${branch.find(item => item.id === parentId)?.title}`, status].filter(Boolean).join(' · ') || undefined}
                               onKeyDown={(event) => {
+                                if (navigationAction(event, { projectId: id, sessionId: chat.id }, chat.title)) return;
                                 if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                                 if (event.key === 'ArrowLeft') {
                                   event.preventDefault();
@@ -999,8 +1037,6 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                                 <Icon name={activity ? activityIcons[activity.state] : 'edit'} width={14} height={14} />
                               </span>}
                             </button>}
-                          <RemoveRowButton label={`Remove session ${chat.title}`} current={current} disabled={Boolean(removing)}
-                            onClick={(button) => void remove({ projectId: id, sessionId: chat.id }, button)} />
                         </li>;
                       })}
                       {sessionErrors[id] ? <li className="nav-empty"><span role="alert">Could not load sessions.</span> <button className="inline-action"
@@ -1105,6 +1141,12 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
           <WorkspaceDivider workspace={workspace} sizingTarget={app} visible={toolsDocked} />
         </section>
       </div>
+      {navigationMenu && <NavigationMenu target={navigationMenu} onClose={closeNavigationMenu} onRemove={() => {
+        setNavigationMenu(undefined);
+        void remove(navigationMenu.selection, navigationMenu.trigger);
+      }} />}
+      {searching && projects && <SessionSearch projects={projects} sessions={sessionLists} errors={sessionErrors}
+        onSelect={openSearchResult} onRetry={() => refreshSessions(current => current + 1)} onClose={() => setSearching(false)} />}
       {settings && <SettingsDialog initialProvider={settings.provider} onClose={() => setSettings(undefined)}
         onModelsChanged={() => refreshModels((current) => current + 1)} />}
     </div>

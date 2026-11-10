@@ -5,6 +5,7 @@ import { menuActionChannel } from "../shared/transport";
 
 const idle: MenuState = {
   canOpenProject: true,
+  canSearchSessions: false,
   canOpenSettings: true,
   canCreateSession: false,
   canFocusComposer: false,
@@ -89,6 +90,8 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
       { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" },
     ] },
     { label: mac ? "View" : "&View", submenu: [
+      command("search-sessions", "Search Sessions…", "CommandOrControl+K"),
+      separator,
       command("toggle-navigation", "Sidebar", "CommandOrControl+Shift+B", "checkbox"),
       command("toggle-review", "Changes", "CommandOrControl+Shift+D", "checkbox"),
       command("toggle-terminal", "Terminal", "CommandOrControl+`", "checkbox"),
@@ -117,6 +120,7 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
     const current = state ?? idle;
     const commands = {
       "open-project": { enabled: current.canOpenProject },
+      "search-sessions": { enabled: current.canSearchSessions },
       "new-session": { enabled: current.canCreateSession },
       settings: { enabled: current.canOpenSettings },
       "toggle-navigation": { enabled: current.canToggleNavigation, checked: current.navigationVisible },

@@ -6,6 +6,13 @@ async page => {
   const nav = page.getByRole("complementary", { name: "Workspace navigation" });
   const prompt = page.getByRole("textbox", { name: "Message Pideck" });
   const queueEdit = page.getByRole("textbox", { name: "Edit queued message" });
+  async function removeFromMenu(row, kind) {
+    await page.waitForFunction(() => document.querySelector('.nav-scroll')?.getAttribute('aria-busy') !== 'true');
+    await row.click({ button: 'right' });
+    const menu = page.getByRole('menu');
+    await menu.getByRole('menuitem', { name: `Remove ${kind}…`, exact: true }).click();
+    await menu.waitFor({ state: 'detached' });
+  }
   async function waitForQueueEditor() {
     await queueEdit.waitFor();
     await page.waitForFunction(() => {
@@ -68,23 +75,25 @@ async page => {
         buttons: buttons.map(button => ({ width: button.width, height: button.height })) };
     });
   }
-  async function expectQuietMetadata(message) {
+  async function expectVisibleMetadata(message) {
     await prompt.focus();
     await page.mouse.move(0, 0);
-    const metadata = message.locator(".message-footer time, .message-footer button");
-    if (!await metadata.evaluateAll(items => items.length > 1 && items.every(item => getComputedStyle(item).opacity === "0"))) {
-      throw new Error("Message timestamps and actions should be hidden together until hover or keyboard focus.");
+    const metadata = message.locator(".message-footer, .message-footer time, .message-footer button");
+    if (!await metadata.evaluateAll(items => items.length > 2 && items.every(item => getComputedStyle(item).opacity === "1"))) {
+      throw new Error("Message timestamps and actions must remain visible without hover or keyboard focus.");
     }
     await message.hover();
     if (!await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1"))) {
-      throw new Error("Hover must reveal both the timestamp and all message actions.");
+      throw new Error("Hover must not hide the timestamp or message actions.");
     }
     await prompt.focus();
     await page.mouse.move(0, 0);
     await message.locator(".message-footer button").first().focus();
     if (!await metadata.evaluateAll(items => items.every(item => getComputedStyle(item).opacity === "1"))) {
-      throw new Error("Keyboard focus must reveal the timestamp together with Copy and Fork.");
+      throw new Error("Keyboard focus must keep the timestamp, Copy and Fork visible.");
     }
+    await prompt.focus();
+    await page.mouse.move(0, 0);
   }
   async function runClock() {
     return page.locator(".run-clock").evaluate(clock => {
@@ -118,7 +127,7 @@ async page => {
         if (await page.locator('.chat-entry--assistant > .message-footer').count() !== 1) {
           throw new Error('Only the final answer should have AI message controls.');
         }
-        await expectQuietMetadata(message);
+        await expectVisibleMetadata(message);
       } else if (await page.locator('.chat-entry--assistant > .message-footer').count()) {
         throw new Error('Intermediate AI text and tool messages must not show timestamps, copy or branch actions.');
       }
@@ -727,12 +736,8 @@ async page => {
   await prompt.focus();
   if (await nav.getByRole("button", { name: "New session", exact: true }).count()
     || !await newSession.evaluate(button => button.parentElement.classList.contains("nav-project-row")
-      && getComputedStyle(button).opacity === "0")) {
-    throw new Error("The new-session action is not tucked into the project row.");
-  }
-  await projectRow.hover();
-  if (await newSession.evaluate(button => getComputedStyle(button).opacity) !== "1") {
-    throw new Error("Hovering over the project did not reveal the new-session button.");
+      && getComputedStyle(button).opacity === "1" && getComputedStyle(button).pointerEvents !== "none")) {
+    throw new Error("The project's new-session button is not always visible and available.");
   }
   await newSession.click();
   await page.waitForFunction(() => document.activeElement?.id === "prompt");
@@ -742,7 +747,7 @@ async page => {
   await prompt.hover();
   await projectRow.press("Tab");
   if (!await newSession.evaluate(button => button === document.activeElement && getComputedStyle(button).opacity === "1")) {
-    throw new Error("Tab did not reach and reveal the project's new-session button.");
+    throw new Error("Tab did not focus the project's new-session button.");
   }
   await newSession.press("Enter");
   await prompt.fill("Start a separate session.");
@@ -1343,8 +1348,10 @@ async page => {
   if (retainedClock.endedAt === undefined) throw new Error("The completed conversation lost its frozen total.");
   for (const theme of ["light", "dark"]) {
     await appearance(theme);
-    await expectQuietMetadata(userMessage);
-    await expectQuietMetadata(assistantMessage);
+    await userMessage.getByRole("button", { name: "Copy message", exact: true }).waitFor();
+    await expectVisibleMetadata(userMessage);
+    await expectVisibleMetadata(assistantMessage);
+    await userMessage.screenshot({ path: `output/playwright/pideck-footer-user-${theme}.png` });
   }
   await userMessage.hover();
   if (await page.getByRole("article", { name: "You", exact: true })
@@ -1355,12 +1362,12 @@ async page => {
   await prompt.focus();
   await page.mouse.move(0, 0);
   if (!await branchMessage.evaluate(button => Boolean(button.closest(".message-footer"))
-    && getComputedStyle(button).opacity === "0" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
-    throw new Error("Message actions should stay quiet until hovering or focusing their message.");
+    && getComputedStyle(button).opacity === "1" && !button.textContent.trim() && Boolean(button.querySelector("svg")))) {
+    throw new Error("Message actions must stay visible outside hover or focus, retaining their icon-only layout.");
   }
   await branchMessage.focus();
   if (await branchMessage.evaluate(button => getComputedStyle(button).opacity) !== "1") {
-    throw new Error("Keyboard focus did not reveal the message branch action.");
+    throw new Error("The message branch action did not stay visible on keyboard focus.");
   }
   await branchMessage.press("Enter");
   const forked = nav.getByRole("button", { name: "Verify status (fork)", exact: true });
@@ -1813,7 +1820,7 @@ async page => {
   await chatPatch.waitFor({ state: "detached" });
   await forked.click();
   await largeDiff.click();
-  const removeOriginal = nav.getByRole("button", { name: "Remove session Verify status", exact: true });
+  const removeOriginal = () => removeFromMenu(original, 'session');
   await page.setViewportSize({ width: 760, height: 560 });
   await sidebar.click();
   await original.press("Backspace");
@@ -1824,23 +1831,22 @@ async page => {
   await page.setViewportSize(viewport);
   await workspace.getByRole("button", { name: "Open branch Verify status (fork)", exact: true }).click();
   if (await forked.getAttribute("aria-current") !== "true") throw new Error("The blocking branch did not open.");
-  const removeFork = nav.getByRole("button", { name: "Remove session Verify status (fork)", exact: true });
-  await removeFork.focus();
-  await page.keyboard.press("Enter");
+  const removeFork = () => removeFromMenu(forked, 'session');
+  await removeFork();
   await page.waitForFunction(() => document.body.dataset.staleSessionList === "started");
-  if (await forked.getAttribute("aria-current") !== "true" || !await removeFork.evaluate((button) => button === document.activeElement)) {
+  if (await forked.getAttribute("aria-current") !== "true" || !await forked.evaluate((button) => button === document.activeElement)) {
     throw new Error("Cancelling removal changed the selected session or keyboard focus.");
   }
-  await removeFork.click();
+  await removeFork();
   await forked.waitFor({ state: "detached" });
   await page.waitForFunction(() => document.body.dataset.staleSessionList === "released");
   await review.waitFor({ state: "detached" });
   const fallback = draftSession;
   if (await fallback.getAttribute("aria-current") !== "true" || await forked.count()) throw new Error("Session removal did not keep the next session selected.");
   await prompt.fill("Draft to remove with the project.");
-  await removeOriginal.click();
+  await removeOriginal();
   await page.waitForFunction(() => document.body.dataset.staleSessionList === "started");
-  await removeOriginal.click();
+  await removeOriginal();
   await page.waitForFunction(() => document.body.dataset.survivingWatch === "attached");
   await original.waitFor({ state: "detached" });
   if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Reattaching a surviving session lost its draft.");
@@ -1920,11 +1926,11 @@ async page => {
   await otherProjectRow.waitFor({ state: "detached" });
   await otherBranch.waitFor({ state: "detached" });
   if (await fallback.getAttribute("aria-current") !== "true") throw new Error("Removing a sibling project changed the selected session.");
-  const removeProject = nav.getByRole("button", { name: "Remove project Sample project", exact: true });
+  const removeProject = () => removeFromMenu(projectRow, 'project');
   const previousPreferences = await page.evaluate(() => localStorage.getItem("pideck.workspace.v1"));
-  await removeProject.click();
+  await removeProject();
   if (await prompt.inputValue() !== "Draft to remove with the project.") throw new Error("Cancelling project removal discarded a draft.");
-  await removeProject.click();
+  await removeProject();
   await workspace.getByRole("heading", { name: "Open a project folder" }).waitFor();
   await page.getByRole("region", { name: "Project terminal" }).waitFor({ state: "detached" });
   await page.waitForFunction(() => {
