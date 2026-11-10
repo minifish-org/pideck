@@ -1374,6 +1374,10 @@ async page => {
   const forked = nav.getByRole("button", { name: "Verify status (fork)", exact: true });
   const original = nav.getByRole("button", { name: "Verify status", exact: true });
   await forked.waitFor();
+  if (await original.locator('..').locator('.nav-disclosure').count()
+    || !await forked.locator('..').locator('.nav-session-guides').isVisible()) {
+    throw new Error('Creating a fork must add a tree guide without adding a collapse control to the source.');
+  }
   await original.click();
   await page.getByText("An earlier coding request.").waitFor();
   const resumeViewport = page.viewportSize();

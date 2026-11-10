@@ -62,7 +62,6 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   const [sessionLists, setSessionLists] = useState<Record<string, Session[]>>({});
   const sessionListGeneration = useRef(0);
   const [projectExpansion, setProjectExpansion] = useState<Record<string, boolean>>({});
-  const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
   const [focusedSession, setFocusedSession] = useState<Selection>();
   const [focusWorkspace, setFocusWorkspace] = useState<string>();
   const [removing, setRemoving] = useState<Removal>();
@@ -137,20 +136,6 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   const nativeModalOpen = useModalOpen();
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
-
-  useEffect(() => {
-    const byId = new Map(sessions?.map(item => [item.id, item]));
-    const ancestors = new Set<string>();
-    let parent = session?.parentSessionId;
-    while (parent && !ancestors.has(parent)) {
-      ancestors.add(parent);
-      parent = byId.get(parent)?.parentSessionId;
-    }
-    setCollapsedSessions(current => {
-      const closed = Object.fromEntries(Object.entries(current).filter(([id]) => !ancestors.has(id)));
-      return Object.keys(closed).length === Object.keys(current).length ? current : closed;
-    });
-  }, [sessions, sessionId]);
 
   useEffect(() => {
     if (!showNavigation) setRenaming(current => current?.source === 'sidebar' ? undefined : current);
@@ -984,20 +969,16 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                       </button>
                     </div>
                     {expanded && <ul className="nav-children" id={branchId} aria-label={`${item.name} sessions`}>
-                      {branch && sessionTree(branch, collapsedSessions).map(({ session: chat, depth, hasChildren, parentId }) => {
+                      {branch && sessionTree(branch).map(({ session: chat, depth, hasChildren, parentId }) => {
+                        const indent = Math.min(depth, 8) * 12;
                         const current = active && chat.id === sessionId;
                         const draft = drafts[id]?.[chat.id];
                         const hasDraft = Boolean(draft?.text || draft?.attachments.length);
                         const activity = sessionActivity[chat.id];
                         const status = activity ? activityLabels[activity.state] : hasDraft ? 'Unsent draft' : undefined;
                         return <li className="nav-item nav-session-item" key={chat.id} data-parent-session={parentId}
-                          style={{ marginInlineStart: Math.min(depth, 8) * 12 }}>
-                          {hasChildren && <button type="button" className="icon-button nav-disclosure"
-                            aria-label={`${collapsedSessions[chat.id] ? 'Expand' : 'Collapse'} branches of ${chat.title}`}
-                            aria-expanded={!collapsedSessions[chat.id]}
-                            onClick={() => setCollapsedSessions(current => ({ ...current, [chat.id]: !current[chat.id] }))}>
-                            <Icon name="chevron" width={12} height={12} />
-                          </button>}
+                          style={{ paddingInlineStart: indent }}>
+                          {depth > 0 && <span className="nav-session-guides" aria-hidden="true" style={{ width: indent }} />}
                           {renaming?.sessionId === chat.id && renaming.source === 'sidebar'
                             ? <SessionName title={chat.title} onFinish={finishRename} />
                             : <button className="nav-row nav-session-row" id={`nav-session-${chat.id}`} type="button"
@@ -1010,12 +991,10 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                                 if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                                 if (event.key === 'ArrowLeft') {
                                   event.preventDefault();
-                                  if (hasChildren && !collapsedSessions[chat.id]) setCollapsedSessions(current => ({ ...current, [chat.id]: true }));
-                                  else document.getElementById(parentId ? `nav-session-${parentId}` : `nav-project-${id}`)?.focus();
+                                  document.getElementById(parentId ? `nav-session-${parentId}` : `nav-project-${id}`)?.focus();
                                 } else if (event.key === 'ArrowRight' && hasChildren) {
                                   event.preventDefault();
-                                  if (collapsedSessions[chat.id]) setCollapsedSessions(current => ({ ...current, [chat.id]: false }));
-                                  else document.getElementById(`nav-session-${branch.find(item => item.parentSessionId === chat.id)?.id}`)?.focus();
+                                  document.getElementById(`nav-session-${branch.find(item => item.parentSessionId === chat.id)?.id}`)?.focus();
                                 } else if (event.key === 'F2' && !removing) {
                                   event.preventDefault();
                                   setRenaming({ projectId: id, sessionId: chat.id, source: 'sidebar' });

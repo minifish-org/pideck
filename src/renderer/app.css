@@ -223,8 +223,16 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   display: grid; place-items: center;
 }
 .nav-disclosure[aria-expanded='true'] svg { rotate: 90deg; }
-.nav-children { margin: 2px 0 6px 13px; padding-left: 18px; border-left: 1px solid var(--borderColor-muted); }
+.nav-children { margin: 2px 0 6px 13px; padding-left: 6px; border-left: 1px solid var(--borderColor-muted); }
 .nav-children:empty { display: none; }
+/* Each descendant row continues the vertical guides of all its ancestors. */
+.nav-session-guides {
+  position: absolute;
+  inset-block: -2px 0;
+  inset-inline-start: 5px;
+  background: repeating-linear-gradient(to right, var(--borderColor-muted) 0 1px, transparent 1px 12px);
+  pointer-events: none;
+}
 .nav-empty { margin: 4px 8px; color: var(--fgColor-muted); font-size: 12px; }
 .nav-row {
   display: flex;
@@ -386,8 +394,6 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .provider-code { display: flex; align-items: center; gap: 7px; margin: 5px 0; }
 .provider-code code { font: 600 14px var(--mono); color: var(--fgColor-accent); }
 
-.nav-session-item > .nav-session-row { padding-left: 24px; }
-.nav-session-item > .nav-disclosure { position: absolute; left: -1px; top: 5px; width: 24px; height: 26px; }
 .recovery-screen { margin: auto; max-width: 500px; padding: 32px; }
 .recovery-screen h1 { font-size: 20px; }
 .recovery-screen p { color: var(--fgColor-muted); line-height: 1.6; }

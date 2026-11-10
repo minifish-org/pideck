@@ -59,7 +59,7 @@ async page => {
   const searchBounds = await searchButton.boundingBox();
   const plusBounds = await nav.locator('#nav-open-project').boundingBox();
   if (searchBounds.x + searchBounds.width > plusBounds.x) throw new Error('Session search must sit to the left of Open Folder.');
-  await root.press('ArrowLeft');
+  await nav.getByRole('button', { name: 'Collapse Sample project', exact: true }).click();
   await child.waitFor({ state: 'detached' });
   await searchButton.click();
   const search = page.getByRole('dialog', { name: 'Search sessions', exact: true });
@@ -83,7 +83,7 @@ async page => {
   await field.press('Enter');
   await search.waitFor({ state: 'detached' });
   await child.waitFor();
-  if (await child.getAttribute('aria-current') !== 'true') throw new Error('A collapsed search result did not open and reveal its ancestors.');
+  if (await child.getAttribute('aria-current') !== 'true') throw new Error('A search result did not open and reveal its collapsed project.');
   const shortcut = await page.evaluate(() => window.pideck.platform === 'darwin' ? 'Meta+k' : 'Control+k');
   await page.keyboard.press(shortcut);
   await field.fill('other');
@@ -151,5 +151,5 @@ async page => {
   if (await nav.count()) throw new Error('Selecting a search result left the narrow navigation drawer open.');
   await page.waitForFunction(() => document.activeElement?.id === 'prompt');
   if (errors.length) throw new Error(errors.join('\n'));
-  return 'Navigation flow passed: cross-project session search, collapsed branches, loading/retry, keyboard and IME, always-visible new-session buttons, and safe project/session context menus.';
+  return 'Navigation flow passed: cross-project session search, collapsed projects, loading/retry, keyboard and IME, always-visible new-session buttons, and safe project/session context menus.';
 }

@@ -4,7 +4,7 @@ export type SessionTreeRow = { session: Session; depth: number; hasChildren: boo
 
 // Stable sibling order follows the host's recency order, never inferred titles.
 // Broken/missing ancestry is shown at the root rather than hiding a session.
-export function sessionTree(sessions: Session[], collapsed: Readonly<Record<string, boolean>> = {}): SessionTreeRow[] {
+export function sessionTree(sessions: Session[]): SessionTreeRow[] {
   const records = new Map(sessions.map(session => [session.id, session]));
   const children = new Map<string | undefined, Session[]>();
   for (const session of sessions) {
@@ -25,7 +25,7 @@ export function sessionTree(sessions: Session[], collapsed: Readonly<Record<stri
   function visit(parentId: string | undefined, depth: number) {
     for (const session of children.get(parentId) ?? []) {
       rows.push({ session, depth, parentId, hasChildren: Boolean(children.get(session.id)?.length) });
-      if (!collapsed[session.id]) visit(session.id, depth + 1);
+      visit(session.id, depth + 1);
     }
   }
   visit(undefined, 0);

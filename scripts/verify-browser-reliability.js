@@ -6,6 +6,8 @@ async page => {
   const rootId = '2dd96030-16c4-4319-9a8b-6a10258dbf82';
   const childId = '3dd96030-16c4-4319-9a8b-6a10258dbf82';
   const grandchildId = '4dd96030-16c4-4319-9a8b-6a10258dbf82';
+  const standaloneId = '5dd96030-16c4-4319-9a8b-6a10258dbf82';
+  const siblingId = '6dd96030-16c4-4319-9a8b-6a10258dbf82';
   await page.addInitScript(() => {
     if (!window.pideck) return;
     const original = window.pideck;
@@ -31,17 +33,19 @@ async page => {
       },
     };
   });
-  await page.evaluate(({ projectId, rootId, childId, grandchildId }) => {
+  await page.evaluate(({ projectId, rootId, childId, grandchildId, standaloneId, siblingId }) => {
     localStorage.clear(); sessionStorage.clear();
-    const sessions = [[grandchildId, 'Adjust validation'], [childId, 'Try approach B'], [rootId, 'Login refactor']]
+    const sessions = [[standaloneId, 'New conversation'], [grandchildId, 'Adjust validation'], [childId, 'Try approach B'],
+      [siblingId, 'Try approach C'], [rootId, 'Login refactor']]
       .map(([id, title], index) => ({ id, title, projectId, createdAt: index + 1, updatedAt: index + 1 }));
     const view = { status: 'idle', model: { provider: 'openai', id: 'fixture' }, thinking: 'high',
       messages: [{ id: 'user', entryId: 2, role: 'user', blocks: [{ type: 'text', text: 'Review the login flow.' }] },
         { id: 'answer', entryId: 3, role: 'assistant', completed: true, blocks: [{ type: 'text', text: 'The source is ready for review.' }] }] };
     localStorage.setItem('pideck-browser-fixture', JSON.stringify({ opened: true, configured: true, credential: 'api_key',
-      projectId, sessions, views: Object.fromEntries(sessions.map(session => [session.id, view])), parents: { [childId]: rootId, [grandchildId]: childId } }));
+      projectId, sessions, views: Object.fromEntries(sessions.map(session => [session.id, view])),
+      parents: { [childId]: rootId, [grandchildId]: childId, [siblingId]: rootId } }));
     localStorage.setItem('pideck.workspace.v1', JSON.stringify({ projectId, sessions: { [projectId]: rootId }, navigation: true, reading: {}, reviewPaths: {} }));
-  }, { projectId, rootId, childId, grandchildId });
+  }, { projectId, rootId, childId, grandchildId, standaloneId, siblingId });
   await page.reload();
   await page.setViewportSize({ width: 1420, height: 900 });
   const prompt = page.getByRole('textbox', { name: 'Message Pideck', exact: true });
@@ -51,18 +55,36 @@ async page => {
   const grandchild = page.locator(`#nav-session-${grandchildId}`);
   await grandchild.waitFor();
   if (await child.locator('..').getAttribute('data-parent-session') !== rootId) throw new Error('The child lost its native source.');
-  await root.press('ArrowLeft');
-  await child.waitFor({ state: 'detached' });
-  await root.press('ArrowRight');
-  await child.waitFor();
+  if (await page.locator('.nav-session-item .nav-disclosure').count()) throw new Error('Sessions still expose fork collapse controls.');
+  const projectRow = page.locator(`#nav-project-${projectId}`);
+  const standalone = page.locator(`#nav-session-${standaloneId}`);
+  const textLeft = row => row.locator('span').first().evaluate(element => element.getBoundingClientRect().left);
+  if (Math.abs(await textLeft(root) - await textLeft(projectRow)) > 2
+    || await textLeft(standalone) !== await textLeft(root)) throw new Error('Root sessions still reserve extra indentation.');
+  if (await textLeft(child) - await textLeft(root) !== 12
+    || await textLeft(grandchild) - await textLeft(child) !== 12) throw new Error('Fork indentation is not compact.');
+  for (const [row, width] of [[child, 12], [grandchild, 24], [page.locator(`#nav-session-${siblingId}`), 12]]) {
+    const guide = row.locator('..').locator('.nav-session-guides');
+    if (!await guide.evaluate((element, width) => element.getBoundingClientRect().width === width
+      && getComputedStyle(element).backgroundImage !== 'none', width)) throw new Error('A fork lost its ancestry guides.');
+  }
+  if (await standalone.locator('..').locator('.nav-session-guides').count()) throw new Error('A root session has a fork guide placeholder.');
   await root.press('ArrowRight');
   if (!await child.evaluate(element => element === document.activeElement)) throw new Error('ArrowRight did not enter the branch.');
-  await child.press('ArrowLeft');
-  await grandchild.waitFor({ state: 'detached' });
-  await child.press('ArrowLeft');
-  if (!await root.evaluate(element => element === document.activeElement)) throw new Error('ArrowLeft did not return to the parent.');
   await child.press('ArrowRight');
+  if (!await grandchild.evaluate(element => element === document.activeElement)) throw new Error('ArrowRight did not enter the nested branch.');
+  await grandchild.press('ArrowLeft');
+  if (!await child.evaluate(element => element === document.activeElement)) throw new Error('ArrowLeft did not return to the parent.');
+  await child.press('ArrowLeft');
+  if (!await root.evaluate(element => element === document.activeElement)) throw new Error('ArrowLeft did not return to the source.');
+  await root.press('ArrowLeft');
+  if (!await projectRow.evaluate(element => element === document.activeElement)
+    || !await grandchild.isVisible()) throw new Error('ArrowLeft collapsed a session instead of focusing its parent.');
+  await page.getByRole('button', { name: 'Collapse Sample project', exact: true }).click();
+  await grandchild.waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: 'Expand Sample project', exact: true }).click();
   await grandchild.waitFor();
+  await root.click();
   await page.screenshot({ path: 'output/playwright/pideck-reliability-tree.png' });
 
   const changes = page.getByRole('button', { name: 'Changes', exact: true });

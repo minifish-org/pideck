@@ -38,13 +38,18 @@ test('renderer recovery automatically retries once per interval, and only an exp
   assert.equal(recovery.automatic(103), false);
 });
 
-test('session tree follows immutable IDs, keeps sibling recency, folds branches, and tolerates missing/cyclic ancestry', () => {
+test('session tree follows immutable IDs, always shows branches with sibling recency, and tolerates missing/cyclic ancestry', () => {
   const session = (id: string, parentSessionId?: string): Session => ({ id, parentSessionId, projectId: 'project', title: 'same title', createdAt: 0, updatedAt: 0 });
   const sessions = [session('new-child', 'root'), session('grandchild', 'old-child'), session('other'), session('old-child', 'root'), session('root')];
-  assert.deepEqual(sessionTree(sessions).map(row => [row.session.id, row.depth]),
-    [['other', 0], ['root', 0], ['new-child', 1], ['old-child', 1], ['grandchild', 2]]);
-  assert.deepEqual(sessionTree(sessions, { root: true }).map(row => row.session.id), ['other', 'root']);
-  assert.deepEqual(sessionTree([session('orphan', 'missing'), session('cycle-a', 'cycle-b'), session('cycle-b', 'cycle-a')]).map(row => row.depth), [0, 0, 0]);
+  assert.deepEqual(sessionTree(sessions).map(row => [row.session.id, row.depth, row.parentId, row.hasChildren]), [
+    ['other', 0, undefined, false],
+    ['root', 0, undefined, true],
+    ['new-child', 1, 'root', false],
+    ['old-child', 1, 'root', true],
+    ['grandchild', 2, 'old-child', false],
+  ]);
+  assert.deepEqual(sessionTree([session('orphan', 'missing'), session('cycle-a', 'cycle-b'), session('cycle-b', 'cycle-a')])
+    .map(row => [row.depth, row.parentId, row.hasChildren]), [[0, undefined, false], [0, undefined, false], [0, undefined, false]]);
 });
 
 test('native fork ancestry and host draft images survive reopen, enforce project ownership, and purge with the session', async () => {
