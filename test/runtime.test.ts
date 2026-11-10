@@ -111,7 +111,7 @@ test("project ownership, built-in coding tools, watch reattachment, and durable 
     }
     runtime = await fixture.open();
     assert.equal(runtime.deviceId(), deviceId);
-    assert.equal(runtime.listSessions(project.id)[0].id, session.id);
+    assert.equal((await runtime.listSessions(project.id))[0].id, session.id);
     const reopened = await waitForView(runtime, selection, () => true);
     assert.deepEqual(reopened.messages, view.messages);
     assert.deepEqual(reopened.model, input.model);
@@ -131,7 +131,7 @@ test("project ownership, built-in coding tools, watch reattachment, and durable 
     await mkdir(projectDir);
     await assert.rejects(runtime.send(input), /folder changed/);
     assert.deepEqual(runtime.addProject(projectDir), project);
-    assert.equal(runtime.listSessions(project.id)[0].id, session.id);
+    assert.equal((await runtime.listSessions(project.id))[0].id, session.id);
   } finally {
     delete process.env[secretVariable];
     await runtime.close();
@@ -180,7 +180,7 @@ test("first send creates one durable session and recovers interrupted admissions
     await assert.rejects(runtime.start({ ...input, text: "  " }), /Enter a message/);
     const unavailable = { ...input, model: { ...input.model, id: "unavailable-model" } };
     await assert.rejects(runtime.start(unavailable), /model is unavailable/);
-    assert.deepEqual(runtime.listSessions(project.id).map(({ id }) => id), [session.id]);
+    assert.deepEqual((await runtime.listSessions(project.id)).map(({ id }) => id), [session.id]);
 
     faux.setResponses([toolResponse("bash", { command: "printf 'Started in the project'" }), fauxAssistantMessage("Done.")]);
     const [started, duplicate] = await Promise.all([runtime.start(input), runtime.start(input)]);
@@ -202,7 +202,7 @@ test("first send creates one durable session and recovers interrupted admissions
       metadata.prepare("UPDATE sessions SET startPending = 1 WHERE id IN (?, ?)").run(started.id, interrupted.id);
     }
     runtime = await fixture.open();
-    assert.deepEqual(runtime.listSessions(project.id).map(({ id }) => id), [started.id, session.id]);
+    assert.deepEqual((await runtime.listSessions(project.id)).map(({ id }) => id), [started.id, session.id]);
     assert.deepEqual(await runtime.start(unavailable), started);
     const reopened = await waitForView(runtime, selection, () => true);
     assert.deepEqual(reopened.messages, view.messages);

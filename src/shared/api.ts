@@ -17,6 +17,9 @@ export type Session = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Native Durable history ancestry, mapped to a session in this project. */
+  parentSessionId?: string;
+  forkEntryId?: number;
 };
 
 export type Selection = { projectId: string; sessionId: string };
@@ -61,6 +64,8 @@ export type AuthNotice =
   | { type: "device_code"; link?: AuthLink; code: string; copyId?: string; expiresInSeconds?: number }
   | { type: "progress"; message: string };
 export type ImageInput = { data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" };
+export type DraftImage = ImageInput & { name: string };
+export type DraftImageRef = { projectId: string; draftId: string; key: string };
 export type SendChat = Selection & {
   text: string;
   model: ModelRef;
@@ -139,7 +144,8 @@ type TerminalSize = { cols: number; rows: number };
 export type TerminalOpen = { terminalId: string; data: string; sequence: number; exited: boolean };
 export type TerminalEvent =
   | ({ type: "terminal:data"; data: string; sequence: number } & TerminalRef)
-  | ({ type: "terminal:exit"; exitCode: number; sequence: number } & TerminalRef);
+  | ({ type: "terminal:exit"; exitCode: number; sequence: number } & TerminalRef)
+  | ({ type: "terminal:reclaimed"; sequence: number } & TerminalRef);
 
 type WatchRef = Selection & { subscriptionId: string };
 
@@ -159,6 +165,8 @@ export type Commands = {
   "session:create": [{ projectId: string; title?: string }, Session];
   "session:rename": [Selection & { title: string }, Session];
   "session:remove": [Selection, RemovalResult | RemovalBlocked | null];
+  "draft:images-read": [DraftImageRef, DraftImage[]];
+  "draft:images-write": [DraftImageRef & { images: DraftImage[] }, void];
   "model:list": [{ useSaved: true } | undefined, ModelCatalog];
   "model:providers": [undefined, ModelProvider[]];
   "model:login": [{ provider: string; method: AuthMethod; flowId: string }, void];
@@ -192,6 +200,7 @@ export type Commands = {
   "terminal:input": [TerminalRef & { data: string }, void];
   "terminal:resize": [TerminalRef & TerminalSize, void];
   "terminal:close": [TerminalRef, void];
+  "terminal:visibility": [TerminalRef & { visible: boolean }, void];
   "terminal:sync": [TerminalRef & { through: number; replay?: true }, TerminalEvent[]];
 };
 export type Command = keyof Commands;

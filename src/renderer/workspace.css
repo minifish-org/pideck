@@ -32,15 +32,6 @@
   background: var(--control-bgColor-rest);
 }
 
-.workspace-tools[data-docked] > .workspace-review > .workspace-panel-header,
-.workspace-tools[data-docked] > .workspace-terminal .workspace-panel-header {
-  min-height: var(--titlebar-height);
-  -webkit-app-region: drag;
-}
-.workspace-panel-header :is(button, input, select) { -webkit-app-region: no-drag; }
-.workspace-panel-header > .title-panels { margin-inline-start: auto; }
-.workspace-panel-header > :is(.workspace-layout, .workspace-panel-actions) + .title-panels { margin-inline-start: 0; }
-
 .workspace-panel-header h2 {
   margin: 0;
   flex: none;

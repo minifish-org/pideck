@@ -45,6 +45,7 @@ async page => {
       ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
     state.queueHolds ??= {};
+    state.draftImages ??= {};
     state.appearance ??= "dark";
     const systemAppearance = matchMedia("(prefers-color-scheme: dark)");
     let savedConnectionsPending = Boolean(state.savedConnectionsPending);
@@ -106,7 +107,7 @@ async page => {
         activity.set(sessionId, { projectId: project.id, sessionId, taskId: ++nextTaskId, state: "running", settled: false });
         publishActivity();
       } else if (values.status === "idle" && activity.has(sessionId)) {
-        activity.set(sessionId, { ...activity.get(sessionId), state: "finished", settled: true, resultEntryId: values.messages?.at(-1)?.entryId });
+        activity.set(sessionId, { ...activity.get(sessionId), state: values.runOutcome?.kind === "failed" ? "attention" : "finished", taskId: values.failureTaskId ?? activity.get(sessionId).taskId, settled: true, resultEntryId: values.messages?.at(-1)?.entryId });
         publishActivity();
       }
     }
@@ -254,6 +255,15 @@ async page => {
         }
         if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
+          case "draft:images-write":
+            state.draftImages[`${payload.projectId}/${payload.draftId}/${payload.key}`] = payload.images;
+            persist();
+            return;
+          case "draft:images-read": {
+            const images = state.draftImages[`${payload.projectId}/${payload.draftId}/${payload.key}`];
+            if (!images) throw new Error('Saved fixture images are unavailable.');
+            return images;
+          }
           case "appearance:get": return appearance();
           case "project:list": return [...(state.opened ? [project] : []), ...(state.secondOpened ? [secondProject] : [])];
           case "project:open":
@@ -298,7 +308,7 @@ async page => {
           }
           case "session:list": {
             if (payload.projectId === secondProject.id) return state.secondOpened ? [{ ...secondSession }] : [];
-            const snapshot = state.sessions.map(session => ({ ...session }));
+            const snapshot = state.sessions.map(session => ({ ...session, ...(state.parents[session.id] ? { parentSessionId: state.parents[session.id] } : {}) }));
             if (!captureSessionList) return snapshot;
             captureSessionList = false;
             document.body.dataset.staleSessionList = "started";
@@ -636,7 +646,7 @@ async page => {
             const fork = addSession(payload.title ?? title + " (fork)", { ...view, messages: view.messages.slice(0, index + 1) });
             state.parents[fork.id] = payload.sessionId;
             persist();
-            return fork;
+            return { ...fork, parentSessionId: payload.sessionId, forkEntryId: payload.entryId };
           }
           case "terminal:open": {
             const terminalId = crypto.randomUUID();
@@ -657,6 +667,7 @@ async page => {
             document.body.dataset.closedTerminalId = payload.terminalId;
             return;
           }
+          case "terminal:visibility": return;
           case "terminal:resize": return;
           case "terminal:sync": return [];
           case "review:watch": reviewWatches.set(payload.subscriptionId, payload); return;

@@ -80,7 +80,7 @@ test("native PTY pauses unread output, replays in sequence, and resumes after ac
     if (event.type === "terminal:data" || event.type === "terminal:exit") frames.push(event);
   });
   t.after(() => terminals.closeAll());
-  const { terminalId } = openTestTerminal(terminals, 1, projectId);
+  const { terminalId } = await openTestTerminal(terminals, 1, projectId);
   terminals.input(1, projectId, terminalId, "yes pideck-flow | head -n 50000; printf '\\nPTY_%s\\n' done\r");
   await waitFor(() => frames.filter(event => event.type === "terminal:data").reduce((sum, event) => sum + event.data.length, 0) > 110_000);
   await setTimeout(100);
@@ -137,14 +137,14 @@ test("closing a window keeps its shell and drains bounded output until another o
   });
   t.after(() => terminals.closeAll());
   assert.equal(terminals.liveCount(), 0);
-  const opened = openTestTerminal(terminals, 1, projectId);
+  const opened = await openTestTerminal(terminals, 1, projectId);
   assert.equal(terminals.liveCount(), 1);
   terminals.input(1, projectId, opened.terminalId, "PIDECK_SESSION=retained; printf '\\nBEFORE_%s:%s\\n' detach $$\r");
   const output = () => frames.flatMap(({ event }) => event.type === "terminal:data" ? [event.data] : []).join("");
   await waitFor(() => /\nBEFORE_detach:(\d+)\r?\n/.test(output()));
   const pid = output().match(/\nBEFORE_detach:(\d+)\r?\n/)![1];
   terminals.sync(1, projectId, opened.terminalId, frames.at(-1)!.event.sequence);
-  const snapshot = openTestTerminal(terminals, 1, projectId);
+  const snapshot = await openTestTerminal(terminals, 1, projectId);
   assert.equal(snapshot.terminalId, opened.terminalId);
   assert.match(snapshot.data, /BEFORE_detach:/, "acknowledged screen history remains available to a new renderer");
   terminals.input(1, projectId, opened.terminalId,
@@ -156,7 +156,7 @@ test("closing a window keeps its shell and drains bounded output until another o
   assert.throws(() => terminals.resize(1, projectId, opened.terminalId, 80, 24), /no longer open/);
   await waitForAsync(async () => { try { await stat(done); return true; } catch { return false; } });
   assert.equal(frames.length, eventCount, "a closed owner receives no more output");
-  const attached = openTestTerminal(terminals, 2, projectId);
+  const attached = await openTestTerminal(terminals, 2, projectId);
   assert.equal(attached.terminalId, opened.terminalId);
   assert.equal(attached.exited, false);
   assert.equal(terminals.liveCount(), 1);
@@ -167,7 +167,7 @@ test("closing a window keeps its shell and drains bounded output until another o
   await waitFor(() => output().includes(`AFTER_attach:${pid}:retained`));
   assert.throws(() => terminals.sync(1, projectId, attached.terminalId, 0, true), /no longer open/);
   terminals.close(2, projectId, attached.terminalId);
-  const replacement = openTestTerminal(terminals, 2, projectId);
+  const replacement = await openTestTerminal(terminals, 2, projectId);
   assert.notEqual(replacement.terminalId, attached.terminalId, "explicit restart creates a new shell");
 });
 
@@ -179,8 +179,8 @@ test("closing a project kills its shells across owners and keeps other projects 
     if (event.type === "terminal:data") output.set(event.terminalId, (output.get(event.terminalId) ?? "") + event.data);
   });
   t.after(() => terminals.closeAll());
-  const removed = [1, 2].map(owner => ({ owner, ...openTestTerminal(terminals, owner, projectId) }));
-  const retained = openTestTerminal(terminals, 1, "other-project");
+  const removed = await Promise.all([1, 2].map(async owner => ({ owner, ...await openTestTerminal(terminals, owner, projectId) })));
+  const retained = await openTestTerminal(terminals, 1, "other-project");
   // A shell may paint its prompt before or after input is echoed. Start output
   // markers on their own line so readiness does not depend on that timing.
   for (const { owner, terminalId } of removed) terminals.input(owner, projectId, terminalId, "printf '\\nSHELL_PID:%s\\n' $$\r");
@@ -262,3 +262,30 @@ async function waitForAsync(check: () => Promise<boolean>) {
   }
   throw new Error("Timed out waiting for detached shell completion.");
 }
+
+
+test('a reclaimed terminal discards stream gaps silently, reports visibility, and never replays input', async () => {
+  const calls: { command: string; payload: unknown }[] = [];
+  const statuses: TerminalStatus[] = [];
+  let listener: ((event: HostEvent) => void) | undefined;
+  const bridge: Pideck = {
+    platform: process.platform,
+    invoke: ((command: string, payload: unknown) => {
+      calls.push({ command, payload });
+      return Promise.resolve(command === 'terminal:open' ? { terminalId, data: '', sequence: 0, exited: false } : []);
+    }) as Pideck['invoke'],
+    onEvent: receive => { listener = receive; return () => { listener = undefined; }; },
+  };
+  const connection = connectTerminal({ bridge, projectId, initialSize: { cols: 80, rows: 24 },
+    visible: false, write: () => assert.fail('recycling must not append a notice'), status: value => statuses.push(value), issue: () => {} });
+  await setImmediate();
+  assert.deepEqual(calls.find(call => call.command === 'terminal:visibility')?.payload, { projectId, terminalId, visible: false });
+  connection.visibility(true);
+  assert.deepEqual(calls.at(-1)?.payload, { projectId, terminalId, visible: true });
+  listener?.({ type: 'terminal:reclaimed', projectId, terminalId, sequence: 3 });
+  assert.deepEqual(statuses.at(-1), { type: 'reclaimed', message: '' });
+  assert.equal(calls.filter(call => call.command === 'terminal:sync').length, 0);
+  connection.input('never replay this\r');
+  assert.equal(calls.filter(call => call.command === 'terminal:input').length, 0);
+  assert.equal(listener, undefined);
+});

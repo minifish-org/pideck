@@ -2,6 +2,7 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil
 import type { AgentState, InboxState, LiveState, RunFailure, TaskGraph, TranscriptView } from "@earendil-works/pi-durable";
 import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
 import { canSteerQueued, QueueEditDoc, queueItems, type QueueEditState } from "./queued-input.js";
+import { safeFailureDetail } from "./failure-detail.js";
 
 export const inputEntryKind = "pideck.input";
 export const continueEntryKind = "pideck.continue";
@@ -52,6 +53,11 @@ function applyToolResult(tool: ToolBlock, result: ToolResultMessage, data?: unkn
 }
 
 function failureMessage(failure: RunFailure): string {
+  const detail = failure.reason !== 'aborted' && safeFailureDetail(failure.detail);
+  return [failureSummary(failure), detail].filter(Boolean).join(' ');
+}
+
+function failureSummary(failure: RunFailure): string {
   switch (failure.reason) {
     case "aborted": return "Run stopped.";
     case "model_error": return "The model request failed. Check your provider credentials, connectivity, and model access.";

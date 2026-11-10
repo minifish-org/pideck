@@ -28,6 +28,11 @@ export async function openSmokeProvider() {
         throw new Error("The Azure provider did not send an authenticated streaming Responses request.");
       }
       requests.push(payload);
+      if (JSON.stringify(payload.input.findLast(item => item.role === "user")?.content).includes("Native quota diagnostic")) {
+        response.writeHead(429, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { code: "insufficient_quota", message: "Quota exhausted for this project. api_key=sk-pideck-smoke-secret" } }));
+        return;
+      }
       const tools = payload.input.filter(item => item.type === "function_call_output");
       const prompt = JSON.stringify(payload.input.findLast(item => item.role === "user")?.content);
       const gateName = /Queue hold (?:SAVE|CANCEL|RESTART|STOP|RELOAD|CLOSE|QUIT)/.exec(prompt ?? "")?.[0];

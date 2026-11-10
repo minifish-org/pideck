@@ -3,7 +3,6 @@ import { CodeView, FileDiff, Virtualizer, WorkerPoolContextProvider, type CodeVi
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import type { Project, ReviewFile, ReviewFileContents, ReviewPatch } from "../shared/api";
 import { Icon } from "./Icons";
 import { useAppearance } from "./appearance";
@@ -286,7 +285,6 @@ type ReviewPanelProps = {
   project: Project;
   visible: boolean;
   overlay: boolean;
-  panelControls?: ReactNode;
   onClose: () => void;
   selectedPath?: string;
   selectedPatch?: string;
@@ -309,7 +307,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
 }
 
 function ProjectReview({ project, visible, overlay, onClose, selectedPath, selectedPatch, selectedLine, onSelectWorkingTreeFile,
-  rememberedPath, onRememberPath, refreshVersion, selectionVersion, panelControls }: ReviewPanelProps) {
+  rememberedPath, onRememberPath, refreshVersion, selectionVersion }: ReviewPanelProps) {
   const requestedPath = normalizePath(project.directory, selectedPath);
   const showMessagePatch = Boolean(selectedPatch);
   const requestedGitPath = showMessagePatch ? undefined : requestedPath;
@@ -524,7 +522,6 @@ function ProjectReview({ project, visible, overlay, onClose, selectedPath, selec
       <h2>Changes</h2>
       {files.length > 0 && <span className="workspace-panel-meta">{files.length} {files.length === 1 ? "file" : "files"}</span>}
       {showSelectionInList && (previewPath ? <ReadOnlyFile /> : <><ChangeCount files={parsed} />{layoutControl}</>)}
-      {panelControls}
     </header>
     {!list && !showMessagePatch ? <p className="workspace-empty" role="status">Reading changes…</p>
       : <>

@@ -123,7 +123,7 @@ test("unread results survive relaunch, while reads and removals stay cleared", {
     finally { database.close(); }
     runtime = await fixture.open();
     assert.deepEqual(runtime.sessionActivities(), []);
-    assert.deepEqual(runtime.listSessions(project.id).map(session => session.id), [first.id]);
+    assert.deepEqual((await runtime.listSessions(project.id)).map(session => session.id), [first.id]);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });

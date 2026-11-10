@@ -48,7 +48,7 @@ export function useSessionActivity() {
 }
 
 export function useReadSessionActivity(activity: SessionActivity | undefined, view: ChatView | null,
-  scroll: RefObject<HTMLDivElement | null>) {
+  scroll: RefObject<HTMLDivElement | null>, runState: RefObject<HTMLDivElement | null>) {
   const settledView = activity?.settled && view?.status === 'idle' ? view : null;
   useEffect(() => {
     if (!activity || !settledView) return;
@@ -59,7 +59,7 @@ export function useReadSessionActivity(activity: SessionActivity | undefined, vi
     let result: Element | null = thread;
     if (state === 'attention') {
       if (settledView.failureTaskId !== taskId) return;
-      result = thread.querySelector('.chat-run-error');
+      result = runState.current;
     } else if (resultEntryId !== undefined) {
       result = thread.querySelector(`[data-reading-entry="${resultEntryId}"]`);
       // A committed empty answer has an entry, but no visible message.
@@ -73,9 +73,11 @@ export function useReadSessionActivity(activity: SessionActivity | undefined, vi
       frame = 0;
       if (sent || !document.hasFocus() || document.visibilityState !== 'visible' || !viewport?.clientHeight
         || document.querySelector('dialog[open]')) return;
-      const bounds = viewport.getBoundingClientRect();
-      const end = target.getBoundingClientRect().bottom;
-      if (end <= bounds.top || end > bounds.bottom + 1) return;
+      // Failures live beside the composer, outside the transcript's scrollport.
+      const bounds = state === 'attention' ? viewport.closest('main')?.getBoundingClientRect() : viewport.getBoundingClientRect();
+      const targetBounds = target.getBoundingClientRect();
+      if (!bounds || !targetBounds.height || targetBounds.bottom <= Math.max(0, bounds.top)
+        || targetBounds.bottom > Math.min(window.innerHeight, bounds.bottom) + 1) return;
       sent = true;
       void window.pideck.invoke('session:read-activity', { projectId, sessionId, taskId }).catch(() => { sent = false; });
     }
@@ -85,6 +87,7 @@ export function useReadSessionActivity(activity: SessionActivity | undefined, vi
     const resize = new ResizeObserver(schedule);
     resize.observe(viewport);
     resize.observe(thread);
+    resize.observe(target);
     viewport.addEventListener('scroll', schedule, { passive: true });
     window.addEventListener('focus', schedule);
     document.addEventListener('visibilitychange', schedule);
@@ -96,5 +99,5 @@ export function useReadSessionActivity(activity: SessionActivity | undefined, vi
       window.removeEventListener('focus', schedule);
       document.removeEventListener('visibilitychange', schedule);
     };
-  }, [activity, scroll, settledView]);
+  }, [activity, runState, scroll, settledView]);
 }

@@ -3,6 +3,7 @@ import type { Pideck, TerminalEvent } from "../shared/api";
 type Size = { cols: number; rows: number };
 export type TerminalStatus =
   | { type: "opening" | "running" | "failed"; message: string }
+  | { type: "reclaimed"; message: string }
   | { type: "exited"; message: string; exitCode?: number };
 
 const inputLimit = 256 * 1024;
@@ -14,6 +15,7 @@ export function connectTerminal(options: {
   write(data: string, callback: () => void): void;
   status(status: TerminalStatus): void;
   issue(message: string): void;
+  visible?: boolean;
 }) {
   const { bridge, projectId, initialSize, write, status, issue } = options;
   let active = true;
@@ -30,6 +32,7 @@ export function connectTerminal(options: {
   let inputLength = 0;
   let releaseRequested = false;
   let released = false;
+  let visible = options.visible ?? true;
   const inputQueue: string[] = [];
   const outOfOrder = new Map<number, TerminalEvent>();
 
@@ -58,6 +61,14 @@ export function connectTerminal(options: {
 
   function accept(event: TerminalEvent) {
     if (!active || event.terminalId !== terminalId || event.sequence <= received) return;
+    // Recycling discards the old screen's stream. It must remain silent even
+    // if an earlier frame was lost; the retired shell cannot replay that gap.
+    if (event.type === 'terminal:reclaimed') {
+      exited = true;
+      status({ type: 'reclaimed', message: '' });
+      stop();
+      return;
+    }
     outOfOrder.set(event.sequence, event);
     let next = outOfOrder.get(received + 1);
     while (next) {
@@ -72,7 +83,8 @@ export function connectTerminal(options: {
         });
       } else {
         exited = true;
-        status({ type: "exited", message: `Shell exited (${next.exitCode})`, exitCode: next.exitCode });
+        if (next.type === 'terminal:reclaimed') status({ type: 'reclaimed', message: '' });
+        else status({ type: "exited", message: `Shell exited (${next.exitCode})`, exitCode: next.exitCode });
         // The screen retains already queued writes even after the shell is released.
         stop();
         return;
@@ -132,7 +144,7 @@ export function connectTerminal(options: {
       stop(false);
       return;
     }
-    if ((event.type !== "terminal:data" && event.type !== "terminal:exit") || event.projectId !== projectId) return;
+    if ((event.type !== "terminal:data" && event.type !== "terminal:exit" && event.type !== "terminal:reclaimed") || event.projectId !== projectId) return;
     if (terminalId) accept(event);
     else openingOutput = true;
   });
@@ -156,6 +168,7 @@ export function connectTerminal(options: {
       stop();
       return;
     }
+    void bridge.invoke("terminal:visibility", { projectId, terminalId, visible }).catch(fail);
     status({ type: "running", message: "Shell running" });
     synchronize();
     void dispatch();
@@ -163,6 +176,10 @@ export function connectTerminal(options: {
 
   return {
     stop,
+    visibility(value: boolean) {
+      visible = value;
+      if (active && terminalId && !exited) void bridge.invoke("terminal:visibility", { projectId, terminalId, visible }).catch(fail);
+    },
     input(data: string) {
       if (!active || !data) return;
       if (data.length + inputLength > inputLimit) {

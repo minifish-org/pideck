@@ -1,6 +1,42 @@
 import { readFile, readdir } from "node:fs/promises";
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { join } from "node:path";
 
+const exec = promisify(execFile);
+
+export function idleTerminalSnapshot(output: string, pid: number): boolean {
+  const processes = output.trim().split('\n').map(line => line.trim().split(/\s+/));
+  if (processes.some(fields => fields.length !== 6 || fields.slice(0, 4).some(value => !/^-?\d+$/.test(value)))) return false;
+  const byPid = new Map(processes.map(fields => [Number(fields[0]), fields]));
+  const shell = byPid.get(pid);
+  // pid, ppid, pgid, foreground pgid, tty, state. The shell must own its
+  // foreground group; any other live process on the PTY keeps it alive.
+  if (!shell || shell.length !== 6 || Number(shell[2]) !== pid || Number(shell[3]) !== pid
+    || !shell[4] || ['?', '??', '-'].includes(shell[4]) || !/^S/.test(shell[5])) return false;
+  return !processes.some(fields => {
+    if (Number(fields[0]) === pid || /^[ZX]/.test(fields[5])) return false;
+    if (fields[4] === shell[4]) return true;
+    // A background child may deliberately detach from the TTY (setsid/nohup).
+    const seen = new Set<number>();
+    let parent = Number(fields[1]);
+    while (parent > 1 && !seen.has(parent)) {
+      if (parent === pid) return true;
+      seen.add(parent);
+      parent = Number(byPid.get(parent)?.[1] ?? 0);
+    }
+    return false;
+  });
+}
+
+export async function terminalHasNoJobs(pid: number): Promise<boolean> {
+  if (process.platform === 'win32') return false;
+  try {
+    const { stdout } = await exec('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,tpgid=,tty=,stat='],
+      { timeout: 1500, maxBuffer: 4 * 1024 * 1024, env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' } });
+    return idleTerminalSnapshot(stdout, pid);
+  } catch { return false; }
+}
 export type TerminalSession = { id: number; startTime: string };
 type Process = { pid: number; group: number; session: number; startTime: string; state: string };
 

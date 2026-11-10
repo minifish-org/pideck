@@ -178,6 +178,10 @@
 .queued-mode { flex: none; color: var(--fgColor-accent); font-size: 11px; }
 .queued-preview { flex: 1; min-width: 0; color: var(--fgColor-default); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+@media (hover: hover) {
+  .queued-row:not(:hover, :focus-within) .queue-actions { opacity: 0; }
+}
+
 .queue-actions .icon-button { width: 28px; height: 28px; border-radius: 5px; }
 .queue-actions .icon-button:focus-visible { outline-offset: -2px; }
 .queue-actions .queue-action-steer {

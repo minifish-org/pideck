@@ -1,4 +1,4 @@
-import type { ImageInput, Thinking } from '../shared/api';
+import type { DraftImage, Pideck, Thinking } from '../shared/api';
 
 export type ReadingPosition = { messageId: string; entryId: number; offset: number };
 
@@ -64,13 +64,15 @@ export function savePreferences(value: Preferences) {
   }
 }
 
-export type Attachment = ImageInput & { name: string };
+export type Attachment = DraftImage;
 export type SendAttempt = { text: string; attachments: Attachment[]; requestId: string };
 export type QueuedDraftEdit = { id: number; token: string; text: string; original: string; hasImages: boolean; loading?: true };
 
 export type Draft = {
   text: string;
   attachments: Attachment[];
+  attachmentsKey?: string;
+  imagesUnavailable?: true;
   pendingRequestId?: string;
   model?: string;
   thinking?: Thinking;
@@ -98,11 +100,10 @@ export function retainQueueEditText(draft: Draft): Draft {
 
 export function completeAttempt(draft: Draft, attempt: SendAttempt): Draft {
   if (draft.attempt?.requestId !== attempt.requestId) return draft;
-  const unchanged = draft.text === attempt.text && draft.attachments === attempt.attachments;
   return {
     ...draft,
-    text: unchanged ? '' : draft.text,
-    attachments: unchanged ? [] : draft.attachments,
+    text: draft.text === attempt.text ? '' : draft.text,
+    attachments: draft.attachments === attempt.attachments ? [] : draft.attachments,
     attempt: undefined,
     pendingRequestId: undefined,
     sending: false,
@@ -118,7 +119,7 @@ export function acceptStartedDraft(drafts: Drafts, projectId: string, sessionId:
   if (draft.attempt) {
     const next = completeAttempt(draft, draft.attempt);
     // Text typed during the first send is the new session's next draft.
-    if (next.text) remaining[sessionId] = { ...next, attachments: [] };
+    if (next.text || next.attachments.length) remaining[sessionId] = next;
   }
   return Object.keys(remaining).length ? { ...drafts, [projectId]: remaining } : without(drafts, projectId);
 }
@@ -149,7 +150,7 @@ export function readDrafts(): Drafts {
         let savedWindowEdit: unknown;
         try { saved = record(JSON.parse(localStorage.getItem(key) ?? 'null')); } catch { /* Keep the window editor. */ }
         try { savedWindowEdit = JSON.parse(sessionStorage.getItem(key) ?? 'null'); } catch { /* Keep the ordinary draft. */ }
-        const { text = '', requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries } = saved;
+        const { text = '', requestId, queueEdit: savedEdit, recoveredDrafts: savedRecoveries, attachmentsKey, model, thinking } = saved;
         // Older alternatives may merge into a longer unsent draft. Keep that
         // text across reopening; outgoing messages still have their IPC limit.
         if (typeof text !== 'string') continue;
@@ -165,11 +166,18 @@ export function readDrafts(): Drafts {
         if (!persistentEdit && typeof legacyEdit.text === 'string' && legacyEdit.text.length <= maxDraftLength
           && legacyEdit.text !== legacyEdit.original) legacyText.push(legacyEdit.text);
         const currentText = [...new Set([text, ...legacyText].filter(Boolean))].join('\n\n');
-        if (!currentText && !queueEdit) continue;
+        const imageKey = typeof attachmentsKey === 'string' && identifier.test(attachmentsKey) ? attachmentsKey : undefined;
+        const savedModel = typeof model === 'string' && model.length <= 320 && /^[a-z0-9-]+\/.+$/i.test(model) ? model : undefined;
+        const savedThinking = typeof thinking === 'string' && ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(thinking)
+          ? thinking as Thinking : undefined;
+        if (!currentText && !queueEdit && !imageKey && !savedModel && !savedThinking) continue;
         (drafts[projectId] ??= {})[sessionId] = {
           ...emptyDraft, text: currentText,
           pendingRequestId: !legacyText.length && typeof requestId === 'string' && identifier.test(requestId) ? requestId : undefined,
           queueEdit,
+          ...(imageKey ? { attachmentsKey: imageKey, imagesUnavailable: true as const } : {}),
+          ...(savedModel ? { model: savedModel } : {}),
+          ...(savedThinking ? { thinking: savedThinking } : {}),
         };
       } catch {
         // One corrupt record need not prevent other drafts from reopening.
@@ -186,7 +194,57 @@ function draftRequestId(draft?: Draft): string | undefined {
     ? draft.attempt.requestId : draft?.pendingRequestId;
 }
 
-export function saveDrafts(previous: Drafts, current: Drafts) {
+// Immutable image snapshots live in the trusted host, not browser storage.
+const imageKeys = new WeakMap<Attachment[], Map<string, string>>();
+function imageScope(projectId: string, draftId: string) { return `${projectId}/${draftId}`; }
+function rememberImages(attachments: Attachment[], projectId: string, draftId: string, key: string) {
+  const scopes = imageKeys.get(attachments) ?? new Map<string, string>();
+  scopes.set(imageScope(projectId, draftId), key);
+  imageKeys.set(attachments, scopes);
+}
+let imageWrites: Promise<unknown> = Promise.resolve();
+const pendingImages = new WeakMap<Attachment[], Map<string, Promise<string>>>();
+const draftVersions = new Map<string, number>();
+
+export function flushDraftImages(): Promise<unknown> { return imageWrites; }
+
+export async function persistDraftImages(projectId: string, draftId: string, attachments: Attachment[], api: Pideck = window.pideck): Promise<string> {
+  const existing = imageKeys.get(attachments)?.get(imageScope(projectId, draftId));
+  if (existing) return existing;
+  const scope = imageScope(projectId, draftId);
+  const scopes = pendingImages.get(attachments) ?? new Map<string, Promise<string>>();
+  const writing = scopes.get(scope);
+  if (writing) return writing;
+  const key = crypto.randomUUID();
+  const pending = imageWrites.catch(() => {}).then(() => api.invoke('draft:images-write', { projectId, draftId, key, images: attachments })).then(() => {
+    rememberImages(attachments, projectId, draftId, key);
+    return key;
+  });
+  imageWrites = pending;
+  scopes.set(scope, pending);
+  pendingImages.set(attachments, scopes);
+  try { return await pending; }
+  finally { scopes.delete(scope); }
+}
+
+export async function hydrateDraftImages(drafts: Drafts, api: Pideck): Promise<Drafts> {
+  return Object.fromEntries(await Promise.all(Object.entries(drafts).map(async ([projectId, sessions]) => [projectId,
+    Object.fromEntries(await Promise.all(Object.entries(sessions).map(async ([draftId, draft]) => {
+      if (!draft.attachmentsKey) return [draftId, draft];
+      try {
+        const attachments = await api.invoke('draft:images-read', { projectId, draftId, key: draft.attachmentsKey });
+        rememberImages(attachments, projectId, draftId, draft.attachmentsKey);
+        return [draftId, { ...draft, attachments, imagesUnavailable: undefined }];
+      } catch {
+        // Keep the saved reference; never silently send a restored image draft as text only.
+        return [draftId, { ...draft, imagesUnavailable: true, error: 'Saved draft images could not be restored. Retry or discard them.' }];
+      }
+    })))
+  ])));
+}
+
+export function saveDrafts(previous: Drafts, current: Drafts,
+  onError?: (projectId: string, draftId: string, error: unknown) => void) {
   for (const projectId of new Set([...Object.keys(previous), ...Object.keys(current)])) {
     const before = previous[projectId] ?? {};
     const after = current[projectId] ?? {};
@@ -195,16 +253,41 @@ export function saveDrafts(previous: Drafts, current: Drafts) {
       const next = after[sessionId];
       const prior = before[sessionId];
       const requestId = draftRequestId(next);
-      if (next?.text === prior?.text && requestId === draftRequestId(prior)
+      if (next?.text === prior?.text && requestId === draftRequestId(prior) && next?.attachments === prior?.attachments
+        && next?.model === prior?.model && next?.thinking === prior?.thinking && next?.imagesUnavailable === prior?.imagesUnavailable
         && next?.queueEdit === prior?.queueEdit) continue;
       const key = `${draftKey}${projectId}/${sessionId}`;
-      try {
-        if (next?.text || next?.queueEdit) localStorage.setItem(key, JSON.stringify({ text: next.text, requestId, queueEdit: next.queueEdit }));
-        else localStorage.removeItem(key);
-        // Only remove the older window-scoped copy after the durable copy succeeds.
-        try { sessionStorage.removeItem(key); } catch { /* Storage is optional. */ }
-      } catch {
-        // Keep the in-memory draft when local storage is unavailable or full.
+      const version = (draftVersions.get(key) ?? 0) + 1;
+      draftVersions.set(key, version);
+      function publish(attachmentsKey?: string) {
+        if (draftVersions.get(key) !== version) return;
+        try {
+          if (next && (next.text || next.queueEdit || attachmentsKey || next.model || next.thinking)) {
+            localStorage.setItem(key, JSON.stringify({ text: next.text, requestId, queueEdit: next.queueEdit,
+              model: next.model, thinking: next.thinking, attachmentsKey }));
+          } else localStorage.removeItem(key);
+          try { sessionStorage.removeItem(key); } catch { /* Storage is optional. */ }
+        } catch {
+          onError?.(projectId, sessionId, new Error('The draft could not be saved. Free local storage and try again.'));
+        }
+      }
+      if (next?.attachments.length) {
+        const attachmentsKey = imageKeys.get(next.attachments)?.get(imageScope(projectId, sessionId));
+        if (attachmentsKey) publish(attachmentsKey);
+        else if (typeof window !== 'undefined' && window.pideck) {
+          // Publish only committed snapshots. A late migration/write must not
+          // replace newer text, restore removed images, or resurrect a deleted draft.
+          void persistDraftImages(projectId, sessionId, next.attachments).then(publish, error => {
+            if (draftVersions.get(key) === version) onError?.(projectId, sessionId, error);
+          });
+        } else publish(next.attachmentsKey);
+      } else {
+        publish(next?.imagesUnavailable ? next.attachmentsKey : undefined);
+        if (!next?.imagesUnavailable && (prior?.attachments.length || prior?.attachmentsKey)
+          && typeof window !== 'undefined' && window.pideck) {
+          imageWrites = imageWrites.catch(() => {}).then(() => window.pideck.invoke('draft:images-write',
+            { projectId, draftId: sessionId, key: crypto.randomUUID(), images: [] })).catch(() => {});
+        }
       }
     }
   }

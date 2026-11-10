@@ -175,6 +175,8 @@ function eraseConversations(metadata: DatabaseSync, ids: string): void {
     DELETE FROM durable.entries WHERE id IN temp.pideck_removed_records;
     DELETE FROM durable.conversations WHERE id IN temp.pideck_removed_conversations;
     DELETE FROM durable.record_ids WHERE id IN temp.pideck_removed_records;
+    DELETE FROM main.draft_images WHERE draftId IN
+      (SELECT id FROM main.sessions WHERE conversationId IN temp.pideck_removed_conversations);
     DELETE FROM main.sessions WHERE conversationId IN temp.pideck_removed_conversations;
     DROP TABLE temp.pideck_removed_records;
     DROP TABLE temp.pideck_removed_conversations;

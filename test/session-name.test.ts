@@ -19,14 +19,14 @@ test("the first admitted prompt names an untitled session and is recovered befor
     const session = await runtime.createSession(project.id);
     const named = await runtime.createSession(project.id, "Saved legacy name");
     const selection = { projectId: project.id, sessionId: session.id };
-    const currentTitle = (id: string) => runtime.listSessions(project.id).find(item => item.id === id)?.title;
-    assert.equal(currentTitle(session.id), untitledSession);
+    const currentTitle = async (id: string) => (await runtime.listSessions(project.id)).find(item => item.id === id)?.title;
+    assert.equal(await currentTitle(session.id), untitledSession);
     assert.throws(() => runtime.renameSession({ ...selection, projectId: other.id }, "Wrong project"), /not found/i);
     assert.throws(() => runtime.renameSession(selection, " \u202e "), /enter a session name/i);
 
     await assert.rejects(runtime.send({ ...fixture.input(selection, "Rejected name"), model: { provider: "missing", id: "model" } }),
       /unavailable/i);
-    assert.equal(currentTitle(session.id), untitledSession);
+    assert.equal(await currentTitle(session.id), untitledSession);
     fixture.faux.setResponses([fauxAssistantMessage("Done."), fauxAssistantMessage("Done again.")]);
     const first = waitForView(runtime, selection, view => view.status === "idle" && view.messages.length >= 2);
     await runtime.send(fixture.input(selection, "\n  ## Fix   🔎 the search  \u202e\nFurther details"));
@@ -34,7 +34,7 @@ test("the first admitted prompt names an untitled session and is recovered befor
     const second = waitForView(runtime, selection, view => view.status === "idle" && view.messages.length >= 4);
     await runtime.send(fixture.input(selection, "A later instruction"));
     await second;
-    assert.equal(currentTitle(session.id), "Fix 🔎 the search");
+    assert.equal(await currentTitle(session.id), "Fix 🔎 the search");
 
     // Simulate stopping after Durable commits the input and before the title projection is written.
     await runtime.close();
@@ -42,8 +42,8 @@ test("the first admitted prompt names an untitled session and is recovered befor
     metadata.prepare("UPDATE sessions SET title = ?, autoTitlePending = 1 WHERE id = ?").run(untitledSession, session.id);
     metadata.close();
     runtime = await fixture.open();
-    assert.equal(currentTitle(session.id), "Fix 🔎 the search");
-    assert.equal(currentTitle(named.id), "Saved legacy name");
+    assert.equal(await currentTitle(session.id), "Fix 🔎 the search");
+    assert.equal(await currentTitle(named.id), "Saved legacy name");
     const renamed = runtime.renameSession(selection, "  Explicit title   ");
     assert.equal(renamed.title, "Explicit title");
     await runtime.close();
@@ -51,8 +51,8 @@ test("the first admitted prompt names an untitled session and is recovered befor
     oldMetadata.exec("ALTER TABLE sessions DROP COLUMN autoTitlePending");
     oldMetadata.close();
     runtime = await fixture.open();
-    assert.equal(currentTitle(session.id), "Explicit title");
-    assert.equal(currentTitle(named.id), "Saved legacy name");
+    assert.equal(await currentTitle(session.id), "Explicit title");
+    assert.equal(await currentTitle(named.id), "Saved legacy name");
   } finally {
     await runtime.close();
     await Promise.all([rm(data, { recursive: true, force: true }), rm(otherDirectory, { recursive: true, force: true })]);

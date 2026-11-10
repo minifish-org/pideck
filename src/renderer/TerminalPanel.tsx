@@ -2,7 +2,6 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { ArrowLeft, RotateCw } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import type { Project } from "../shared/api";
 import { useAppearance } from "./appearance";
 import { connectTerminal, type TerminalStatus } from "./terminal-connection";
@@ -14,7 +13,6 @@ type TerminalProps = {
   visible: boolean;
   overlay: boolean;
   focusOnShow: boolean;
-  panelControls?: ReactNode;
   onClose: () => void;
   onExit(projectId: string): void;
 };
@@ -68,11 +66,14 @@ function ProjectTerminal(props: TerminalProps) {
   </section>;
 }
 
-function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit, panelControls }: TerminalProps) {
+function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onExit }: TerminalProps) {
   const appearance = useAppearance();
   const element = useRef<HTMLDivElement>(null);
   const screen = useRef<{ terminal: Terminal; fit: () => void } | null>(null);
   const stopConnection = useRef<(() => void) | undefined>(undefined);
+  const connectionRef = useRef<ReturnType<typeof connectTerminal> | undefined>(undefined);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const previousHost = useRef(0);
   const [host, setHost] = useState<{ generation: number; disconnected?: string }>({ generation: 0 });
   const [attempt, setAttempt] = useState<number | null>(0);
@@ -132,27 +133,31 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
     if (host.generation !== previousHost.current) {
       previousHost.current = host.generation;
       announceNewShell(terminal, "Workspace reconnected. Starting a new shell.");
-    } else if (attempt > 0) announceNewShell(terminal, "Starting a new shell.");
+    } else if (status.type === "reclaimed") terminal.reset();
+    else if (attempt > 0) announceNewShell(terminal, "Starting a new shell.");
     setIssue("");
     setStatus(opening);
     const connection = connectTerminal({
       bridge: window.pideck,
       projectId: project.id,
+      visible: visibleRef.current && document.visibilityState === "visible",
       initialSize: { cols: terminal.cols, rows: terminal.rows },
       write: (data, callback) => terminal.write(data, callback),
       status: next => {
         setStatus(next);
-        if (next.type === "exited" || next.type === "failed") setAttempt(null);
+        if (next.type === "exited" || next.type === "failed" || next.type === "reclaimed") setAttempt(null);
         if (next.type === "exited" && next.exitCode === 0) {
           onExit(project.id);
         }
       },
       issue: setIssue,
     });
+    connectionRef.current = connection;
     stopConnection.current = connection.stop;
     const write = terminal.onData(connection.input);
     const resize = terminal.onResize(connection.resize);
     return () => {
+      connectionRef.current = undefined;
       stopConnection.current = undefined;
       resize.dispose();
       write.dispose();
@@ -160,6 +165,17 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       connection.stop(false);
     };
   }, [project.id, host, attempt, onExit]);
+
+  useEffect(() => {
+    const update = () => {
+      const showing = visible && document.visibilityState === 'visible';
+      connectionRef.current?.visibility(showing);
+      if (showing && status.type === 'reclaimed') setAttempt(current => current ?? 1);
+    };
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, [visible, host.generation, attempt, status.type]);
 
   useEffect(() => {
     if (!visible) return;
@@ -195,7 +211,6 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
           <RotateCw size={16} aria-hidden="true" />
         </button>
       </div>
-      {panelControls}
     </header>
     {issue && <p className="workspace-terminal-issue" role="alert">{issue}</p>}
     <div className="workspace-terminal-body" ref={element} />

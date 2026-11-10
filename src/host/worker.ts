@@ -155,6 +155,11 @@ async function handle(request: HostRequest): Promise<unknown> {
     }
     case "removal:execute":
       return executeRemoval(runtime, payload, payload.scope);
+    case "draft:images-read":
+      return runtime.readDraftImages(payload);
+    case "draft:images-write":
+      requireOpenWorkspace(payload.projectId);
+      return runtime.writeDraftImages(payload);
     case "session:list":
       return runtime.listSessions(payload.projectId);
     case "session:watch-activity": {
@@ -312,6 +317,8 @@ async function handle(request: HostRequest): Promise<unknown> {
       return terminals.input(owner, payload.projectId, payload.terminalId, payload.data);
     case "terminal:resize":
       return terminals.resize(owner, payload.projectId, payload.terminalId, payload.cols, payload.rows);
+    case "terminal:visibility":
+      return terminals.visibility(owner, payload.projectId, payload.terminalId, payload.visible);
     case "terminal:close":
       return terminals.close(owner, payload.projectId, payload.terminalId);
     case "terminal:sync":

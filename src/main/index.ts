@@ -19,6 +19,7 @@ import { createNativeNotifications } from "./native-notifications";
 import { activityNotificationLaunchId } from "./activity-notifications";
 import { loadMacUpdater, type MacUpdater, type NativeUpdateEvent } from "./mac-updater";
 import { UpdateInstallation } from "./update-install";
+import { RendererRecovery } from "./renderer-recovery";
 
 const appUrl = "pideck://app/index.html";
 const root = fileURLToPath(new URL("../renderer", import.meta.url));
@@ -263,11 +264,31 @@ function openWindow(activate = false) {
     retire(true);
     windowOwner = ++owner;
   });
+  const recovery = new RendererRecovery();
+  let recovering = false;
   window.webContents.on("render-process-gone", () => {
     desktopReady = false;
     visibleContext = { viewing: false };
     contextVersion++;
     retire(true);
+    if (recovering || exiting || shuttingDown || window.isDestroyed()) return;
+    recovering = true;
+    void (async () => {
+      if (!recovery.automatic()) {
+        const { response } = await dialog.showMessageBox(window, {
+          type: 'error', title: 'Pideck', message: 'The interface stopped unexpectedly.',
+          detail: 'Your workspace is still running. Recover the interface without resending messages or terminal input.',
+          buttons: ['Recover Interface', 'Close Window'], defaultId: 0, cancelId: 1, noLink: true,
+        });
+        if (exiting || window.isDestroyed()) return;
+        if (response !== 0) { window.close(); return; }
+        recovery.retry();
+        recovery.automatic();
+      }
+      if (!exiting && !window.isDestroyed()) await window.loadURL(appUrl);
+    })().catch(() => {
+      if (!exiting && !window.isDestroyed()) dialog.showErrorBox('Pideck', 'The interface could not be recovered. Close and reopen the window to try again.');
+    }).finally(() => { recovering = false; });
   });
   window.webContents.on("will-navigate", event => event.preventDefault());
   window.webContents.on("will-frame-navigate", event => event.preventDefault());

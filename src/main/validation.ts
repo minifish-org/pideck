@@ -95,6 +95,11 @@ const validators = {
   "session:rename": (value) => object(value) && selection(value)
     && string(value.title, sessionTitleLimit) && Boolean(normalizeSessionTitle(value.title)),
   "session:remove": (value) => object(value) && selection(value),
+  "draft:images-read": (value) => object(value) && project(value) && match(value.key, id)
+    && (value.draftId === 'draft' || match(value.draftId, id)),
+  "draft:images-write": (value) => object(value) && project(value) && match(value.key, id)
+    && (value.draftId === 'draft' || match(value.draftId, id)) && Array.isArray(value.images) && images(value.images)
+    && value.images.every(image => object(image) && string(image.name, 1024)),
   "model:list": (value) => value === undefined || (object(value) && value.useSaved === true),
   "model:providers": empty,
   "model:login": (value) => object(value) && flow(value) && match(value.provider, provider)
@@ -145,6 +150,7 @@ const validators = {
   "terminal:input": (value) => object(value) && terminal(value)
     && typeof value.data === "string" && value.data.length <= 65536,
   "terminal:resize": (value) => object(value) && terminal(value) && size(value),
+  "terminal:visibility": (value) => object(value) && terminal(value) && typeof value.visible === "boolean",
   "terminal:close": (value) => object(value) && terminal(value),
   "terminal:sync": (value) => object(value) && terminal(value) && entry(value.through, 0)
     && (value.replay === undefined || value.replay === true),

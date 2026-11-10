@@ -670,26 +670,26 @@ try {
       const middleHeader = middleHeaderElement.getBoundingClientRect();
       const panelHeaderElement = document.querySelector(selector + " .workspace-panel-header");
       const panelHeader = panelHeaderElement.getBoundingClientRect();
-      const panelHeaderEnd = panelHeader.right - parseFloat(getComputedStyle(panelHeaderElement).paddingInlineEnd);
+      const panelHeaderEnd = middleHeader.right - parseFloat(getComputedStyle(middleHeaderElement).paddingInlineEnd);
       const reviewToggle = bounds("#toggle-review");
       const terminalToggle = bounds("#toggle-terminal");
       const panel = bounds(selector);
-      const otherControls = [...panelHeaderElement.querySelectorAll("h2, button, input, select")]
+      const otherControls = [...middleHeaderElement.querySelectorAll("h2, button, input, select")]
         .filter(control => !control.closest('[aria-label="Workspace panels"]') && control.getClientRects().length);
       return document.querySelectorAll("#toggle-review").length === 1 && document.querySelectorAll("#toggle-terminal").length === 1
-        && panelHeaderElement.contains(document.getElementById("toggle-review"))
-        && panelHeaderElement.contains(document.getElementById("toggle-terminal"))
+        && middleHeaderElement.contains(document.getElementById("toggle-review"))
+        && middleHeaderElement.contains(document.getElementById("toggle-terminal"))
         && sameEdge(bounds(".workspace-conversation").right, right.left)
-        && sameEdge(middleHeader.right, right.left)
+        && sameEdge(middleHeader.right, titlebar.right)
         && bounds(".workspace-title").right <= middleHeader.right
         && terminalToggle.left >= reviewToggle.right && sameEdge(terminalToggle.right, panelHeaderEnd)
-        && sameEdge((terminalToggle.top + terminalToggle.bottom) / 2, (panelHeader.top + panelHeader.bottom) / 2)
+        && sameEdge((terminalToggle.top + terminalToggle.bottom) / 2, (middleHeader.top + middleHeader.bottom) / 2)
         && otherControls.every(control => control.getBoundingClientRect().right <= reviewToggle.left + 1)
-        && sameEdge(panel.top, titlebar.top)
-        && sameEdge(panelHeader.bottom, titlebar.bottom)
+        && sameEdge(panel.top, titlebar.bottom)
+        && panelHeader.bottom > titlebar.bottom
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
-    }, panelSelector), "The active tool must fill the right sidebar, with one pair of toggle buttons at its header's right edge without overlapping other controls.");
+    }, panelSelector), "The active tool must fill the right sidebar, with one fixed pair of toggle buttons at the global titlebar's right edge without overlapping other controls.");
   }
   await verifyClosedToolLayout();
   await clickNativeMenu(app, "toggle-review");
@@ -752,9 +752,9 @@ try {
   assert.equal(await restartShell.locator("svg").count(), 1);
   assert.equal(await restartShell.getAttribute("title"), "Restart shell (stops the current shell and its foreground command)");
   const [restartBox, panelsBox] = await Promise.all([restartShell.boundingBox(), changesToggle.boundingBox()]);
-  assert.ok(restartBox && panelsBox && restartBox.x + restartBox.width <= panelsBox.x
-    && Math.abs(restartBox.y + restartBox.height / 2 - panelsBox.y - panelsBox.height / 2) <= 1,
-  "The icon-only restart button must precede the panel switches in the terminal header.");
+  assert.ok(restartBox && panelsBox && restartBox.y >= panelsBox.y + panelsBox.height
+    && await restartShell.evaluate(button => Boolean(button.closest(".workspace-panel-header"))),
+  "The icon-only restart button stays in the terminal header below the fixed global panel switches.");
   if (process.platform === "darwin") await terminalRows.getByText("PIDECK_SMOKE>", { exact: true }).waitFor();
   const firstPty = await page.waitForFunction(() => document.documentElement.dataset.ptyId).then(handle => handle.jsonValue());
   await review.waitFor({ state: "detached" });

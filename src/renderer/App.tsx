@@ -5,13 +5,14 @@ import { Chat, EmptyScene } from './Chat';
 import { readableError } from './conversation';
 import { Icon } from './Icons';
 import { SessionName } from './SessionName';
+import { sessionTree } from './session-tree';
 import { SettingsDialog } from './Settings';
 import { activityLabels, useSessionActivity } from './session-activity';
 import { useModalOpen } from './modal-visibility';
 import { WorkspaceDivider } from './WorkspaceDivider';
 import { NavigationDivider } from './NavigationDivider';
 import { WorkspacePanelButtons } from './WorkspacePanelButtons';
-import { acceptStartedDraft, emptyDraft, newSessionDraft, readDrafts, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
+import { acceptStartedDraft, emptyDraft, newSessionDraft, readDrafts, hydrateDraftImages, readPreferences, retainKeys, saveDrafts, savePreferences, without } from './preferences';
 import type { Draft, ReadingPosition } from './preferences';
 
 const ReviewPanel = lazy(() => import('./ReviewPanel').then(({ ReviewPanel }) => ({ default: ReviewPanel })));
@@ -64,7 +65,7 @@ function navigateRows(event: ReactKeyboardEvent<HTMLElement>) {
   rows[Math.max(0, Math.min(rows.length - 1, next))]?.focus();
 }
 
-function Desktop() {
+function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDrafts> }) {
   const api = window.pideck;
   const isMac = api.platform === 'darwin';
   const modifier = isMac ? '⌘' : 'Ctrl+';
@@ -73,13 +74,14 @@ function Desktop() {
   const [{ models, savedConnectionsPending }, setModelCatalog] = useState<ModelCatalog>({ models: [], savedConnectionsPending: false });
   const [preferences, setPreferences] = useState(readPreferences);
   const savedAtStartup = useRef(preferences);
-  const [drafts, setDrafts] = useState(readDrafts);
+  const [drafts, setDrafts] = useState(initialDrafts);
   const draftsAtStartup = useRef(drafts);
   // Persist migrated window-only editors before any passive lease request.
   const savedDrafts = useRef<typeof drafts>({});
   const [sessionLists, setSessionLists] = useState<Record<string, Session[]>>({});
   const sessionListGeneration = useRef(0);
   const [projectExpansion, setProjectExpansion] = useState<Record<string, boolean>>({});
+  const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
   const [focusedSession, setFocusedSession] = useState<Selection>();
   const [focusWorkspace, setFocusWorkspace] = useState<string>();
   const [removing, setRemoving] = useState<Removal>();
@@ -147,11 +149,24 @@ function Desktop() {
   const toolsOpen = reviewOpen || terminalVisible;
   const toolsDocked = canSplitWorkspace && toolsOpen;
   const toolsOverlay = !canSplitWorkspace && toolsOpen;
-  const panelButtonFocus = useRef<string | undefined>(undefined);
   const sessionActivity = useSessionActivity();
   const nativeModalOpen = useModalOpen();
   const selectionRef = useRef({ projectId, sessionId: session?.id });
   useLayoutEffect(() => { selectionRef.current = { projectId, sessionId: session?.id }; }, [projectId, session?.id]);
+
+  useEffect(() => {
+    const byId = new Map(sessions?.map(item => [item.id, item]));
+    const ancestors = new Set<string>();
+    let parent = session?.parentSessionId;
+    while (parent && !ancestors.has(parent)) {
+      ancestors.add(parent);
+      parent = byId.get(parent)?.parentSessionId;
+    }
+    setCollapsedSessions(current => {
+      const closed = Object.fromEntries(Object.entries(current).filter(([id]) => !ancestors.has(id)));
+      return Object.keys(closed).length === Object.keys(current).length ? current : closed;
+    });
+  }, [sessions, sessionId]);
 
   useEffect(() => {
     if (!showNavigation) setRenaming(current => current?.source === 'sidebar' ? undefined : current);
@@ -293,7 +308,13 @@ function Desktop() {
 
   useLayoutEffect(() => savePreferences(preferences), [preferences]);
   useLayoutEffect(() => {
-    saveDrafts(savedDrafts.current, drafts);
+    saveDrafts(savedDrafts.current, drafts, (projectId, draftId, cause) => {
+      setDrafts(current => {
+        const draft = current[projectId]?.[draftId];
+        if (!draft || draft.error) return current;
+        return { ...current, [projectId]: { ...current[projectId], [draftId]: { ...draft, error: readableError(cause) } } };
+      });
+    });
     savedDrafts.current = drafts;
   }, [drafts]);
 
@@ -574,7 +595,7 @@ function Desktop() {
       if (removed.current.projects.has(projectId) || removed.current.sessions.has(sessionId)) return;
       sessionListGeneration.current += 1;
       setSessionLists(previous => previous[projectId]
-        ? { ...previous, [projectId]: previous[projectId].map(item => item.id === sessionId ? updated : item) } : previous);
+        ? { ...previous, [projectId]: previous[projectId].map(item => item.id === sessionId ? { ...item, ...updated } : item) } : previous);
       refreshSessions(current => current + 1);
     } catch (cause) {
       if (selectionRef.current.projectId === projectId && !removed.current.sessions.has(sessionId)) {
@@ -834,7 +855,7 @@ function Desktop() {
   const panelControls = project && <WorkspacePanelButtons reviewOpen={reviewOpen} terminalVisible={terminalVisible}
     disabled={Boolean(removingProject)} reviewTitle={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`}
     terminalTitle={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`}
-    onReview={toggleReview} onTerminal={toggleTerminal} focusMemory={panelButtonFocus} />;
+    onReview={toggleReview} onTerminal={toggleTerminal} />;
 
   return (
     <div className={`app${isMac ? ' app--mac' : ''}${dockedNavigation ? ' app--nav' : ''}${drawerOpen ? ' app--drawer' : ''}${toolsDocked ? ' app--tools-docked' : ''}`} ref={app}>
@@ -862,11 +883,7 @@ function Desktop() {
                 : <span className="workspace-title-current" title={project.directory}>{project.name}</span>}
             </div>}
           </div>
-          {!showNavigation && !toolsOverlay && project && session && <button className="icon-button" type="button"
-            data-draft={hasNewDraft || undefined} aria-label={hasNewDraft ? 'Resume unsent draft' : 'New session'}
-            title={`${hasNewDraft ? 'Resume unsent draft' : 'New session'} (${modifier}N)`}
-            disabled={!canCreateSession} onClick={() => openSessionDraft()}>{hasNewDraft ? 'Draft' : <Icon name="plus" />}</button>}
-          {!toolsOpen && panelControls}
+          {panelControls}
         </div>
       </header>
       <div className="app-body">
@@ -931,24 +948,36 @@ function Desktop() {
                         onClick={(button) => void remove({ projectId: id }, button)} />
                     </div>
                     {expanded && <ul className="nav-children" id={branchId} aria-label={`${item.name} sessions`}>
-                      {branch?.map((chat) => {
+                      {branch && sessionTree(branch, collapsedSessions).map(({ session: chat, depth, hasChildren, parentId }) => {
                         const current = active && chat.id === sessionId;
                         const draft = drafts[id]?.[chat.id];
                         const hasDraft = Boolean(draft?.text || draft?.attachments.length);
                         const activity = sessionActivity[chat.id];
                         const status = activity ? activityLabels[activity.state] : hasDraft ? 'Unsent draft' : undefined;
-                        return <li className="nav-item" key={chat.id}>
+                        return <li className="nav-item nav-session-item" key={chat.id} data-parent-session={parentId}
+                          style={{ marginInlineStart: Math.min(depth, 8) * 12 }}>
+                          {hasChildren && <button type="button" className="icon-button nav-disclosure"
+                            aria-label={`${collapsedSessions[chat.id] ? 'Expand' : 'Collapse'} branches of ${chat.title}`}
+                            aria-expanded={!collapsedSessions[chat.id]}
+                            onClick={() => setCollapsedSessions(current => ({ ...current, [chat.id]: !current[chat.id] }))}>
+                            <Icon name="chevron" width={12} height={12} />
+                          </button>}
                           {renaming?.sessionId === chat.id && renaming.source === 'sidebar'
                             ? <SessionName title={chat.title} onFinish={finishRename} />
                             : <button className="nav-row nav-session-row" id={`nav-session-${chat.id}`} type="button"
                               title={dockedNavigation ? `${chat.title} · Double-click or press F2 to rename` : chat.title}
-                              aria-current={current ? 'true' : undefined} aria-keyshortcuts="F2 ArrowLeft Delete Backspace"
-                              aria-description={status}
+                              aria-current={current ? 'true' : undefined} aria-keyshortcuts="F2 ArrowLeft ArrowRight Delete Backspace"
+                              aria-description={[parentId && `Branch of ${branch.find(item => item.id === parentId)?.title}`, status].filter(Boolean).join(' · ') || undefined}
                               onKeyDown={(event) => {
                                 if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
                                 if (event.key === 'ArrowLeft') {
                                   event.preventDefault();
-                                  document.getElementById(`nav-project-${id}`)?.focus();
+                                  if (hasChildren && !collapsedSessions[chat.id]) setCollapsedSessions(current => ({ ...current, [chat.id]: true }));
+                                  else document.getElementById(parentId ? `nav-session-${parentId}` : `nav-project-${id}`)?.focus();
+                                } else if (event.key === 'ArrowRight' && hasChildren) {
+                                  event.preventDefault();
+                                  if (collapsedSessions[chat.id]) setCollapsedSessions(current => ({ ...current, [chat.id]: false }));
+                                  else document.getElementById(`nav-session-${branch.find(item => item.parentSessionId === chat.id)?.id}`)?.focus();
                                 } else if (event.key === 'F2' && !removing) {
                                   event.preventDefault();
                                   setRenaming({ projectId: id, sessionId: chat.id, source: 'sidebar' });
@@ -1060,7 +1089,6 @@ function Desktop() {
             <div className="workspace-tools" id="workspace-tools" hidden={!toolsOpen} data-docked={toolsDocked || undefined}>
               {project && activeReview && <Suspense key={`review:${project.id}`} fallback={reviewOpen && <div className="panel-loading panel-loading--review" role="status">Opening review…</div>}>
                 <ReviewPanel project={project} visible={reviewOpen} overlay={reviewOverlaysChat} selectedPath={activeReview.path} selectedPatch={activeReview.patch} selectedLine={activeReview.line}
-                  panelControls={reviewOpen ? panelControls : undefined}
                   onSelectWorkingTreeFile={selectWorkingTreeFile}
                   rememberedPath={preferences.reviewPaths[project.id]} onRememberPath={rememberReviewPath}
                   refreshVersion={reviewVersion} selectionVersion={activeReview.selection} onClose={closeReview} />
@@ -1069,7 +1097,6 @@ function Desktop() {
                 const visible = item.id === projectId && terminalVisible;
                 return <Suspense key={item.id} fallback={visible && <div className="panel-loading panel-loading--terminal" role="status">Opening terminal…</div>}>
                   <TerminalPanel project={item} visible={visible} overlay={visible && terminalOverlaysChat} focusOnShow={focusTerminal === item.id}
-                    panelControls={visible ? panelControls : undefined}
                     onClose={() => closeTerminal(item.id)} onExit={closeTerminal} />
                 </Suspense>;
               })}
@@ -1092,5 +1119,16 @@ export function App() {
       </EmptyScene>
     </div>
   );
-  return <Desktop />;
+  return <RestoredDesktop />;
+}
+
+function RestoredDesktop() {
+  const [drafts, setDrafts] = useState<ReturnType<typeof readDrafts>>();
+  useEffect(() => {
+    let active = true;
+    void hydrateDraftImages(readDrafts(), window.pideck).then(value => { if (active) setDrafts(value); });
+    return () => { active = false; };
+  }, []);
+  return drafts ? <Desktop initialDrafts={drafts} />
+    : <div className="app"><div className="workspace-loading" role="status">Restoring workspace…</div></div>;
 }

@@ -66,7 +66,7 @@ test("removing an active session stops Bash and purges its owned overflow log, t
     const readded = runtime.addProject(directory);
     assert.notEqual(readded.id, project.id);
     assert.deepEqual(runtime.requireProject(readded.id), readded);
-    assert.deepEqual(runtime.listSessions(readded.id), []);
+    assert.deepEqual((await runtime.listSessions(readded.id)), []);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
@@ -116,7 +116,7 @@ test("parent sessions require branch-first removal and an empty workspace can be
     await running;
     const blocked = { projectId: other.id, sessionId: otherSession.id };
     await assert.rejects(runtime.remove(blocked, runtime.removalPlan(blocked).scope), /work in other sessions/i);
-    assert.equal(runtime.listSessions(other.id)[0]?.id, otherSession.id);
+    assert.equal((await runtime.listSessions(other.id))[0]?.id, otherSession.id);
     const target = { projectId: empty.id };
     await runtime.remove(target, runtime.removalPlan(target).scope);
     const stillRunning = await waitForView(runtime, selection, () => true);

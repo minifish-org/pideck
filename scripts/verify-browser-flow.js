@@ -788,6 +788,7 @@ async page => {
     const targetId = await targetRow.getAttribute("data-queue-id");
     await prompt.fill(secondaryDraft);
     if (action === "save") await page.evaluate(() => sessionStorage.setItem("pideck-fail-edit-start", "1"));
+    await targetRow.hover();
     await targetRow.getByRole("button", { name: "Edit message", exact: true }).click();
     if (action === "save") {
       const lostAcknowledgement = "The fixture lost the queue edit acknowledgement.";
@@ -1444,20 +1445,17 @@ async page => {
   const expectTerminalToolbar = async () => {
     const [restart, panelToggle] = await Promise.all([restartShell.boundingBox(), changes.boundingBox()]);
     if (await terminal.getByRole("searchbox").count() || await terminal.getByRole("button", { name: /Find in terminal/ }).count()
-      || !restart || !panelToggle || restart.x + restart.width > panelToggle.x + 1 || Math.abs(restart.y - panelToggle.y) > 1
+      || !restart || !panelToggle || restart.y < panelToggle.y + panelToggle.height
       || !await restartShell.evaluate(button => !button.textContent.trim() && Boolean(button.title && button.querySelector("svg")))) {
-      throw new Error("Terminal should have a compact restart icon before its panel toggles, with no search controls.");
+      throw new Error("Terminal should keep its compact restart icon below the fixed global toggles, with no search controls.");
     }
   };
   const review = page.getByRole("complementary", { name: "Review changes" });
   const expectToolbarEdge = async () => {
     const aligned = await page.evaluate(() => {
       const middleHeader = document.querySelector(".titlebar-content");
-      const dockedTools = document.querySelector("#workspace-tools[data-docked]");
-      const middleEdge = dockedTools?.getBoundingClientRect().left ?? window.innerWidth;
-      const panelHeader = [...document.querySelectorAll("#workspace-tools .workspace-panel-header")]
-        .find(header => !header.closest("[hidden]"));
-      const header = panelHeader ?? middleHeader;
+      const middleEdge = window.innerWidth;
+      const header = middleHeader;
       const changesButton = document.getElementById("toggle-review");
       const terminalButton = document.getElementById("toggle-terminal");
       const changes = changesButton.getBoundingClientRect();
@@ -1473,7 +1471,7 @@ async page => {
         && Math.abs((terminal.top + terminal.bottom) / 2 - (edge.top + edge.bottom) / 2) <= 1
         && otherControls.every(control => control.getBoundingClientRect().right <= changes.left + 1);
     });
-    if (!aligned) throw new Error("The workspace toggles must appear once at the active panel header's right edge, without overlapping its other controls.");
+    if (!aligned) throw new Error("The workspace toggles must appear once at the global titlebar's right edge, without overlapping its other controls.");
   };
   const expectActiveTool = async (active) => {
     await review.waitFor({ state: active === "changes" ? "visible" : "hidden" });
@@ -1559,10 +1557,10 @@ async page => {
         && sameEdge(conversation.right, right.left)
         && sameEdge(bounds(".chat-thread").left, bounds(".composer").left)
         && sameEdge(middleHeader.left, sidebarEdge)
-        && sameEdge(middleHeader.right, right.left)
+        && sameEdge(middleHeader.right, titlebar.right)
         && sessionTitle.left - middleHeader.left <= 24 && sessionTitle.left > middleHeader.left
         && sessionTitle.right <= middleHeader.right
-        && sameEdge(panel.top, titlebar.top) && sameEdge(panelHeader.bottom, titlebar.bottom)
+        && sameEdge(panel.top, titlebar.bottom) && panelHeader.bottom > titlebar.bottom
         && sameEdge(panel.left, right.left) && sameEdge(panel.right, right.right)
         && sameEdge(panel.bottom, right.bottom);
     }, pane);

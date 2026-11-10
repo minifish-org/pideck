@@ -81,3 +81,112 @@ test('queue edits survive a new window and old alternatives migrate into visible
     else Reflect.deleteProperty(globalThis, 'sessionStorage');
   }
 });
+
+test('image-only drafts and model/thinking choices restore without embedding images in browser storage', async () => {
+  const local = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const session = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+  const storage = Object.create({
+    getItem(this: Record<string, string>, key: string) { return this[key] ?? null; },
+    setItem(this: Record<string, string>, key: string, value: string) { this[key] = value; },
+    removeItem(this: Record<string, string>, key: string) { delete this[key]; },
+  });
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
+  Object.defineProperty(globalThis, 'sessionStorage', { value: Object.create(Object.getPrototypeOf(storage)), configurable: true });
+  try {
+    const { persistDraftImages, hydrateDraftImages } = await import('../src/renderer/preferences');
+    const snapshots = new Map<string, Attachment[]>();
+    const api = { invoke: async (command: string, payload: { key: string; images?: Attachment[] }) => {
+      if (command === 'draft:images-write') snapshots.set(payload.key, payload.images!);
+      if (command === 'draft:images-read') {
+        const images = snapshots.get(payload.key);
+        if (!images) throw new Error('unavailable');
+        return images.map(image => ({ ...image }));
+      }
+    } } as unknown as import('../src/shared/api').Pideck;
+    const attachments = [{ ...attachment }];
+    const attachmentsKey = await persistDraftImages(projectId, sessionId, attachments, api);
+    const original: Draft = { text: '', attachments, attachmentsKey, model: 'openai/example', thinking: 'high', pendingRequestId: token };
+    const drafts = { [projectId]: { [sessionId]: original } };
+    saveDrafts({}, drafts);
+    assert.ok(!JSON.stringify(storage).includes(attachment.data));
+    const reopened = await hydrateDraftImages(readDrafts(), api);
+    assert.deepEqual(reopened[projectId][sessionId].attachments, attachments);
+    assert.equal(reopened[projectId][sessionId].model, original.model);
+    assert.equal(reopened[projectId][sessionId].thinking, original.thinking);
+    assert.equal(reopened[projectId][sessionId].pendingRequestId, token);
+    // A changed selection persists even when text and images are unchanged.
+    saveDrafts(drafts, { [projectId]: { [sessionId]: { ...original, model: 'openai/other', thinking: 'low' } } });
+    assert.equal(readDrafts()[projectId][sessionId].model, 'openai/other');
+    assert.equal(readDrafts()[projectId][sessionId].thinking, 'low');
+    snapshots.clear();
+    const missing = (await hydrateDraftImages(readDrafts(), api))[projectId][sessionId];
+    assert.equal(missing.imagesUnavailable, true);
+    assert.equal(missing.attachmentsKey, attachmentsKey, 'an unavailable host must not erase the only recovery reference');
+    assert.match(missing.error!, /could not be restored/);
+  } finally {
+    if (local) Object.defineProperty(globalThis, 'localStorage', local); else Reflect.deleteProperty(globalThis, 'localStorage');
+    if (session) Object.defineProperty(globalThis, 'sessionStorage', session); else Reflect.deleteProperty(globalThis, 'sessionStorage');
+  }
+});
+
+
+test('an acknowledged send clears sent images independently of text typed while awaiting the reply', async () => {
+  const { completeAttempt, acceptStartedDraft } = await import('../src/renderer/preferences');
+  const attempt = { text: 'Sent text', attachments: [{ ...attachment }], requestId: token };
+  const draft: Draft = { text: 'Next unsent text', attachments: attempt.attachments, attempt, sending: true };
+  assert.equal(completeAttempt(draft, attempt).text, 'Next unsent text');
+  assert.deepEqual(completeAttempt(draft, attempt).attachments, []);
+  const images = [{ ...attachment, name: 'new.png' }];
+  const kept = completeAttempt({ ...draft, text: attempt.text, attachments: images }, attempt);
+  assert.equal(kept.text, '');
+  assert.equal(kept.attachments, images);
+  assert.equal(acceptStartedDraft({ [projectId]: { draft } }, projectId, token)[projectId][token].text, 'Next unsent text');
+  assert.deepEqual(acceptStartedDraft({ [projectId]: { draft } }, projectId, token)[projectId][token].attachments, []);
+});
+
+test('draft references publish only committed images and late writes cannot replace new text or resurrect drafts', async () => {
+  const descriptors = Object.fromEntries(['localStorage', 'sessionStorage', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const storage = Object.create({
+    getItem(this: Record<string, string>, key: string) { return this[key] ?? null; },
+    setItem(this: Record<string, string>, key: string, value: string) { this[key] = value; },
+    removeItem(this: Record<string, string>, key: string) { delete this[key]; },
+  });
+  const snapshots = new Map<string, Attachment[]>();
+  let gate: Promise<void> = Promise.resolve();
+  const api = { invoke: async (_command: string, payload: { key: string; images: Attachment[] }) => {
+    await gate; snapshots.set(payload.key, payload.images);
+  } } as unknown as import('../src/shared/api').Pideck;
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
+  Object.defineProperty(globalThis, 'sessionStorage', { value: Object.create(Object.getPrototypeOf(storage)), configurable: true });
+  Object.defineProperty(globalThis, 'window', { value: { pideck: api }, configurable: true });
+  const { persistDraftImages, flushDraftImages } = await import('../src/renderer/preferences');
+  const tick = async () => { await flushDraftImages(); await new Promise(resolve => setImmediate(resolve)); };
+  try {
+    const images = [{ ...attachment }];
+    const key = await persistDraftImages(projectId, sessionId, images, api);
+    const first = { [projectId]: { [sessionId]: { text: 'Old text', attachments: images } } };
+    saveDrafts({}, first);
+    const pending = Promise.withResolvers<void>(); gate = pending.promise;
+    const changed = { [projectId]: { [sessionId]: { text: 'Updated images', attachments: [{ ...attachment, name: 'updated.png' }] } } };
+    saveDrafts(first, changed);
+    assert.equal(readDrafts()[projectId][sessionId].attachmentsKey, key, 'uncommitted snapshots cannot replace a recovery reference');
+    const latest = { [projectId]: { [sessionId]: { ...changed[projectId][sessionId], text: 'Newer text' } } };
+    saveDrafts(changed, latest);
+    pending.resolve(); await tick();
+    const restored = readDrafts()[projectId][sessionId];
+    assert.equal(restored.text, 'Newer text');
+    assert.notEqual(restored.attachmentsKey, key);
+    assert.equal(snapshots.get(restored.attachmentsKey!)?.[0].name, 'updated.png');
+    const removing = Promise.withResolvers<void>(); gate = removing.promise;
+    const later = { [projectId]: { [sessionId]: { text: 'Do not restore me', attachments: [{ ...attachment, name: 'later.png' }] } } };
+    saveDrafts(latest, later);
+    saveDrafts(later, {});
+    removing.resolve(); await tick();
+    assert.deepEqual(readDrafts(), {}, 'a late host acknowledgement must not resurrect a deleted draft');
+  } finally {
+    await tick();
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});

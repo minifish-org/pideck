@@ -11,7 +11,7 @@ import { QueuedMessages } from './QueuedMessages';
 import { RunClock } from './RunClock';
 import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
-import { completeAttempt, retainQueueEditText } from './preferences';
+import { completeAttempt, hydrateDraftImages, newSessionDraft, persistDraftImages, retainQueueEditText } from './preferences';
 import './chat.css';
 
 const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => ({ default: InlineDiff })));
@@ -301,12 +301,13 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const textarea = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const thread = useRef<HTMLDivElement>(null);
+  const runStateElement = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const pinned = useRef(!readingPosition);
   const historyAnchor = useRef<HistoryAnchor | undefined>(undefined);
   const toolStates = useRef<Map<string, string> | undefined>(undefined);
   const geometry = useRef<{ height: number; viewport: number } | undefined>(undefined);
-  useReadSessionActivity(watchConnected ? activityReceipt : undefined, view, scroll);
+  useReadSessionActivity(watchConnected ? activityReceipt : undefined, view, scroll, runStateElement);
   const { text, attachments, queueEdit } = draft;
 
   const hasMessages = Boolean(view?.messages.length || view?.hasEarlier || view?.gaps?.length);
@@ -334,7 +335,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const empty = connected && !hasMessages && !view?.error && !busy && !agentCompacting;
   const canSend = !queueEdit && connected && !agentCompacting && !stopping && !continuing && !draft.sending && !draft.reading
     && view?.status !== 'cancelling' && Boolean(model?.configured || awaitingSavedModel)
-    && hasDraft && (!attachments.length || canAttach);
+    && hasDraft && !draft.imagesUnavailable && (!attachments.length || canAttach);
   const canSaveQueue = Boolean(selection && queueEdit && connected && !stopping && !continuing && !queueSaving && !draft.sending
     && view?.status !== 'cancelling' && view?.queued?.some(item => item.id === queueEdit.id)
     && queueReady === queueEdit.token && (queueEdit.text.trim() || queueEdit.hasImages));
@@ -595,7 +596,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   }
 
   async function addFiles(files: File[]) {
-    if (draft.reading || startingSession || !files.length) return;
+    if (draft.reading || draft.sending || draft.imagesUnavailable || !files.length) return;
     const existingSize = attachments.reduce((sum, file) => sum + file.data.length, 0);
     const additionalSize = files.reduce((sum, file) => sum + Math.ceil(file.size / 3) * 4, 0);
     if (files.length + attachments.length > 4 || additionalSize + existingSize > 12_000_000) {
@@ -605,10 +606,22 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     update({ reading: true, error: undefined });
     try {
       const newAttachments = await Promise.all(files.map(readAttachment));
-      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...newAttachments], pendingRequestId: undefined, reading: false }));
+      const combined = [...attachments, ...newAttachments];
+      const attachmentsKey = await persistDraftImages(project.id, session?.id ?? newSessionDraft, combined);
+      updateDraft((current) => ({ ...current, attachments: combined, attachmentsKey, imagesUnavailable: undefined, pendingRequestId: undefined, reading: false }));
     } catch (error) {
       update({ reading: false, error: readableError(error) });
     }
+  }
+
+  async function removeFile(attachment: Attachment) {
+    if (draft.reading || draft.sending) return;
+    update({ reading: true, error: undefined });
+    try {
+      const remaining = attachments.filter(item => item !== attachment);
+      const attachmentsKey = remaining.length ? await persistDraftImages(project.id, session?.id ?? newSessionDraft, remaining) : undefined;
+      updateDraft(current => ({ ...current, attachments: remaining, attachmentsKey, pendingRequestId: undefined, reading: false }));
+    } catch (error) { update({ reading: false, error: readableError(error) }); }
   }
 
   async function showEarlier(gap?: ChatGap) {
@@ -751,7 +764,17 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
           onFocusComposer={() => textarea.current?.focus({ preventScroll: true })} />}
         {(draft.error || modelsError) && <div className="notice composer-notice" role="alert">
           <Icon name="alert" /><span>{draft.error ?? modelsError}</span>
-          {draft.error && queueEdit && queueReady !== queueEdit.token
+          {draft.imagesUnavailable ? <>
+            <button className="inline-action" type="button" onClick={() => {
+              const draftId = session?.id ?? newSessionDraft;
+              void hydrateDraftImages({ [project.id]: { [draftId]: draft } }, window.pideck).then(restored => {
+                const next = restored[project.id][draftId];
+                updateDraft(current => current.attachmentsKey === draft.attachmentsKey
+                  ? { ...current, attachments: next.attachments, imagesUnavailable: next.imagesUnavailable, error: next.imagesUnavailable ? next.error : undefined } : current);
+              });
+            }}>Retry images</button>
+            <button className="inline-action" type="button" onClick={() => update({ attachments: [], attachmentsKey: undefined, imagesUnavailable: undefined, error: undefined })}>Discard images</button>
+          </> : draft.error && queueEdit && queueReady !== queueEdit.token
             ? <button className="icon-button" type="button" aria-label="Retry queue edit" title="Retry opening queued message"
               disabled={!connected} onClick={() => { update({ error: undefined }); setQueueRetry(value => value + 1); }}><Icon name="retry" /></button>
             : modelsError && !draft.error
@@ -760,7 +783,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
               onClick={() => update({ error: undefined })}><Icon name="close" /></button>}
         </div>}
         {(runStatus || showRunClock) && <div className="composer-run" data-run-state={runState ?? 'completed'}>
-          <div className="run-state" role={runStatus ? runControlError || runState === 'failed' ? 'alert' : 'status' : undefined}>
+          <div className="run-state" ref={runStateElement} role={runStatus ? runControlError || runState === 'failed' ? 'alert' : 'status' : undefined}>
             {(busy || agentCompacting || continuing || stopping) && !runControlError && <span className="run-state-dot" />}
             {runStatus && <span className="run-state-label">{runStatus}</span>}
             {runDetail && <code className="run-detail" title={runDetail}>{runDetail}</code>}
@@ -786,8 +809,8 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                 <ImageBlock image={attachment} alt={`Attached image ${index + 1}`} thumbnail />
                 <button className="icon-button attachment-remove" type="button" aria-label={`Remove attached image ${index + 1}`}
                   title="Remove image"
-                  disabled={startingSession}
-                  onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item !== attachment) }))}><Icon name="close" width={13} height={13} /></button>
+                  disabled={draft.sending || draft.reading}
+                  onClick={() => { void removeFile(attachment); }}><Icon name="close" width={13} height={13} /></button>
               </div>
             ))}
           </div>}
@@ -841,7 +864,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                     void addFiles(files);
                   }} />
                 <button className="icon-button composer-attach" type="button" title="Attach images" aria-label="Attach images"
-                  disabled={startingSession || draft.reading || attachments.length >= 4}
+                  disabled={draft.sending || draft.reading || draft.imagesUnavailable || attachments.length >= 4}
                   onClick={() => fileInput.current?.click()}><Icon name="image" /></button>
               </>}
               {busy || agentCompacting || continuing ? modelName && <span className="composer-current-model" title={modelDescription}>{modelLabel}</span> : setupRequired

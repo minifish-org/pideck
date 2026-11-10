@@ -238,7 +238,23 @@ export class Runtime {
     return this.metadata.addProject(directory);
   }
   requireProject(projectId: string) { return this.metadata.requireProject(projectId); }
-  listSessions(projectId: string) { return this.metadata.listSessions(projectId); }
+  async listSessions(projectId: string): Promise<Session[]> {
+    const sessions = this.metadata.listSessions(projectId);
+    const rows = this.metadata.sessionRows(projectId);
+    const byConversation = new Map(rows.map(row => [row.conversationId, row.id]));
+    const byId = new Map(rows.map(row => [row.id, row.conversationId]));
+    // Read native immutable ancestry on Durable's line, including old forks.
+    return this.harness.commit(async tx => Promise.all(sessions.map(async session => {
+      const record = await tx.conversation(byId.get(session.id)!);
+      const parentSessionId = record?.parent && byConversation.get(record.parent.conversationId);
+      return parentSessionId ? { ...session, parentSessionId, forkEntryId: record!.parent!.at } : session;
+    })), context);
+  }
+  readDraftImages(input: Commands['draft:images-read'][0]) { return this.metadata.readDraftImages(input); }
+  writeDraftImages(input: Commands['draft:images-write'][0]) {
+    this.assertWritable();
+    this.metadata.writeDraftImages(input);
+  }
   deviceId() { return this.metadata.deviceId(); }
 
   watchSessionActivity(listener: (items: SessionActivity[]) => void) {
@@ -541,7 +557,8 @@ export class Runtime {
       throw new Error("Choose a committed user or assistant message in this session.");
     }
     const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, context);
-    return this.metadata.createSession(selection.projectId, fork.id, (title && sessionTitle(title)) || branchTitle(source.title));
+    return { ...this.metadata.createSession(selection.projectId, fork.id, (title && sessionTitle(title)) || branchTitle(source.title)),
+      parentSessionId: source.id, forkEntryId: entryId };
   }
 
   cancel(selection: Selection): Promise<void> {

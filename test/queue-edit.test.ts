@@ -170,7 +170,7 @@ for (const removeProject of [false, true]) {
       assert.ok(removed.sessionIds.includes(f.selection.sessionId));
       await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Stale finish" }, 1), /not found/);
       if (removeProject) assert.equal(f.runtime.listProjects().some(project => project.id === f.project.id), false);
-      else assert.equal(f.runtime.listSessions(f.project.id).length, 0);
+      else assert.equal((await f.runtime.listSessions(f.project.id)).length, 0);
     } finally { release.resolve(); await f.close(); }
   });
 }

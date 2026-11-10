@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { Project, Selection, Session, SessionActivity } from "../shared/api.js";
+import type { DraftImage, DraftImageRef, Project, Selection, Session, SessionActivity } from "../shared/api.js";
 import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
@@ -90,6 +90,14 @@ export class Metadata {
           catalog TEXT NOT NULL
         ) STRICT;
 
+        CREATE TABLE IF NOT EXISTS draft_images (
+          projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          draftId TEXT NOT NULL,
+          key TEXT NOT NULL,
+          images TEXT NOT NULL,
+          PRIMARY KEY (projectId, draftId, key)
+        ) STRICT;
+
         CREATE TABLE IF NOT EXISTS installation (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           deviceId TEXT NOT NULL
@@ -107,6 +115,34 @@ export class Metadata {
       this.db.close();
       throw error;
     }
+  }
+
+  private requireDraft(projectId: string, draftId: string) {
+    this.requireProject(projectId);
+    if (draftId !== 'draft') this.session(projectId, draftId);
+  }
+
+  readDraftImages({ projectId, draftId, key }: DraftImageRef): DraftImage[] {
+    this.requireDraft(projectId, draftId);
+    const row = this.db.prepare('SELECT images FROM draft_images WHERE projectId = ? AND draftId = ? AND key = ?')
+      .get(projectId, draftId, key);
+    if (!row) throw new Error('Saved draft images are unavailable.');
+    return JSON.parse(String(row.images));
+  }
+
+  writeDraftImages({ projectId, draftId, key, images }: DraftImageRef & { images: DraftImage[] }): void {
+    this.requireDraft(projectId, draftId);
+    if (!images.length) {
+      this.db.prepare('DELETE FROM draft_images WHERE projectId = ? AND draftId = ?').run(projectId, draftId);
+      return;
+    }
+    this.db.prepare('INSERT OR IGNORE INTO draft_images (projectId, draftId, key, images) VALUES (?, ?, ?, ?)')
+      .run(projectId, draftId, key, JSON.stringify(images));
+    // Keep the previous immutable snapshot until the renderer publishes the new
+    // reference. This bounds storage without breaking an interrupted save.
+    this.db.prepare(`DELETE FROM draft_images WHERE projectId = ? AND draftId = ? AND rowid NOT IN
+      (SELECT rowid FROM draft_images WHERE projectId = ? AND draftId = ? ORDER BY rowid DESC LIMIT 2)`)
+      .run(projectId, draftId, projectId, draftId);
   }
 
   listProjects(): Project[] {

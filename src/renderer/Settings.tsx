@@ -272,9 +272,9 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
     </div>
     {!provider && !loading && providers?.length ? <p className="provider-message">Choose a provider to connect an account or manage an existing connection.</p> : null}
     {provider && !flow && <section className="provider-connection" aria-label="Provider connection">
-      {provider.configured && !changeConnection && <>
+      {(provider.configured || provider.credential) && !changeConnection && <>
         <div className="provider-connection-header">
-          <span className="key-status"><span aria-hidden="true" />Connected</span>
+          <span className="key-status" data-configured={provider.configured}><span aria-hidden="true" />{provider.configured ? 'Connected' : 'Saved connection unavailable'}</span>
           <div className="provider-manage">
             {provider.dynamic && <button type="button" className="icon-button" aria-label="Refresh models"
               title="Refresh models" disabled={busy} onClick={refresh}><RefreshCw size={16} aria-hidden="true" /></button>}
@@ -296,7 +296,7 @@ export function SettingsDialog({ initialProvider, onClose, onModelsChanged }: {
           </div>
         </div>}
       </>}
-      {(!provider.configured || changeConnection) && <>
+      {((!provider.configured && !provider.credential) || changeConnection) && <>
         {provider.methods.length > 0
           ? <div className="provider-methods">
               <div className="provider-manage">

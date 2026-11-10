@@ -1,6 +1,6 @@
 {
   "name": "pideck",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A desktop workspace for coding with Pi Durable.",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -19,6 +19,7 @@
     "package": "npm run build && node scripts/package.mjs",
     "verify:frontend": "npm run prepare:automation && npm run build && tsx scripts/verify-frontend.ts",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "smoke:reliability": "node scripts/smoke-reliability.mjs",
     "smoke:credentials": "node scripts/smoke-credentials.mjs",
     "check:licenses": "node scripts/licenses.mjs",
     "check:distribution": "node scripts/check-distribution.mjs",
