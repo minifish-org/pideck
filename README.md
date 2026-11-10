@@ -4,7 +4,7 @@ Pideck is an experimental desktop coding workspace. Each project opens in a loca
 
 ## Install and requirements
 
-Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.3 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
+Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.4 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
 
 Install Git and keep it on `PATH` for change review. Windows also needs [Git for Windows](https://gitforwindows.org/) with Git Bash for the agent's `bash` tool; PowerShell alone does not provide that tool. Packaged builds include their own Node.js, npm, npx, and Playwright CLI, so a separate Node.js installation is unnecessary for normal packaged use. The first browser task needs an internet connection to obtain Playwright's matching browser and FFmpeg directly from their upstream download services; later tasks reuse the application-data cache.
 
