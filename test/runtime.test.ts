@@ -1056,13 +1056,13 @@ test("queued inputs can be steered, removed, edited with attachments, and reorde
     const queued = await waitForView(runtime, selection, view => view.queued?.length === 4);
     const [editId, removeId, moveId, steerId] = queued.queued!.map(item => item.id);
     assert.equal(queued.canSteerQueued, true);
-    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: edit.text, hasImages: true });
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: edit.text, images: [image] });
     await assert.rejects(runtime.readQueuedInput({ ...selection, sessionId: otherSession.id, id: editId }), /no longer in the queue/);
     await assert.rejects(runtime.updateQueuedInput({ ...selection, id: moveId, action: "edit", text: " " }), /Enter a message/);
 
     const editedText = "Updated description. ".repeat(20);
     await runtime.updateQueuedInput({ ...selection, id: editId, action: "edit", text: "" });
-    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: "", hasImages: true });
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: "", images: [image] });
     await runtime.updateQueuedInput({ ...selection, id: editId, action: "edit", text: editedText });
     await runtime.updateQueuedInput({ ...selection, id: removeId, action: "remove" });
     await runtime.updateQueuedInput({ ...selection, id: steerId, action: "steer" });
@@ -1076,7 +1076,7 @@ test("queued inputs can be steered, removed, edited with attachments, and reorde
     assert.deepEqual(updated.queued?.map(item => [item.id, item.delivery]), [
       [steerId, "steer"], [moveId, "follow-up"], [editId, "follow-up"],
     ]);
-    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: editedText, hasImages: true });
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: editId }), { text: editedText, images: [image] });
     await assert.rejects(runtime.readQueuedInput({ ...selection, id: removeId }), /no longer in the queue/);
 
     release.resolve();
@@ -1116,7 +1116,7 @@ test("an idle conversation accepts a late follow-up but cannot steer retained in
     assert.ok(queuedId);
     assert.equal(failed.canSteerQueued, undefined);
     await assert.rejects(runtime.updateQueuedInput({ ...selection, id: queuedId, action: "steer" }), /no current task/);
-    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: queuedId }), { text: followUp.text, hasImages: false });
+    assert.deepEqual(await runtime.readQueuedInput({ ...selection, id: queuedId }), { text: followUp.text, images: [] });
     await runtime.updateQueuedInput({ ...selection, id: queuedId, action: "remove" });
 
     faux.setResponses([fauxAssistantMessage("Late follow-up finished.")]);

@@ -10,6 +10,8 @@ import { validPayload } from "../src/main/validation";
 import { fauxRuntime, toolResponse, waitForView } from "./support/faux-runtime";
 
 const textIn = (view: ChatView, text: string) => view.messages.some(message => message.blocks.some(block => block.type === "text" && block.text === text));
+const image = { mimeType: "image/png" as const,
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRckAAAAASUVORK5CYII=" };
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "pideck-queue-edit-"));
@@ -43,8 +45,7 @@ test("editing a follow-up preserves its native suffix while the current run and 
     await f.runtime.send(main);
     await started.promise;
     const prefix = { ...f.input("Earlier input"), delivery: "follow-up" as const };
-    const target = { ...f.input("Original text"), delivery: "follow-up" as const, images: [{ mimeType: "image/png" as const,
-      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRckAAAAASUVORK5CYII=" }] };
+    const target = { ...f.input("Original text"), delivery: "follow-up" as const, images: [image] };
     const tail = { ...f.input("Later input"), delivery: "follow-up" as const };
     for (const input of [prefix, target, tail]) await f.runtime.send(input);
     const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 3);
@@ -52,12 +53,12 @@ test("editing a follow-up preserves its native suffix while the current run and 
     const edit: QueueEditRef = { ...f.selection, id, token: randomUUID() };
     const snapshots: ChatView[] = [];
     const observer = await f.runtime.watch(f.selection, view => snapshots.push(view));
-    assert.deepEqual(await f.runtime.startQueueEdit(edit, owner), { token: edit.token, text: target.text, hasImages: true });
+    assert.deepEqual(await f.runtime.startQueueEdit(edit, owner), { token: edit.token, text: target.text, images: target.images });
     observer.dispose();
     assert.ok(snapshots.length >= 2);
     assert.ok(snapshots.every(view => view.queued?.some(item => item.id === id)), "One atomic claim must not transiently hide the edited input.");
     assert.deepEqual(await f.runtime.startQueueEdit({ ...edit, token: randomUUID() }, owner),
-      { token: edit.token, text: target.text, hasImages: true }, "A lost start acknowledgement recovers the existing token.");
+      { token: edit.token, text: target.text, images: target.images }, "A lost start acknowledgement recovers the existing token.");
     await assert.rejects(f.runtime.startQueueEdit(edit, owner + 1), /already being edited/);
     await assert.rejects(f.runtime.updateQueuedInput({ ...f.selection, id, action: "remove" }), /Finish editing/);
     release.resolve();
@@ -84,6 +85,32 @@ test("editing a follow-up preserves its native suffix while the current run and 
       [{ type: "text", text: "Saved text" }, { type: "image", ...target.images[0] }]);
     assert.equal(completed.queued, undefined);
     await assert.rejects(f.runtime.startQueueEdit({ ...edit, token: randomUUID() }, owner), /no longer in the queue/);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test("an image-only queue edit returns every attachment and permits saving without text", async () => {
+  const f = await fixture();
+  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  try {
+    f.faux.setResponses([
+      async () => { started.resolve(); await release.promise; return fauxAssistantMessage("Main finished."); },
+      fauxAssistantMessage("Images received."),
+    ]);
+    await f.runtime.send(f.input("Current work")); await started.promise;
+    const target = { ...f.input(""), delivery: "follow-up" as const, images: [image, image] };
+    await f.runtime.send(target);
+    const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 1);
+    const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
+    const content = { text: "", images: target.images };
+    assert.deepEqual(await f.runtime.readQueuedInput(edit), content);
+    assert.deepEqual(await f.runtime.startQueueEdit(edit, 1), { token: edit.token, ...content });
+    assert.deepEqual(await f.runtime.readQueuedInput(edit), content, "Parking an edit keeps its full attachments readable.");
+    await f.runtime.finishQueueEdit({ ...edit, text: "" }, 1);
+    release.resolve();
+    const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Images received."));
+    assert.deepEqual(done.messages.find(message => message.requestId === target.requestId)?.blocks,
+      target.images.map(image => ({ type: "image", ...image })));
   } finally { release.resolve(); await f.close(); }
 });
 
@@ -206,7 +233,7 @@ for (const action of ["cancel", "owner-close"] as const) {
         await assert.rejects(f.runtime.finishQueueEdit(edit, 4), /window has closed/);
         await assert.rejects(f.runtime.startQueueEdit({ ...edit, id: queued.queued![1].id }, 5), /already being edited/);
         const freshClaim = { ...edit, token: randomUUID() };
-        assert.deepEqual(await f.runtime.startQueueEdit(freshClaim, 5), { token: edit.token, text: target.text, hasImages: false },
+        assert.deepEqual(await f.runtime.startQueueEdit(freshClaim, 5), { token: edit.token, text: target.text, images: [] },
           'An explicit edit action can recover a detached queue item even if the previous window draft was lost.');
         await assert.rejects(f.runtime.finishQueueEdit(freshClaim, 5), /no longer active/);
         await assert.rejects(f.runtime.startQueueEdit(edit, 6), /already being edited/);
@@ -288,7 +315,7 @@ for (const mode of ["host", "application", "closed-window", "shutdown"] as const
     try {
       f.faux.setResponses([async () => { started.resolve(); await release.promise; return fauxAssistantMessage("Main finished."); }]);
       const main = f.input("Current work");
-      const target = { ...f.input("Original after recovery"), delivery: "follow-up" as const };
+      const target = { ...f.input("Original after recovery"), delivery: "follow-up" as const, images: [image] };
       const tail = { ...f.input("Tail after recovery"), delivery: "follow-up" as const };
       await f.runtime.send(main); await started.promise;
       await f.runtime.send(target); await f.runtime.send(tail);
@@ -313,14 +340,16 @@ for (const mode of ["host", "application", "closed-window", "shutdown"] as const
         await assert.rejects(f.runtime.finishQueueEdit({ ...freshClaim, text: "New request token is not the edit token" }, nextOwner), /no longer active/);
         await assert.rejects(f.runtime.startQueueEdit(edit, nextOwner + 1), /already being edited/);
       }
-      assert.equal((await f.runtime.startQueueEdit(edit, nextOwner)).token, edit.token);
+      assert.deepEqual(await f.runtime.startQueueEdit(edit, nextOwner), { token: edit.token, text: target.text, images: target.images },
+        "Reclaiming an edit returns its images, not just its persisted text and token.");
       const save = mode !== "application";
       await f.runtime.finishQueueEdit({ ...edit, ...(save ? { text: "Saved after recovery" } : {}) }, nextOwner);
       const done = await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "Recovered tail finished."));
       assert.equal(done.messages.filter(message => message.requestId === target.requestId).length, 1);
       assert.deepEqual(done.messages.filter(message => message.role === "user").map(message => message.requestId),
         [main.requestId, target.requestId, tail.requestId]);
-      assert.ok(textIn(done, save ? "Saved after recovery" : target.text));
+      assert.deepEqual(done.messages.find(message => message.requestId === target.requestId)?.blocks,
+        [{ type: "text", text: save ? "Saved after recovery" : target.text }, { type: "image", ...image }]);
       assert.equal(done.queued, undefined);
       if (!sameLifetime) await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Old owner must not change it" }, 3), /no longer active|window has closed/);
     } finally { release.resolve(); await f.close(); }

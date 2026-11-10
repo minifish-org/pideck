@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ChatBlock, ChatGap, ChatMessage, ChatView, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, Commands, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
 import { ImagePreview } from './ImagePreview';
 import { MessageFooter } from './MessageFooter';
@@ -290,7 +290,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const [historyError, setHistoryError] = useState<string>();
   const [forking, setForking] = useState(false);
   const [queueSaving, setQueueSaving] = useState(false);
-  const [queueReady, setQueueReady] = useState<string>();
+  // Queue images remain in Durable, not the persisted ordinary draft. Reload
+  // them with the edit lease on session switches, reopening and watch recovery.
+  const [queueContent, setQueueContent] = useState<Commands['chat:queue-edit-start'][1]>();
+  const queueReady = queueContent?.token;
   const [queueRetry, setQueueRetry] = useState(0);
   const queueClaim = useRef<string | undefined>(undefined);
   const [toolDisclosure, setToolDisclosure] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -370,7 +373,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
 
   useEffect(() => {
     if (!queueEdit || !session || !watchConnected) {
-      setQueueReady(undefined);
+      setQueueContent(undefined);
       queueClaim.current = undefined;
       return;
     }
@@ -378,17 +381,19 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     const claim = `${watchId}/${edit.token}`;
     if (queueClaim.current === claim) return;
     let active = true;
-    setQueueReady(undefined);
+    setQueueContent(undefined);
     void window.pideck.invoke('chat:queue-edit-start', {
       projectId: project.id, sessionId: session.id, id: edit.id, token: edit.token,
-    }).then(({ token, text, hasImages }) => {
+    }).then(content => {
       if (!active) return;
+      const { token, text, images } = content;
+      const hasImages = images.length > 0;
       queueClaim.current = `${watchId}/${token}`;
-      setQueueReady(token);
+      setQueueContent(content);
       updateDraft(current => current.queueEdit?.token === edit.token
         ? { ...current, error: undefined, queueEdit: current.queueEdit.loading
           ? { id: edit.id, token, text, original: text, hasImages }
-          : { ...current.queueEdit, token } } : current);
+          : { ...current.queueEdit, token, hasImages } } : current);
     }, cause => {
       if (active) updateDraft(current => current.queueEdit?.token === edit.token
         ? { ...current, error: readableError(cause) } : current);
@@ -398,7 +403,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
 
   function editQueuedMessage(id: number) {
     queueClaim.current = undefined;
-    setQueueReady(undefined);
+    setQueueContent(undefined);
     // App persists this intent in its layout effect before the lease effect runs.
     // A close or lost reply can then reconnect the exact reservation on reopening.
     updateDraft(current => current.queueEdit ? current : { ...current,
@@ -677,6 +682,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
     : progress?.label ?? (runOutcome?.kind === 'cancelled' ? 'Cancelled' : runOutcome?.message ?? view?.error
       ?? (view?.canContinue ? 'Ready to continue' : undefined)));
   const runDetail = progress?.label === runStatus ? progress?.detail : undefined;
+  const composerImages = queueEdit ? (queueContent?.token === queueEdit.token ? queueContent.images : []) : attachments;
   const queuedCount = view?.queued?.length ?? 0;
   const cancelScope = queuedCount ? `Cancel also withdraws ${queuedCount} queued message${queuedCount === 1 ? '' : 's'}.` : undefined;
   const controlIsContinue = continuing || !busy && !agentCompacting && !stopping && Boolean(view?.canContinue);
@@ -803,14 +809,15 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             }}><Icon name={controlIsContinue ? 'play' : 'stop'} /></button>}
         </div>}
         <form className="composer" ref={form} onSubmit={(event) => { event.preventDefault(); void (queueEdit ? saveQueueEdit() : send()); }}>
-          {!queueEdit && attachments.length > 0 && <div className="attachments">
-            {attachments.map((attachment, index) => (
-              <div className="attachment" key={index}>
-                <ImageBlock image={attachment} alt={`Attached image ${index + 1}`} thumbnail />
-                <button className="icon-button attachment-remove" type="button" aria-label={`Remove attached image ${index + 1}`}
+          {composerImages.length > 0 && <div className="attachments" role="group"
+            aria-label={queueEdit ? 'Queued message attachments' : 'Message attachments'}>
+            {composerImages.map((image, index) => (
+              <div className="attachment" key={`${queueEdit?.token ?? 'draft'}/${index}`}>
+                <ImageBlock image={image} alt={`Attached image ${index + 1}`} thumbnail />
+                {!queueEdit && <button className="icon-button attachment-remove" type="button" aria-label={`Remove attached image ${index + 1}`}
                   title="Remove image"
                   disabled={draft.sending || draft.reading}
-                  onClick={() => { void removeFile(attachment); }}><Icon name="close" width={13} height={13} /></button>
+                  onClick={() => { void removeFile(attachments[index]); }}><Icon name="close" width={13} height={13} /></button>}
               </div>
             ))}
           </div>}

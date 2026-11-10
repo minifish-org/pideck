@@ -138,6 +138,16 @@ async function waitForQueuedEditor(page, text) {
   }, text);
 }
 
+const queuedImageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const queuedImageSource = `data:image/png;base64,${queuedImageData}`;
+async function expectQueuedImage(page) {
+  const attachments = page.getByRole("group", { name: "Queued message attachments", exact: true });
+  const image = attachments.getByRole("img", { name: "Attached image 1", exact: true });
+  await image.waitFor();
+  assert.equal(await image.getAttribute("src"), queuedImageSource);
+  assert.equal(await attachments.getByRole("button", { name: /Remove attached image/ }).count(), 0);
+}
+
 async function verifyAppearanceMenu(app, page) {
   const initial = await page.evaluate(() => window.pideck.invoke("appearance:get"));
   assert.equal(initial.preference, "system", "A fresh profile should follow the system.");
@@ -1473,6 +1483,11 @@ try {
     await modelServer.waitForGate(marker);
     for (const text of [original, following]) {
       await closePrompt.fill(text);
+      if (text === original) {
+        await targetPage.locator('input[type="file"]').setInputFiles({ name: "queued.png", mimeType: "image/png",
+          buffer: Buffer.from(queuedImageData, "base64") });
+        await targetPage.getByRole("button", { name: "Preview attached image 1", exact: true }).waitFor();
+      }
       await closePrompt.press("Enter");
       await closeQueue.getByText(text, { exact: true }).waitFor();
     }
@@ -1480,7 +1495,15 @@ try {
     await closeQueue.getByRole("listitem").filter({ hasText: original })
       .getByRole("button", { name: "Edit message", exact: true }).click();
     await waitForQueuedEditor(targetPage, original);
+    await expectQueuedImage(targetPage);
+    await targetPage.getByRole("button", { name: "Preview attached image 1", exact: true }).click();
+    const imagePreview = targetPage.getByRole("dialog", { name: "Image preview", exact: true });
+    await imagePreview.waitFor();
+    assert.equal(await imagePreview.locator("img").getAttribute("src"), queuedImageSource);
+    await targetPage.keyboard.press("Escape");
+    await imagePreview.waitFor({ state: "detached" });
     await targetPage.getByRole("textbox", { name: "Edit queued message", exact: true }).fill(revised);
+    await targetPage.screenshot({ path: `output/playwright/packaged-queue-image-${name.toLowerCase()}.png` });
     const ids = await closeQueue.getByRole("listitem").evaluateAll(rows => rows.map(row => row.dataset.queueId));
     modelServer.releaseGate(marker);
     await targetPage.getByText(`${marker}: current run finished.`, { exact: true }).waitFor();
@@ -1491,6 +1514,7 @@ try {
   async function expectDetachedQueueHold(targetPage, held) {
     const editor = targetPage.getByRole("textbox", { name: "Edit queued message", exact: true });
     await waitForQueuedEditor(targetPage, held.revised);
+    await expectQueuedImage(targetPage);
     assert.equal(await editor.inputValue(), held.revised, "The reopened window must preserve the unsaved editor text.");
     const queue = targetPage.getByRole("list", { name: "Queued messages" });
     await queue.getByRole("status", { name: "Editing queued message", exact: true }).waitFor();
@@ -1514,6 +1538,11 @@ try {
     const omitted = save ? held.original : held.revised;
     assert.ok(messages.some(text => text.includes(chosen)) && messages.some(text => text.includes(held.following)));
     assert.ok(messages.every(text => !text.includes(omitted)));
+    const submitted = targetPage.getByRole("article", { name: "You", exact: true }).filter({ hasText: chosen });
+    assert.equal(await submitted.locator("img").getAttribute("src"), queuedImageSource);
+    const request = modelServer.requests.slice(held.requestStart).find(request => lastProviderInput(request) === chosen);
+    assert.equal(request.input.findLast(item => item.role === "user").content.filter(block => block.type === "input_image").length, 1,
+      "The model must receive the original queue image exactly once after save or cancel.");
   }
   if (process.platform === "darwin") {
     const closedHold = await beginDetachedQueueHold(restoredPage, "CLOSE");

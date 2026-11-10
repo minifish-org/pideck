@@ -3,7 +3,7 @@ import {
   type InboxItem, type InputSubmissionDraft, type LiveState, type SubmissionId, type Tx,
 } from "@earendil-works/pi-durable";
 import { copyJson } from "@earendil-works/chord";
-import type { QueueUpdate } from "../shared/api.js";
+import type { QueuedInputContent, QueueUpdate } from "../shared/api.js";
 
 type EditIdentity = { id: number; token: string; owner: number; lifetimeId: string };
 export type QueueEditState = {
@@ -31,10 +31,10 @@ function matches(left: EditIdentity | undefined, right: EditIdentity) {
   return left?.id === right.id && left.token === right.token && left.owner === right.owner && left.lifetimeId === right.lifetimeId;
 }
 
-function content(item: Exclude<InboxItem, { mode: "write" }>) {
-  if (typeof item.content === "string") return { text: item.content, hasImages: false };
+function content(item: Exclude<InboxItem, { mode: "write" }>): QueuedInputContent {
+  if (typeof item.content === "string") return { text: item.content, images: [] };
   return { text: item.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n"),
-    hasImages: item.content.some(block => block.type === "image") };
+    images: item.content.flatMap(block => block.type === "image" ? [{ mimeType: block.mimeType, data: block.data }] : []) };
 }
 
 function editText(item: Exclude<InboxItem, { mode: "write" }>, text: string) {

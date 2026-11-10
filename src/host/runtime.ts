@@ -413,7 +413,7 @@ export class Runtime {
     return this.metadata.finishSessionStart(requestId);
   }
 
-  readQueuedInput(selection: QueuedInputRef): Promise<{ text: string; hasImages: boolean }> {
+  readQueuedInput(selection: QueuedInputRef): Promise<Commands["chat:queue-read"][1]> {
     return this.admit(async () => {
       this.requireProject(selection.projectId);
       const conversation = await this.conversation(selection);

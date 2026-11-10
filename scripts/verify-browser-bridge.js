@@ -4,7 +4,6 @@ async page => {
     const listeners = new Set();
     const watches = new Map();
     const activity = new Map();
-    const queuedTexts = new Map();
     const reviewWatches = new Map();
     const terminalInputs = new Map();
     let activityWatch;
@@ -45,6 +44,7 @@ async page => {
       ?? { opened: false, configured: false, sessions: [], views: {}, parents: {} };
     state.untitled ??= {};
     state.queueHolds ??= {};
+    state.queuedInputs ??= {};
     state.draftImages ??= {};
     state.appearance ??= "dark";
     const systemAppearance = matchMedia("(prefers-color-scheme: dark)");
@@ -61,7 +61,7 @@ async page => {
     for (const [sessionId, view] of Object.entries(state.views)) {
       for (const item of view.queued ?? []) {
         nextQueueId = Math.max(nextQueueId, item.id);
-        queuedTexts.set(item.id, item.preview);
+        state.queuedInputs[item.id] ??= { text: item.preview, images: [] };
       }
       for (const message of view.messages) nextFixtureEntryId = Math.max(nextFixtureEntryId, message.entryId ?? 0);
       if (view.status === "running") {
@@ -121,12 +121,13 @@ async page => {
       if (hold && stop < 0) throw new Error("An edit hold lost its queued input.");
       if (!stop) return;
       const ready = queued.slice(0, stop);
-      const placed = ready.map(item => ({
-        id: `queued-${item.id}`, entryId: ++nextFixtureEntryId, requestId: item.requestId,
-        role: "user", timestamp: messageTime + nextFixtureEntryId * 100,
-        blocks: [{ type: "text", text: queuedTexts.get(item.id) ?? item.preview }],
-      }));
-      for (const item of ready) queuedTexts.delete(item.id);
+      const placed = ready.map(item => {
+        const { text, images } = state.queuedInputs[item.id];
+        return { id: `queued-${item.id}`, entryId: ++nextFixtureEntryId, requestId: item.requestId,
+          role: "user", timestamp: messageTime + nextFixtureEntryId * 100,
+          blocks: [...(text ? [{ type: "text", text }] : []), ...images.map(image => ({ type: "image", ...image }))] };
+      });
+      for (const item of ready) delete state.queuedInputs[item.id];
       change(sessionId, { messages: [...view.messages, ...placed, {
         id: `queued-answer-${nextFixtureEntryId}`, entryId: ++nextFixtureEntryId, role: "assistant", completed: true,
         timestamp: messageTime + nextFixtureEntryId * 100, blocks: [{ type: "text", text: "Queued work finished." }],
@@ -211,7 +212,7 @@ async page => {
     function deleteSessions(sessionIds) {
       state.sessions = state.sessions.filter(({ id }) => !sessionIds.includes(id));
       for (const id of sessionIds) {
-        for (const item of state.views[id]?.queued ?? []) queuedTexts.delete(item.id);
+        for (const item of state.views[id]?.queued ?? []) delete state.queuedInputs[item.id];
         delete state.views[id];
         delete state.queueHolds[id];
         delete state.parents[id];
@@ -488,8 +489,8 @@ async page => {
             }
             if (payload.delivery !== "follow-up") throw new Error("The composer must queue follow-up messages.");
             const id = ++nextQueueId;
-            queuedTexts.set(id, payload.text);
-            const queued = [...(view.queued ?? []), { id, requestId: payload.requestId, delivery: "follow-up", preview: payload.text }];
+            state.queuedInputs[id] = { text: payload.text, images: payload.images ?? [] };
+            const queued = [...(view.queued ?? []), { id, requestId: payload.requestId, delivery: "follow-up", preview: payload.text || "Attached image" }];
             change(sessionId, { queued, canSteerQueued: true });
             return;
           }
@@ -517,7 +518,7 @@ async page => {
             const withdrawn = view.queued?.length ?? 0;
             change(payload.sessionId, { status: "cancelling" });
             await new Promise(resolve => setTimeout(resolve, 30));
-            for (const item of view.queued ?? []) queuedTexts.delete(item.id);
+            for (const item of view.queued ?? []) delete state.queuedInputs[item.id];
             change(payload.sessionId, { status: "idle", messages: view.messages.map(message => ({ ...message,
               blocks: message.blocks.map(block => block.taskId === undefined ? block : { ...block, taskId: undefined,
                 cancelling: undefined, cancelled: true, status: "error", output: "The run was cancelled." }),
@@ -544,7 +545,7 @@ async page => {
           case "chat:queue-read": {
             const item = state.views[payload.sessionId]?.queued?.find(({ id }) => id === payload.id);
             if (!item || payload.projectId !== project.id) throw new Error("The message is no longer queued.");
-            return { text: queuedTexts.get(item.id), hasImages: false };
+            return state.queuedInputs[item.id];
           }
           case "chat:queue-edit-start": {
             const view = state.views[payload.sessionId];
@@ -559,7 +560,7 @@ async page => {
               sessionStorage.removeItem("pideck-fail-edit-start");
               throw new Error("The fixture lost the queue edit acknowledgement.");
             }
-            return { token, text: queuedTexts.get(item.id) ?? item.preview, hasImages: false };
+            return { token, ...state.queuedInputs[item.id] };
           }
           case "chat:queue-edit-finish": {
             const view = state.views[payload.sessionId];
@@ -568,12 +569,12 @@ async page => {
               throw new Error("The queue edit is no longer active.");
             }
             if (payload.text !== undefined) {
-              if (!payload.text.trim()) throw new Error("Enter a message.");
-              queuedTexts.set(payload.id, payload.text);
+              if (!payload.text.trim() && !state.queuedInputs[payload.id].images.length) throw new Error("Enter a message.");
+              state.queuedInputs[payload.id].text = payload.text;
             }
             delete state.queueHolds[payload.sessionId];
             change(payload.sessionId, { queued: view.queued.map(item => item.id === payload.id
-              ? { ...item, preview: payload.text ?? item.preview, editing: undefined } : item) });
+              ? { ...item, preview: state.queuedInputs[item.id].text || "Attached image", editing: undefined } : item) });
             drainIdleQueue(payload.sessionId);
             return;
           }
@@ -587,11 +588,11 @@ async page => {
             const [item] = queued.splice(index, 1);
             switch (action) {
               case "remove":
-                queuedTexts.delete(item.id);
+                delete state.queuedInputs[item.id];
                 break;
               case "edit":
-                queuedTexts.set(item.id, payload.text);
-                queued.splice(index, 0, { ...item, preview: payload.text });
+                state.queuedInputs[item.id].text = payload.text;
+                queued.splice(index, 0, { ...item, preview: payload.text || "Attached image" });
                 break;
               case "move": {
                 const target = queued.findIndex(({ id }) => id === payload.targetId);
@@ -609,7 +610,7 @@ async page => {
             change(sessionId, { queued });
             if (action === "steer") {
               if (controlsBase) return;
-              const result = queued.map(({ delivery, id }) => [delivery, queuedTexts.get(id)]);
+              const result = queued.map(({ delivery, id }) => [delivery, state.queuedInputs[id].text]);
               if (JSON.stringify(result) !== JSON.stringify([
                 ["steer", "Prefer a focused check."],
                 ["follow-up", "List follow-up work."],
@@ -623,7 +624,7 @@ async page => {
                   { type: "tool", name: "bash", id: "bash", status: "done", output: "Checks passed.", arguments: { command: "npm test" } },
                   { type: "tool", name: "bash", id: "failed-bash", status: "error", output: "Lint reported an error.", arguments: { command: "npm run lint" } },
                 ] };
-                for (const { id } of queued) queuedTexts.delete(id);
+                for (const { id } of queued) delete state.queuedInputs[id];
                 const progress = [
                   { id: "inspection", entryId: 3, role: "assistant", timestamp: messageTime + 1_000, blocks: [
                     { type: "text", text: "Inspecting the project before making the change." },
