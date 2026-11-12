@@ -13,12 +13,11 @@ struct UpdaterEvent {
   std::string message;
   std::string domain;
   int64_t code = 0;
-  bool canCheck = false;
 };
 
 static napi_threadsafe_function events = nullptr;
-static SPUStandardUpdaterController *controller = nil;
-static void *canCheckObservation = &canCheckObservation;
+static SPUUpdater *updater = nil;
+static void *menuObservation = &menuObservation;
 
 static void Emit(UpdaterEvent event) {
   if (events == nullptr) return;
@@ -26,15 +25,55 @@ static void Emit(UpdaterEvent event) {
   if (napi_call_threadsafe_function(events, payload.get(), napi_tsfn_nonblocking) == napi_ok) payload.release();
 }
 
-@interface PideckUpdaterDelegate : NSObject <SPUUpdaterDelegate>
+@interface PideckUpdateUserDriver : SPUStandardUserDriver
+@property(nonatomic, copy) void (^cancelCheck)(void);
+@end
+
+@implementation PideckUpdateUserDriver
+- (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellation {
+  // Keep the check in the application menu. Sparkle still presents its
+  // standard result and installation UI once the check finishes.
+  self.cancelCheck = cancellation;
+  Emit({.type = "menu-changed"});
+}
+
+- (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item
+    state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
+  self.cancelCheck = nil;
+  [super showUpdateFoundWithAppcastItem:item state:state reply:reply];
+  Emit({.type = "menu-changed"});
+}
+
+- (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+  self.cancelCheck = nil;
+  [super showUpdateNotFoundWithError:error acknowledgement:acknowledgement];
+}
+
+- (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+  self.cancelCheck = nil;
+  [super showUpdaterError:error acknowledgement:acknowledgement];
+}
+
+- (void)dismissUpdateInstallation {
+  self.cancelCheck = nil;
+  [super dismissUpdateInstallation];
+  Emit({.type = "menu-changed"});
+}
+@end
+
+static PideckUpdateUserDriver *userDriver = nil;
+
+@interface PideckUpdaterDelegate : NSObject <SPUUpdaterDelegate, SPUStandardUserDriverDelegate>
 @property(nonatomic, copy) void (^pendingInstall)(void);
 @property(nonatomic) BOOL observing;
+@property(nonatomic) BOOL showingModalAlert;
 @end
 
 static PideckUpdaterDelegate *updaterDelegate = nil;
 
 static bool CanCheck() {
-  return controller != nil && updaterDelegate.pendingInstall == nil && controller.updater.canCheckForUpdates;
+  return updater != nil && updaterDelegate.pendingInstall == nil && !updaterDelegate.showingModalAlert
+    && updater.canCheckForUpdates;
 }
 
 @implementation PideckUpdaterDelegate
@@ -50,7 +89,6 @@ static bool CanCheck() {
   // Electron main asks its existing quit guard, then closes the trusted host
   // before resuming this one-shot native installation. No shell replacement.
   self.pendingInstall = installHandler;
-  Emit({.type = "can-check-changed", .canCheck = false});
   Emit({.type = "install-requested"});
   return YES;
 }
@@ -59,13 +97,22 @@ static bool CanCheck() {
   self.pendingInstall = nil;
   Emit({.type = "aborted", .message = error.localizedDescription.UTF8String ?: "Update check failed.",
     .domain = error.domain.UTF8String ?: "", .code = error.code});
-  Emit({.type = "can-check-changed", .canCheck = CanCheck()});
+}
+
+- (void)standardUserDriverWillShowModalAlert {
+  self.showingModalAlert = YES;
+  Emit({.type = "menu-changed"});
+}
+
+- (void)standardUserDriverDidShowModalAlert {
+  self.showingModalAlert = NO;
+  Emit({.type = "menu-changed"});
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
     change:(NSDictionary<NSKeyValueChangeKey, id> *)change context:(void *)context {
-  if (context == canCheckObservation) {
-    Emit({.type = "can-check-changed", .canCheck = CanCheck()});
+  if (context == menuObservation) {
+    Emit({.type = "menu-changed"});
   } else {
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
   }
@@ -104,9 +151,7 @@ static void CallJS(napi_env env, napi_value callback, void *context, void *data)
   napi_value object;
   if (napi_create_object(env, &object) != napi_ok) return;
   SetString(env, object, "type", event->type);
-  if (event->type == "can-check-changed") {
-    napi_set_named_property(env, object, "canCheck", BooleanValue(env, event->canCheck));
-  } else if (event->type == "aborted") {
+  if (event->type == "aborted") {
     SetString(env, object, "message", event->message);
     SetString(env, object, "domain", event->domain);
     napi_value code;
@@ -121,11 +166,14 @@ static void CallJS(napi_env env, napi_value callback, void *context, void *data)
 
 static void DisposeBridge() {
   if (updaterDelegate.observing) {
-    [controller.updater removeObserver:updaterDelegate forKeyPath:@"canCheckForUpdates" context:canCheckObservation];
+    [updater removeObserver:updaterDelegate forKeyPath:@"canCheckForUpdates" context:menuObservation];
+    [updater removeObserver:updaterDelegate forKeyPath:@"sessionInProgress" context:menuObservation];
     updaterDelegate.observing = NO;
   }
   updaterDelegate.pendingInstall = nil;
-  controller = nil;
+  userDriver.cancelCheck = nil;
+  updater = nil;
+  userDriver = nil;
   updaterDelegate = nil;
   if (events != nullptr) {
     napi_release_threadsafe_function(events, napi_tsfn_abort);
@@ -167,7 +215,7 @@ static bool ValidConfiguration(napi_env env) {
 static napi_value Start(napi_env env, napi_callback_info info) {
   if (!MainThread(env)) return nullptr;
   @autoreleasepool {
-    if (controller != nil || events != nullptr) {
+    if (updater != nil || events != nullptr) {
       napi_throw_error(env, nullptr, "The native updater has already started.");
       return nullptr;
     }
@@ -189,14 +237,16 @@ static napi_value Start(napi_env env, napi_callback_info info) {
       return nullptr;
     }
     napi_unref_threadsafe_function(env, events);
+    NSBundle *bundle = NSBundle.mainBundle;
     updaterDelegate = [[PideckUpdaterDelegate alloc] init];
-    controller = [[SPUStandardUpdaterController alloc] initWithStartingUpdater:NO
-      updaterDelegate:updaterDelegate userDriverDelegate:nil];
-    [controller.updater addObserver:updaterDelegate forKeyPath:@"canCheckForUpdates"
-      options:NSKeyValueObservingOptionNew context:canCheckObservation];
+    userDriver = [[PideckUpdateUserDriver alloc] initWithHostBundle:bundle delegate:updaterDelegate];
+    updater = [[SPUUpdater alloc] initWithHostBundle:bundle applicationBundle:bundle
+      userDriver:userDriver delegate:updaterDelegate];
+    [updater addObserver:updaterDelegate forKeyPath:@"canCheckForUpdates" options:0 context:menuObservation];
+    [updater addObserver:updaterDelegate forKeyPath:@"sessionInProgress" options:0 context:menuObservation];
     updaterDelegate.observing = YES;
     NSError *error = nil;
-    if (![controller.updater startUpdater:&error]) {
+    if (![updater startUpdater:&error]) {
       std::string message = error.localizedDescription.UTF8String ?: "Could not start the native updater.";
       DisposeBridge();
       napi_throw_error(env, nullptr, message.c_str());
@@ -210,9 +260,30 @@ static napi_value Check(napi_env env, napi_callback_info info) {
   if (!MainThread(env)) return nullptr;
   @autoreleasepool {
     if (!CanCheck()) return BooleanValue(env, false);
-    [controller checkForUpdates:nil];
+    [updater checkForUpdates];
     return BooleanValue(env, true);
   }
+}
+
+static napi_value CancelCheck(napi_env env, napi_callback_info info) {
+  if (!MainThread(env)) return nullptr;
+  @autoreleasepool {
+    void (^cancel)(void) = userDriver.cancelCheck;
+    if (cancel == nil) return BooleanValue(env, false);
+    userDriver.cancelCheck = nil;
+    cancel();
+    Emit({.type = "menu-changed"});
+    return BooleanValue(env, true);
+  }
+}
+
+static napi_value Status(napi_env env, napi_callback_info info) {
+  if (!MainThread(env)) return nullptr;
+  const char *status = userDriver.cancelCheck != nil ? "checking" :
+    !CanCheck() ? "busy" : updater.sessionInProgress ? "showing" : "idle";
+  napi_value result;
+  if (napi_create_string_utf8(env, status, NAPI_AUTO_LENGTH, &result) != napi_ok) return nullptr;
+  return result;
 }
 
 static napi_value ResumeInstall(napi_env env, napi_callback_info info) {
@@ -242,6 +313,8 @@ static napi_value Initialize(napi_env env, napi_value exports) {
   const napi_property_descriptor methods[] = {
     {"start", nullptr, Start, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"check", nullptr, Check, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"cancelCheck", nullptr, CancelCheck, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"resumeInstall", nullptr, ResumeInstall, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"canCheck", nullptr, CanCheckValue, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dispose", nullptr, Dispose, nullptr, nullptr, nullptr, napi_default, nullptr},

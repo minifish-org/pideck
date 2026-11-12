@@ -94,7 +94,7 @@ export function installDesktopMenu(reopen: () => void, checkForUpdates: (window?
       separator,
       command("toggle-navigation", "Sidebar", "CommandOrControl+Shift+B", "checkbox"),
       command("toggle-review", "Changes", "CommandOrControl+Shift+D", "checkbox"),
-      command("toggle-terminal", "Terminal", "CommandOrControl+`", "checkbox"),
+      command("toggle-terminal", "Terminal", mac ? "Command+Shift+T" : "Control+`", "checkbox"),
       command("focus-composer", "Focus Message", "CommandOrControl+L"),
       separator,
       { id: "appearance", label: "Appearance", submenu: ([

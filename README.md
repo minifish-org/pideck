@@ -4,7 +4,7 @@ Pideck is an experimental desktop coding workspace. Each project opens in a loca
 
 ## Install and requirements
 
-Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.7 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
+Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.8 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
 
 Install Git and keep it on `PATH` for change review. Windows also needs [Git for Windows](https://gitforwindows.org/) with Git Bash for the agent's `bash` tool; PowerShell alone does not provide that tool. Packaged builds include their own Node.js, npm, npx, and Playwright CLI, so a separate Node.js installation is unnecessary for normal packaged use. The first browser task needs an internet connection to obtain Playwright's matching browser and FFmpeg directly from their upstream download services; later tasks reuse the application-data cache.
 
@@ -89,13 +89,13 @@ Packaged Pideck includes a fixed standalone Node.js runtime with npm and npx, th
 | Open model providers | ⌘/Ctrl+, |
 | Toggle navigation | ⌘/Ctrl+Shift+B |
 | Toggle review | ⌘/Ctrl+Shift+D |
-| Toggle terminal | ⌘/Ctrl+` |
+| Toggle terminal | ⌘+Shift+T on macOS, Ctrl+\` on Windows and Linux |
 | Focus prompt | ⌘/Ctrl+L |
 | Navigate sidebar rows | ↑/↓, then Enter to select |
 | Open a sidebar row's menu | Shift+F10 or the context-menu key |
 | Request removal of a sidebar row | Delete or Backspace while the row has focus |
 
-On macOS, **Check for Updates…** opens the native updater. It downloads and verifies a new version inside the app, then offers to install and relaunch. The same menu becomes **Restart and Update…** if you defer a restart while work is open. Restarting closes the workspace and terminal shells cleanly and preserves projects, sessions, drafts and held queue edits. There are no updater settings in the workspace. Background checks are enabled; downloads and restarts require your choice. Windows and Linux builds currently retain the release-page check.
+On macOS, **Check for Updates…** checks from the Pideck menu, where you can also cancel the check. The native updater displays the result. Choose **Show Software Update…** in the same menu to bring an open update window forward. The updater downloads and verifies the new version, then offers to install and relaunch. If you defer the restart while work is open, the menu becomes **Restart and Update…**. Restarting closes the workspace and terminal shells cleanly and preserves projects, sessions, drafts and held queue edits. Background checks are enabled, and downloads and restarts require your choice. Windows and Linux builds link to the release page when an update is available.
 
 The first updater-enabled macOS build must be installed once manually: v0.1.1 and earlier contain no installer. Later updater-enabled releases use Sparkle with a public update-verification key embedded in the app. Both the update feed and archives require Ed25519 signatures; invalid or unsigned updates fail closed. This supports the current ad-hoc application signature without bypassing system protections or obtaining an Apple certificate. This does not add Apple notarization or remove first-install restrictions.
 

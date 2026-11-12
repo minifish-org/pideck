@@ -71,8 +71,12 @@ let pendingUpdateInstall = false;
 function refreshUpdateMenu() {
   const item = Menu.getApplicationMenu()?.getMenuItemById("check-for-updates");
   if (!item || process.platform !== "darwin" || !app.isPackaged) return;
-  item.label = pendingUpdateInstall ? "Restart and Update…" : "Check for Updates…";
-  item.enabled = !exiting && !preparingUpdate && (pendingUpdateInstall || !macUpdater || macUpdater.canCheck());
+  const status = macUpdater?.status();
+  item.label = pendingUpdateInstall ? "Restart and Update…"
+    : status === "checking" ? "Cancel Update Check"
+    : status === "showing" ? "Show Software Update…"
+    : "Check for Updates…";
+  item.enabled = !exiting && !preparingUpdate && (pendingUpdateInstall || status !== "busy");
 }
 
 function nativeUpdateEvent(event: NativeUpdateEvent) {
@@ -186,6 +190,7 @@ function ownsFrame(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">, wi
 async function showUpdateCheck(window?: BrowserWindow) {
   if (process.platform === "darwin" && app.isPackaged) {
     if (pendingUpdateInstall) await updateInstallation?.request();
+    else if (macUpdater?.status() === "checking") macUpdater.cancelCheck();
     else if (macUpdater) macUpdater.check();
     else dialog.showErrorBox("Updates could not start", updaterStartupError instanceof Error
       ? updaterStartupError.message : "The installed updater is unavailable. Reinstall Pideck from its official release.");
@@ -549,6 +554,7 @@ async function initialize() {
         detail: "AI work and open terminal shells will stop. Your conversations, queued edits and drafts stay saved.",
         buttons: ["Keep Working", "Restart and Update"], defaultId: 0, cancelId: 0, noLink: true };
       const window = mainWindow;
+      if (window && !window.isDestroyed()) revealWindow();
       const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
       return result.response === 1;
     },

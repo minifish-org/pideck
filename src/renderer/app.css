@@ -4,8 +4,10 @@
   --terminal-bgColor: var(--bgColor-inset);
   --message-bgColor: var(--bgColor-emphasis);
   --navigation-bgColor-selected: var(--bgColor-emphasis);
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --focus-ring-color: var(--fgColor-muted);
+  --font: system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei UI', 'Noto Sans CJK SC', sans-serif;
+  --mono: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', ui-monospace, monospace;
+  --code-size: 13px;
   background: var(--bgColor-default);
   color: var(--fgColor-default);
   font: 14px/1.5 var(--font);
@@ -13,7 +15,7 @@
 :root[data-color-mode='dark'] {
   color-scheme: dark;
   /* Neutral surfaces: matching sidebars frame the near-black conversation.
-     Keep Primer's semantic accents for links, focus, status and code changes. */
+     Keep Primer's semantic accents for links, status and code changes. */
   --panel-bgColor: #222222;
   --terminal-bgColor: var(--panel-bgColor);
   --message-bgColor: var(--bgColor-muted);
@@ -92,9 +94,17 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button:disabled { cursor: default; opacity: .46; }
 button:not(:disabled), summary, select { cursor: pointer; }
-button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
-  outline: 2px solid var(--focus-outline-color);
-  outline-offset: 2px;
+:where(:focus-visible) {
+  outline: 1px solid var(--focus-ring-color);
+  outline-offset: -1px;
+}
+.button--primary:focus-visible {
+  outline-color: var(--button-primary-fgColor-rest);
+  outline-offset: -2px;
+}
+@media (forced-colors: active) {
+  :root { --focus-ring-color: Highlight; }
+  .button--primary:focus-visible { outline-color: Highlight; }
 }
 ::selection { background: var(--selection-bgColor); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -166,7 +176,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 }
 .app:not(.app--nav, .app--drawer) .titlebar-content { padding-left: 8px; }
 .titlebar button { -webkit-app-region: no-drag; }
-.wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; }
+.wordmark { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .wordmark svg { color: var(--fgColor-accent); }
 .title-context { display: flex; flex: 1; min-width: 0; align-items: center; }
 .workspace-title {
@@ -175,8 +185,8 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   line-height: 1.25;
 }
 .workspace-title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.workspace-title-project { color: var(--fgColor-muted); font-size: 11px; }
-.workspace-title-current { color: var(--fgColor-default); font-size: 14px; font-weight: 620; }
+.workspace-title-project { color: var(--fgColor-muted); font-size: 12px; }
+.workspace-title-current { color: var(--fgColor-default); font-size: 14px; font-weight: 600; }
 .title-panels { display: flex; align-items: center; gap: 4px; flex: none; }
 .icon-button {
   display: inline-flex;
@@ -211,12 +221,12 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 }
 .navigation-scrim { position: absolute; inset: 0; z-index: 4; background: var(--overlay-backdrop-bgColor); }
 .nav-header { display: flex; align-items: center; justify-content: space-between; flex: none; padding: 10px 12px 4px 17px; }
-.nav-header h2 { margin: 0; color: var(--fgColor-muted); font-size: 12px; font-weight: 630; }
+.nav-header h2 { margin: 0; color: var(--fgColor-muted); font-size: 12px; font-weight: 600; }
 .nav-header .icon-button { width: 28px; height: 28px; }
 .nav-scroll { overflow-y: auto; padding: 3px 10px 10px; flex: 1; min-height: 0; }
 .nav-tree, .nav-children { list-style: none; margin: 0; padding: 0; }
 .nav-project-node + .nav-project-node { margin-top: 5px; }
-.nav-project-row > .nav-row { padding-left: 29px; font-weight: 620; }
+.nav-project-row > .nav-row { padding-left: 29px; font-weight: 600; }
 .nav-project-row[data-active='true'] > .nav-row { color: var(--fgColor-default); }
 .nav-project-row .nav-disclosure {
   position: absolute; inset: 4px auto auto 1px; width: 25px; height: 28px;
@@ -300,13 +310,13 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
   background: var(--bgColor-accent-muted);
 }
 .hero-mark svg { width: 22px; height: 22px; }
-.empty-card h1 { margin: 0; font-size: clamp(22px, 2.6vw, 30px); line-height: 1.2; font-weight: 670; letter-spacing: -.035em; overflow-wrap: anywhere; }
+.empty-card h1 { margin: 0; font-size: clamp(22px, 2.6vw, 30px); line-height: 1.25; font-weight: 600; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .empty-card p { margin: 8px auto 0; max-width: 42ch; color: var(--fgColor-muted); }
 .empty-card .button { margin-top: 18px; min-height: 36px; padding-inline: 13px; }
 .button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   background: var(--button-default-bgColor-rest); border: 1px solid var(--button-default-borderColor-rest);
-  color: var(--button-default-fgColor-rest); border-radius: 7px; padding: 7px 11px; font-size: 13px; font-weight: 550;
+  color: var(--button-default-fgColor-rest); border-radius: 7px; padding: 7px 11px; font-size: 13px; font-weight: 500;
 }
 .button:hover:not(:disabled) { background: var(--button-default-bgColor-hover); }
 .button:active:not(:disabled) { background: var(--button-default-bgColor-active); }
@@ -341,7 +351,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 }
 .settings-dialog::backdrop { background: var(--overlay-backdrop-bgColor); }
 .dialog-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.dialog-heading h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.025em; }
+.dialog-heading h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.015em; }
 .settings-fields { display: grid; gap: 10px; }
 .settings-fields label { display: grid; gap: 4px; font-size: 12px; color: var(--fgColor-muted); }
 .settings-fields input, .settings-fields select {

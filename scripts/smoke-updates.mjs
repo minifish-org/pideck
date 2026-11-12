@@ -10,10 +10,10 @@ import { fileURLToPath } from "node:url";
 import * as asar from "@electron/asar";
 import { _electron } from "playwright";
 import { openSmokeProvider } from "./smoke-provider.mjs";
+import { prepareUpdaterTools } from "./update-assets.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = join(repository, "output", "auto-update");
-const toolkitDigest = "1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27";
 const versions = { installed: "99.0.0", update: "99.0.1" };
 const json = value => JSON.stringify(value, null, 2) + "\n";
 const exists = path => stat(path).then(() => true, () => false);
@@ -40,18 +40,6 @@ function ownProcesses(executable) {
     .map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
     .filter(([, , commandLine]) => commandLine === executable || commandLine.startsWith(executable + " "))
     .map(([, pid]) => Number(pid));
-}
-
-async function toolkit(directory) {
-  const archive = join(outputRoot, "sparkle-spike", "Sparkle-2.10.1.tar.xz");
-  assert.equal(createHash("sha256").update(await readFile(archive)).digest("hex"), toolkitDigest,
-    "The official Sparkle toolkit does not match its pinned GitHub asset digest.");
-  const kit = join(directory, "sparkle-kit");
-  await mkdir(kit);
-  command("/usr/bin/tar", ["-xJf", archive, "-C", kit]);
-  const signer = join(kit, "bin", "sign_update");
-  assert.ok(await exists(signer));
-  return signer;
 }
 
 async function unpackedManifest(root) {
@@ -249,6 +237,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
   let executable;
   let closed = false;
   let artifactsReady = false;
+  let feedGate;
   await writeFile(feedMode, json({ mode: "current" }));
   const server = createServer(async (request, response) => {
     try {
@@ -259,6 +248,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
       const row = { at: new Date().toISOString(), path: url.pathname, mode };
       requests.push(row);
       record("http-request", row);
+      if (url.pathname === "/feed.xml" && feedGate) await feedGate;
       let file;
       if (url.pathname === "/feed.xml" && artifactsReady) file = join(run, `feed-${mode}.xml`);
       else if (url.pathname === "/good.zip" && artifactsReady) file = join(run, "good.zip");
@@ -276,7 +266,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     feedMode, readiness, operations, lifecycle, versions, ...(seeded ? { seeded } : {}) });
   async function saveState() { await writeFile(readiness, json(publicState())); }
   try {
-    const signer = await toolkit(run);
+    const { signUpdate: signer } = await prepareUpdaterTools();
     const seed = randomBytes(32);
     const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]), format: "der", type: "pkcs8" });
     const publicKey = createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
@@ -370,6 +360,62 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
       await page.waitForFunction(appearance => document.documentElement.dataset.colorMode === appearance, appearance);
       await page.screenshot({ path: join(run, `${label}-${appearance}.png`) });
     }
+  }
+
+  async function verifyMenu() {
+    await launch();
+    const menuState = () => app.evaluate(({ BrowserWindow, Menu }) => {
+      const item = Menu.getApplicationMenu().getMenuItemById("check-for-updates");
+      return { label: item.label, enabled: item.enabled, workspaceFocused: BrowserWindow.getAllWindows()[0].isFocused() };
+    });
+    const focusWorkspace = () => app.evaluate(({ app, BrowserWindow }) => {
+      app.focus({ steal: true });
+      BrowserWindow.getAllWindows()[0].focus();
+    });
+    const clickUpdate = () => app.evaluate(({ BrowserWindow, Menu }) => {
+      const item = Menu.getApplicationMenu().getMenuItemById("check-for-updates");
+      if (!item.enabled) throw new Error("The update menu item is disabled.");
+      item.click({}, BrowserWindow.getAllWindows()[0]);
+    });
+    const feedRequests = () => requests.filter(request => request.path === "/feed.xml").length;
+    async function waitForMenu(label, workspaceFocused, minimumRequests = 0) {
+      const deadline = Date.now() + 15_000;
+      let state;
+      do {
+        state = await menuState();
+        if (state.enabled && state.label === label && state.workspaceFocused === workspaceFocused
+          && feedRequests() >= minimumRequests) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } while (Date.now() < deadline);
+      assert.deepEqual(state, { label, enabled: true, workspaceFocused });
+      assert.ok(feedRequests() >= minimumRequests, "The manual check did not reach the update feed.");
+    }
+
+    await focusWorkspace();
+    await waitForMenu("Check for Updates…", true);
+    await setFeedMode("good");
+    let releaseFeed;
+    feedGate = new Promise(resolve => { releaseFeed = resolve; });
+    try {
+      const count = feedRequests();
+      await clickUpdate();
+      await waitForMenu("Cancel Update Check", true, count + 1);
+      await clickUpdate();
+      await waitForMenu("Check for Updates…", true);
+    } finally {
+      feedGate = undefined;
+      releaseFeed();
+    }
+
+    await clickUpdate();
+    await waitForMenu("Show Software Update…", false);
+    const count = feedRequests();
+    await focusWorkspace();
+    await waitForMenu("Show Software Update…", true);
+    await clickUpdate();
+    await waitForMenu("Show Software Update…", false);
+    assert.equal(feedRequests(), count);
+    record("update-menu-verified");
   }
 
   async function launchAndSeed() {
@@ -508,7 +554,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     record("harness-closed", { removeProfile, remainingAppPids: ownProcesses(executable) });
   }
 
-  return { ...publicState(), launchAndSeed, reopenAndVerify, inspectInstallation, capture, setFeedMode, close,
+  return { ...publicState(), launchAndSeed, verifyMenu, reopenAndVerify, inspectInstallation, capture, setFeedMode, close,
     get app() { return app; }, get page() { return page; } };
 }
 
@@ -613,9 +659,18 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(json({ status: result.status, version: result.actual.version, screenshots: result.screenshots }));
     process.exit(0);
   }
-  assert.ok(["prepare", "launch"].includes(mode) && baseApp,
-    "Usage: node scripts/smoke-updates.mjs prepare|launch /absolute/path/Pideck.app\n       node scripts/smoke-updates.mjs verify /absolute/path/readiness.json\nprepare serves signed fixtures without starting an app; launch also seeds an isolated project and held queue.");
+  assert.ok(["prepare", "launch", "menu"].includes(mode) && baseApp,
+    "Usage: node scripts/smoke-updates.mjs prepare|launch|menu /absolute/path/Pideck.app\n       node scripts/smoke-updates.mjs verify /absolute/path/readiness.json\nprepare serves signed fixtures without starting an app; launch also seeds an isolated project and held queue. menu verifies the native menu and its window in an isolated app.");
   const harness = await prepareUpdateAcceptance({ baseApp: resolve(baseApp) });
+  if (mode === "menu") {
+    try {
+      await harness.verifyMenu();
+    } finally {
+      await harness.close({ quit: true, removeProfile: true });
+    }
+    console.log(json({ status: "passed", operations: harness.operations }));
+    process.exit(0);
+  }
   try {
     if (mode === "launch") await harness.launchAndSeed();
   } catch (error) {

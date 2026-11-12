@@ -5,7 +5,7 @@ async page => {
   const projectId = 'c23c2a0c-6fdd-435a-8a0c-f5d6ff433601';
   const sessionId = '6253dab2-0cb1-45eb-99f4-0c4d68b8029b';
   const source = 'const payload = "<img src=x onerror=alert(1)>";\nconsole.log(payload);\n';
-  const markdown = `Inline \`plainInline\` stays inline.\n\n\`\`\`typescript\n${source}\`\`\`\n\n\`\`\`unknown-audit-language\nunknown <tag> & text\n\`\`\`\n\n\`\`\`\nplain block\n\`\`\``;
+  const markdown = `## 审阅代码 / Code review\n\n检查 **更新流程** 和 *keyboard focus*。Inline \`plainInline\` and ***\`highlightedInline\`*** both stay inline.\n\n\`\`\`typescript\n${source}\`\`\`\n\n\`\`\`unknown-audit-language\nunknown <tag> & text\n\`\`\`\n\n\`\`\`\nplain block\n\`\`\``;
   const previous = await page.evaluate(() => Object.fromEntries(Object.entries(localStorage)));
   await page.addInitScript(() => {
     if (!localStorage.getItem('pideck-code-audit')) return;
@@ -67,6 +67,20 @@ async page => {
     const pre = code.locator('pre');
     await page.waitForFunction(() => document.querySelector('.markdown-code-block pre')?.dataset.highlighted === 'dark');
     if (await pre.textContent() !== source || await code.locator('pre code span[style]').count() < 2) throw new Error('Code highlighting changed the source or failed to create colored tokens.');
+    const typography = await page.evaluate(() => {
+      const paragraph = getComputedStyle(document.querySelector('.markdown > p'));
+      const heading = getComputedStyle(document.querySelector('.markdown h2'));
+      const emphasis = getComputedStyle(document.querySelector('.markdown em code'));
+      const block = getComputedStyle(document.querySelector('.markdown-code-block pre'));
+      const blockCode = getComputedStyle(document.querySelector('.markdown-code-block pre > code'));
+      return {
+        heading: parseFloat(heading.fontSize) > parseFloat(paragraph.fontSize),
+        composer: getComputedStyle(document.getElementById('prompt')).fontSize === paragraph.fontSize,
+        emphasis: emphasis.fontStyle === 'italic' && Number(emphasis.fontWeight) > Number(paragraph.fontWeight),
+        code: blockCode.fontSize === block.fontSize && blockCode.fontFamily === block.fontFamily && emphasis.fontFamily === block.fontFamily,
+      };
+    });
+    if (Object.values(typography).some(passed => !passed)) throw new Error(`Conversation typography did not apply: ${JSON.stringify(typography)}`);
     await page.screenshot({ path: 'output/playwright/pideck-code-dark.png' });
     if (await page.locator('.markdown p > code').textContent() !== 'plainInline' || await page.locator('.markdown-code-block').count() !== 3) throw new Error('Inline code or unlabelled blocks changed.');
     if (await page.locator('.markdown img').count()) throw new Error('Code text was rendered as markup.');

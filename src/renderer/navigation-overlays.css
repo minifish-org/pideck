@@ -10,7 +10,6 @@
   border: 0; border-radius: 5px; background: transparent; color: var(--fgColor-danger); font-size: 13px; text-align: left;
 }
 .navigation-menu button:is(:hover, :focus-visible) { background: var(--control-danger-bgColor-hover); }
-.navigation-menu button:focus-visible { outline-offset: -2px; }
 
 .session-search {
   width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 64px); margin: min(12dvh, 96px) auto auto; padding: 0;
@@ -23,8 +22,7 @@
 .session-search-heading > svg { flex: none; color: var(--fgColor-muted); }
 .session-search-heading input { flex: 1; min-width: 0; padding: 6px 0; color: var(--fgColor-default); border: 0; background: transparent; outline: 0; font-size: 14px; }
 .session-search-heading input::placeholder { color: var(--control-fgColor-placeholder); }
-.session-search-heading input:focus-visible { outline: 0; }
-.session-search-heading:has(input:focus-visible) { border-bottom-color: var(--focus-outline-color); }
+.session-search-heading:has(input:focus-visible) { border-bottom-color: var(--focus-ring-color); }
 .session-search-heading .icon-button { width: 28px; height: 28px; }
 .session-search-results { list-style: none; margin: 0; padding: 6px; min-height: 0; max-height: min(400px, 55dvh); overflow: auto; overscroll-behavior: contain; }
 .session-search-results:empty { padding: 0; }
@@ -33,7 +31,7 @@
 .session-search-result > svg { flex: none; color: var(--fgColor-muted); }
 .session-search-result > div { min-width: 0; display: grid; gap: 1px; }
 .session-search-title, .session-search-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.session-search-title { font-size: 13px; font-weight: 550; }
-.session-search-project { color: var(--fgColor-muted); font-size: 11px; }
+.session-search-title { font-size: 13px; font-weight: 600; }
+.session-search-project { color: var(--fgColor-muted); font-size: 12px; }
 .session-search-status { padding: 8px 14px; border-top: 1px solid var(--borderColor-muted); color: var(--fgColor-muted); font-size: 11px; }
 .session-search-error { padding: 0 14px 10px; color: var(--fgColor-danger); font-size: 12px; }

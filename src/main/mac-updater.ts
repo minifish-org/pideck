@@ -3,12 +3,14 @@ import { join } from "node:path";
 
 export type NativeUpdateEvent =
   | { type: "install-requested" }
-  | { type: "can-check-changed"; canCheck: boolean }
+  | { type: "menu-changed" }
   | { type: "aborted"; message: string; domain: string; code: number };
 
 export type MacUpdater = {
   start(callback: (event: NativeUpdateEvent) => void): boolean;
   check(): boolean;
+  cancelCheck(): boolean;
+  status(): "idle" | "checking" | "showing" | "busy";
   canCheck(): boolean;
   resumeInstall(): boolean;
   dispose(): void;

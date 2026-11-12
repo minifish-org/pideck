@@ -845,8 +845,8 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
       let action: MenuAction;
       if (event.shiftKey && key === 'b') action = 'toggle-navigation';
       else if (event.shiftKey && key === 'd') action = 'toggle-review';
+      else if (isMac ? event.shiftKey && key === 't' : !event.shiftKey && event.code === 'Backquote') action = 'toggle-terminal';
       else if (event.shiftKey) return;
-      else if (event.code === 'Backquote') action = 'toggle-terminal';
       else if (key === 'o') action = 'open-project';
       else if (key === 'n') action = 'new-session';
       else if (key === 'k') action = 'search-sessions';
@@ -883,7 +883,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
 
   const panelControls = project && <WorkspacePanelButtons reviewOpen={reviewOpen} terminalVisible={terminalVisible}
     disabled={Boolean(removingProject)} reviewTitle={`${reviewOpen ? 'Hide changes' : 'Show project changes'} (${modifier}${shift}D)`}
-    terminalTitle={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${modifier}\`)`}
+    terminalTitle={`${terminalVisible ? 'Hide terminal' : 'Show terminal'} (${isMac ? '⌘⇧T' : 'Ctrl+`'})`}
     onReview={toggleReview} onTerminal={toggleTerminal} />;
 
   return (

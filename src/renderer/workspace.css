@@ -10,6 +10,11 @@
 }
 
 .workspace-review[hidden] { display: none; }
+.workspace-review:focus-visible { outline: none; }
+.workspace-review:focus-visible > .workspace-panel-header h2 {
+  text-decoration: underline var(--focus-ring-color);
+  text-underline-offset: 3px;
+}
 
 .workspace-terminal {
   display: flex;
@@ -144,7 +149,7 @@
 
 .workspace-file-icon { flex: none; color: var(--fgColor-muted); }
 .workspace-file-label { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; }
-.workspace-file-name { flex: 0 1 auto; font-weight: 550; }
+.workspace-file-name { flex: 0 1 auto; font-weight: 500; }
 .workspace-file-label:has(.workspace-file-detail) .workspace-file-name { max-width: 80%; }
 .workspace-file-detail { color: var(--fgColor-muted); font-size: 11px; }
 .workspace-file-name, .workspace-file-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -246,7 +251,7 @@
   --diffs-bg-addition-emphasis-override: var(--diffBlob-additionWord-bgColor);
   --diffs-bg-deletion-emphasis-override: var(--diffBlob-deletionWord-bgColor);
   --diffs-font-family: var(--mono, monospace);
-  --diffs-font-size: 12px;
+  --diffs-font-size: var(--code-size);
   --diffs-line-height: 20px;
 }
 
@@ -257,7 +262,7 @@
   padding: 12px;
   overflow: auto;
   color: var(--fgColor-default);
-  font: 12px/1.55 var(--mono, monospace);
+  font: var(--code-size)/1.55 var(--mono, monospace);
 }
 
 .workspace-inline {
@@ -282,6 +287,8 @@
 .workspace-terminal-status[data-state="failed"], .workspace-terminal-issue { color: var(--fgColor-danger); }
 .workspace-terminal-issue { margin: 0; padding: 3px var(--workspace-inset, 16px); font-size: 12px; }
 .workspace-terminal-body {
+  font-family: var(--mono);
+  font-size: var(--code-size);
   /* FitAddon measures the mount's computed width and height without subtracting its padding. */
   box-sizing: content-box;
   flex: 1 1 auto;

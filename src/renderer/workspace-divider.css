@@ -20,6 +20,5 @@
 
 .workspace-divider:focus-visible { outline: none; }
 .workspace-divider:is(:hover, :focus-visible, [data-dragging])::after {
-  background: var(--focus-outline-color);
-  box-shadow: 0 0 0 1px var(--focus-outline-color);
+  border-inline-start: 1px solid var(--focus-ring-color);
 }

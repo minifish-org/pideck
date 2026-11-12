@@ -24,7 +24,8 @@ function terminalPalette(container: HTMLElement) {
   const accent = token("--fgColor-accent");
   const background = token("--terminal-bgColor");
   return {
-    fontFamily: token("--mono"),
+    fontFamily: tokens.fontFamily,
+    fontSize: Number.parseFloat(tokens.fontSize),
     theme: {
       background, foreground: token("--fgColor-default"), cursor: accent, cursorAccent: background,
       scrollbarSliderBackground: token("--borderColor-default"),
@@ -88,7 +89,7 @@ function TerminalInstance({ project, visible, overlay, focusOnShow, onClose, onE
       convertEol: false,
       cursorBlink: false,
       fontFamily: palette.fontFamily,
-      fontSize: 12,
+      fontSize: palette.fontSize,
       lineHeight: 1.25,
       scrollback: 5_000,
       theme: palette.theme,

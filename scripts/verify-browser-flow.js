@@ -121,7 +121,7 @@ async page => {
       await message.hover();
       if (kind === 'finished') {
         const measured = await footerGeometry(message);
-        if (measured.font !== '11px' || measured.buttons.length !== 2
+        if (measured.font !== '12px' || measured.buttons.length !== 2
           || measured.buttons.some(button => button.width !== 24 || button.height !== 24)) {
           throw new Error('The final AI timestamp and actions must use the common footer sizes.');
         }
@@ -1167,7 +1167,15 @@ async page => {
   await sessionName.press("Enter");
   await page.getByRole("button", { name: "Rename session Verify status", exact: true }).waitFor();
 
-  await page.getByRole("button", { name: "Load earlier messages" }).click();
+  const earlierMessages = page.getByRole("button", { name: "Load earlier messages" });
+  await earlierMessages.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  if (!await earlierMessages.evaluate(button => button.matches(":focus-visible"))) {
+    throw new Error("Loading earlier messages must remain reachable with a visible keyboard focus indicator.");
+  }
+  await expectColors(earlierMessages, { "outline-style": "solid", "outline-width": "1px",
+    "outline-offset": "-1px", "outline-color": "rgb(160, 160, 160)" });
+  await page.keyboard.press("Enter");
   await page.getByText("An earlier coding request.").waitFor();
   if (await page.getByRole("button", { name: "Summarize context" }).count()) {
     throw new Error("The title bar still exposes manual context compaction.");
@@ -1616,7 +1624,12 @@ async page => {
   });
   await divider.blur();
   await page.screenshot({ path: "output/playwright/pideck-ui-workspace.png" });
-  await terminalToggle.click();
+  if (await terminalToggle.getAttribute("title") !== "Show terminal (⌘⇧T)") {
+    throw new Error("The terminal toggle must advertise its macOS keyboard shortcut.");
+  }
+  await page.keyboard.press("Meta+Backquote");
+  await expectActiveTool("changes");
+  await page.keyboard.press("Meta+Shift+T");
   await terminal.getByText("Shell running").waitFor();
   await expectActiveTool("terminal");
   await expectDockedTool("#workspace-terminal");

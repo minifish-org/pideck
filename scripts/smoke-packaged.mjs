@@ -231,7 +231,7 @@ async function verifyNativeUpdateMenu(app) {
         entries: all.filter(entry => entry.id === "check-for-updates").length,
         updateLabels: all.filter(entry => /^(?:Check for Updates|Restart and Update|Download Update|Install Update|View Release|Open Releases)/i.test(entry.label)).map(entry => entry.label),
         loaded: Boolean(updater),
-        methods: ["start", "check", "canCheck", "resumeInstall", "dispose"].every(method => typeof updater?.[method] === "function"),
+        methods: ["start", "check", "cancelCheck", "status", "canCheck", "resumeInstall", "dispose"].every(method => typeof updater?.[method] === "function"),
         ready: updater?.canCheck(),
         manifest: { platform: manifest.platform, arch: manifest.arch, native: manifest.native },
       };
