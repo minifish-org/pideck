@@ -12,17 +12,21 @@ const diffOptions = [
   "--no-ext-diff", "--no-textconv", "--no-color", "--word-diff=none", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
 ];
 
-async function git(cwd: string, args: string[], signal?: AbortSignal, accept: number[] = [], maxBuffer = 2 * 1024 * 1024) {
+async function git(cwd: string, args: string[], signal?: AbortSignal, accept: number[] = [], maxBuffer = 2 * 1024 * 1024, input?: string) {
   signal?.throwIfAborted();
   try {
     const child = exec("git", [
-      "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
+      "--no-pager", ...(args[0] === "check-ignore" ? [] : ["--literal-pathspecs"]),
+      "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
       ...args,
     ], {
       cwd, encoding: "utf8", maxBuffer, timeout: 15_000, windowsHide: true, signal,
       env: { ...shellEnvironment(), LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
     });
-    child.child.stdin?.end();
+    // Git may reject a path before consuming the rest of a large input batch.
+    // Its process result reports that failure; a closed stdin must not crash host.
+    child.child.stdin?.on("error", () => {});
+    child.child.stdin?.end(input);
     const result = await child;
     signal?.throwIfAborted();
     return result.stdout;
@@ -41,14 +45,63 @@ async function git(cwd: string, args: string[], signal?: AbortSignal, accept: nu
 export async function watchChanges(cwd: string, signal: AbortSignal, onChange: () => void, onError: () => void) {
   const metadataPaths = new Set([join(cwd, ".git")]);
   let pending: ReturnType<typeof setTimeout> | undefined;
+  let checking = false;
+  let metadataChanged = false;
+  let trackedDirectories: Promise<Set<string>> | undefined;
+  const paths = new Set<string>();
   signal.addEventListener("abort", () => clearTimeout(pending), { once: true });
 
-  const notify = () => {
-    if (pending || signal.aborted) return;
-    pending = setTimeout(() => {
+  const relevantPaths = async (names: string[]) => {
+    if (!names.length) return false;
+    // check-ignore respects tracked paths, including files force-added beneath
+    // ignored directories. Feed a NUL-delimited batch rather than spawning Git
+    // for every file emitted by a compiler or package manager.
+    const ignored = new Set((await git(cwd, ["check-ignore", "-z", "--stdin"], signal, [1],
+      2 * 1024 * 1024, names.join("\0") + "\0")).split("\0"));
+    if (names.some(name => !ignored.has(name))) return true;
+    // A removed/renamed ignored directory can contain force-tracked children.
+    // Retain its event too; refresh this small index whenever Git state changes.
+    trackedDirectories ??= git(cwd, ["ls-files", "--cached", "-z"], signal).then(output => {
+      const directories = new Set<string>();
+      for (const path of output.split("\0")) {
+        const parts = path.split("/");
+        while (parts.length > 1) {
+          parts.pop();
+          directories.add(parts.join("/"));
+        }
+      }
+      return directories;
+    });
+    const directories = await trackedDirectories;
+    return names.some(name => directories.has(name.split(sep).join("/")));
+  };
+  const schedule = () => {
+    if (pending || checking || signal.aborted || (!metadataChanged && !paths.size)) return;
+    pending = setTimeout(async () => {
       pending = undefined;
-      onChange();
+      const forced = metadataChanged;
+      const names = [...paths];
+      metadataChanged = false;
+      paths.clear();
+      checking = true;
+      let relevant = forced;
+      try {
+        relevant ||= await relevantPaths(names);
+      } catch {
+        // Unknown Git state must not make actual edits disappear from review.
+        trackedDirectories = undefined;
+        relevant = true;
+      } finally {
+        checking = false;
+        schedule();
+      }
+      if (relevant && !signal.aborted) onChange();
     }, 180);
+  };
+  const notify = () => {
+    metadataChanged = true;
+    trackedDirectories = undefined;
+    schedule();
   };
   const attach = (directory: string, recursive: boolean, accepts: (name: string) => boolean) => {
     signal.throwIfAborted();
@@ -61,17 +114,20 @@ export async function watchChanges(cwd: string, signal: AbortSignal, onChange: (
     const path = join(cwd, name);
     for (const directory of metadataPaths) {
       const nested = relative(directory, path);
+      if (!nested) return true;
       if (nested && !isAbsolute(nested) && nested !== ".." && !nested.startsWith(`..${sep}`)) {
         return reviewMetadata(nested);
       }
     }
-    return true;
+    paths.add(name.split(sep).join("/"));
+    schedule();
+    return false;
   });
 
-  const paths = await Promise.all(["--git-dir", "--git-common-dir"].map(option =>
+  const gitPaths = await Promise.all(["--git-dir", "--git-common-dir"].map(option =>
     git(cwd, ["rev-parse", "--path-format=absolute", option], signal).then(path => path.replace(/\r?\n$/, ""))));
   signal.throwIfAborted();
-  for (const directory of new Set(paths.filter(Boolean))) {
+  for (const directory of new Set(gitPaths.filter(Boolean))) {
     if (directory === cwd) continue;
     if (isProjectPath(cwd, relative(cwd, directory))) {
       metadataPaths.add(directory);

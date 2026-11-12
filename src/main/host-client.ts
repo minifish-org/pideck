@@ -18,6 +18,7 @@ export class HostClient {
   private stopping = false;
   private closing?: Promise<HostCloseResult>;
   private restartAttempts = 0;
+  private restartPending = false;
   private readonly lifetimeId = randomUUID();
   // Re-send dead window IDs after a host crash so their edit leases detach even
   // when the close acknowledgement was lost. Their messages remain held.
@@ -33,7 +34,7 @@ export class HostClient {
     private onActivity?: (items: SessionActivity[], baseline: boolean) => void,
   ) {}
 
-  start(): void {
+  start(recovering = false): void {
     if (this.stopping || this.process) return;
     const child = utilityProcess.fork(fileURLToPath(new URL("../host/worker.js", import.meta.url)), [], {
       env: hostEnvironment(),
@@ -47,7 +48,7 @@ export class HostClient {
 
     const timeout = setTimeout(() => child.kill(), 20_000);
     const startedAt = Date.now();
-    const reconnecting = this.restartAttempts > 0;
+    const reconnecting = recovering || this.restartAttempts > 0;
     let initialized = false;
     let fatal = false;
     child.on("message", (message: FromHost) => {
@@ -114,7 +115,9 @@ export class HostClient {
       if (initialized && Date.now() - startedAt >= 30_000) this.restartAttempts = 0;
       if (!fatal && !this.stopping && this.restartAttempts < 5) {
         const delay = Math.min(4_000, 250 * 2 ** this.restartAttempts++);
+        this.restartPending = true;
         const restart = new Promise<void>(resolve => setTimeout(resolve, delay)).then(() => {
+          this.restartPending = false;
           this.start();
           return this.process ? this.ready : undefined;
         });
@@ -128,6 +131,18 @@ export class HostClient {
           closedWindows: [...this.closedWindows], automationDirectory: this.automationDirectory });
       }
     });
+  }
+
+  async recover(): Promise<void> {
+    if (this.stopping) throw new Error("Pideck is closing.");
+    // A manual retry may restart an exhausted/failed host, but must never
+    // replace a healthy process or race an automatic restart already underway.
+    if (!this.process && !this.restartPending) {
+      this.restartAttempts = 0;
+      this.start(true);
+    }
+    await this.ready;
+    if (!this.process || this.stopping) throw new Error("The workspace host is unavailable.");
   }
 
   async request<C extends HostCommand>(owner: number, command: C, payload: HostInput[C], windowId = owner): Promise<HostResult[C]> {

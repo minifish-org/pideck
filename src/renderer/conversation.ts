@@ -16,6 +16,8 @@ export function useConversation({ projectId, sessionId }: { projectId: string; s
   const [conversation, setConversation] = useState<Conversation>({ view: null, connected: false, error: null });
   const [attempt, setAttempt] = useState(0);
   const activeWatch = useRef<Watch | null>(null);
+  const recovering = useRef(false);
+  const hostRevision = useRef(0);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -71,6 +73,7 @@ export function useConversation({ projectId, sessionId }: { projectId: string; s
       }
       if (event.type === 'host:restart' || event.type === 'host:resume'
         || (event.type === 'chat:reset' && event.projectId === projectId && event.sessionId === sessionId)) {
+        if (event.type === 'host:restart') hostRevision.current++;
         repairingGap = false;
         attach();
         return;
@@ -119,5 +122,19 @@ export function useConversation({ projectId, sessionId }: { projectId: string; s
     });
   }
 
-  return { ...conversation, loadEarlier, retry: () => setAttempt((current) => current + 1) };
+  async function retry() {
+    if (recovering.current) return;
+    recovering.current = true;
+    const revision = hostRevision.current;
+    try {
+      await window.pideck.invoke('host:recover');
+      // A restarted host emits its own reattachment event. A healthy host still
+      // needs a fresh watch when the original subscription was disconnected.
+      if (hostRevision.current === revision) setAttempt((current) => current + 1);
+    } catch (error) {
+      setConversation(current => ({ ...current, connected: false, error: readableError(error) }));
+    } finally { recovering.current = false; }
+  }
+
+  return { ...conversation, loadEarlier, retry };
 }

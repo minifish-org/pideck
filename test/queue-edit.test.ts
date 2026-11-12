@@ -306,6 +306,71 @@ test("Stop discards parked submissions and a stale finish or request retry canno
   } finally { release.resolve(); await f.close(); }
 });
 
+for (const editFirst of [false, true]) {
+  test(`Stop excludes a concurrent queue edit claim (${editFirst ? "claim first" : "Stop first"})`, { timeout: 10_000 }, async () => {
+    const f = await fixture();
+    try {
+      f.faux.setResponses([toolResponse("bash", { command: "printf 'running'; sleep 20" })]);
+      await f.runtime.send(f.input("Current work"));
+      await waitForView(f.runtime, f.selection, view => view.messages.some(message => message.blocks
+        .some(block => block.type === "tool" && block.output?.includes("running"))));
+      const target = { ...f.input("Must be withdrawn"), delivery: "follow-up" as const };
+      await f.runtime.send(target);
+      const queued = await waitForView(f.runtime, f.selection, view => view.queued?.length === 1);
+      const edit = { ...f.selection, id: queued.queued![0].id, token: randomUUID() };
+      const operations = editFirst
+        ? [f.runtime.startQueueEdit(edit, 1), f.runtime.cancel(f.selection)]
+        : [f.runtime.cancel(f.selection), f.runtime.startQueueEdit(edit, 1)];
+      const results = await Promise.allSettled(operations);
+      assert.equal(results[editFirst ? 1 : 0].status, "fulfilled");
+      const claim = results[editFirst ? 0 : 1];
+      if (claim.status === "rejected") assert.match(String(claim.reason), /cancelled|no longer in the queue/);
+      const stopped = await waitForView(f.runtime, f.selection, view => view.status === "idle");
+      assert.equal(stopped.runOutcome?.kind, "cancelled");
+      assert.equal(stopped.queued, undefined);
+      await assert.rejects(f.runtime.finishQueueEdit({ ...edit, text: "Must never run" }, 1), /no longer active/);
+      await f.runtime.send(target);
+      const afterRetry = await waitForView(f.runtime, f.selection, view => view.status === "idle");
+      assert.equal(afterRetry.queued, undefined);
+      assert.equal(afterRetry.messages.some(message => message.requestId === target.requestId), false);
+      f.faux.setResponses([fauxAssistantMessage("New run works.")]);
+      await f.runtime.send(f.input("A new action after Stop"));
+      await waitForView(f.runtime, f.selection, view => view.status === "idle" && textIn(view, "New run works."));
+    } finally { await f.close(); }
+  });
+}
+
+test("Stop invalidates an earlier follow-up still waiting for model validation", { timeout: 10_000 }, async t => {
+  const f = await fixture();
+  const validating = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let admission: Promise<void> | undefined;
+  try {
+    f.faux.setResponses([toolResponse("bash", { command: "printf 'running'; sleep 20" })]);
+    await f.runtime.send(f.input("Current work"));
+    await waitForView(f.runtime, f.selection, view => view.messages.some(message => message.blocks
+      .some(block => block.type === "tool" && block.output?.includes("running"))));
+    const available = f.runtime.models.getAvailableOfType.bind(f.runtime.models);
+    t.mock.method(f.runtime.models, "getAvailableOfType", async (...args: Parameters<typeof available>) => {
+      validating.resolve();
+      await release.promise;
+      return available(...args);
+    });
+    admission = f.runtime.send({ ...f.input("Not yet admitted"), delivery: "follow-up" });
+    await validating.promise;
+    await f.runtime.cancel(f.selection);
+    release.resolve();
+    await assert.rejects(admission, /cancelled/);
+    const stopped = await waitForView(f.runtime, f.selection, view => view.status === "idle");
+    assert.equal(stopped.queued, undefined);
+    assert.equal(stopped.messages.some(message => message.blocks.some(block => block.type === "text" && block.text === "Not yet admitted")), false);
+  } finally {
+    release.resolve();
+    await admission?.catch(() => {});
+    await f.close();
+  }
+});
+
 for (const mode of ["host", "application", "closed-window", "shutdown"] as const) {
   const sameLifetime = mode === "host";
   test(`${mode} recovery keeps input held until the editor explicitly saves or cancels`, async () => {

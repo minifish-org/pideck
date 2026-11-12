@@ -19,6 +19,18 @@ async page => {
       },
       async invoke(command, payload) {
         calls.push({ command, payload });
+        if (command === 'chat:image') {
+          if (sessionStorage.getItem('attachment-history-failure')) {
+            sessionStorage.removeItem('attachment-history-failure');
+            throw new Error('Image retrieval temporarily failed.');
+          }
+          if (payload.projectId !== '74de4c42-3a46-4430-873c-9bcb42fdb287'
+            || payload.sessionId !== '5dd96030-16c4-4319-9a8b-6a10258dbf82'
+            || ![10, 12].includes(payload.entryId) || payload.messageIndex !== 0 || payload.contentIndex !== 1) {
+            throw new Error('Historical image retrieval lost its conversation or content coordinates.');
+          }
+          return { mimeType: 'image/png', data: sessionStorage.getItem('attachment-history-source') };
+        }
         if (command === 'chat:send' && sessionStorage.getItem('attachment-reject-send')) {
           sessionStorage.removeItem('attachment-reject-send');
           throw new Error('The fixture rejected the image request.');
@@ -196,6 +208,37 @@ async page => {
   await page.reload();
   await expectImages(normalImages, [sources[2]]);
   if (await prompt.inputValue() !== ordinaryText) throw new Error('Cancelling and reopening lost the ordinary draft.');
+  await page.evaluate(source => {
+    sessionStorage.setItem('attachment-history-source', source.split(',')[1]);
+    sessionStorage.setItem('attachment-history-failure', '1');
+    const state = JSON.parse(localStorage.getItem('pideck-browser-fixture'));
+    const view = state.views['5dd96030-16c4-4319-9a8b-6a10258dbf82'];
+    view.status = 'idle'; delete view.queued;
+    view.messages = [
+      { id: '10:0', entryId: 10, role: 'user', blocks: [{ type: 'image', mimeType: 'image/png', data: '',
+        ref: { entryId: 10, messageIndex: 0, contentIndex: 1 } }] },
+      { id: '11:0', entryId: 11, role: 'assistant', blocks: [{ type: 'tool', id: 'historical-read', name: 'read', status: 'done',
+        path: 'screenshot.png', images: [{ mimeType: 'image/png', data: '', ref: { entryId: 12, messageIndex: 0, contentIndex: 1 } }] }] },
+    ];
+    localStorage.setItem('pideck-browser-fixture', JSON.stringify(state));
+  }, sources[0]);
+  await page.reload();
+  const earlierImage = page.getByRole('button', { name: 'Preview attached image', exact: true });
+  await earlierImage.click();
+  await page.getByRole('alert').getByText('Image retrieval temporarily failed.', { exact: true }).waitFor();
+  await earlierImage.click();
+  await preview.waitFor();
+  await preview.locator('img').evaluate(image => image.decode());
+  if (await preview.locator('img').getAttribute('src') !== sources[0]) throw new Error('Historical image preview loaded the wrong data.');
+  await preview.press('Escape');
+  if (await page.getByText('Image retrieval temporarily failed.', { exact: true }).count()) throw new Error('Retry left a stale image error.');
+  await page.locator('.tool-card summary').click();
+  await page.getByRole('button', { name: 'Preview output from read', exact: true }).click();
+  await preview.waitFor();
+  await preview.locator('img').evaluate(image => image.decode());
+  await page.screenshot({ path: 'output/playwright/pideck-attachments-history.png' });
+  await preview.press('Escape');
+  if (await page.locator('.chat-thread img').count()) throw new Error('Previewing an earlier image must not expand the live transcript payload.');
   if (errors.length) throw new Error(errors.join('\n'));
-  return 'Attachment flow passed: queue thumbnails and full preview, image-only edits, save/cancel isolation, rejected sends/saves, session switching, watch reconnection, renderer/window recovery and lost edit acknowledgements.';
+  return 'Attachment flow passed: queue thumbnails and full preview, image-only edits, save/cancel isolation, rejected sends/saves, session switching, watch reconnection, renderer/window recovery, lost edit acknowledgements and on-demand historical user/tool images with retry.';
 }

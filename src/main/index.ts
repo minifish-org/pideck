@@ -427,6 +427,11 @@ async function initialize() {
     if (!isCommand(command)) throw new Error("Invalid workspace request.");
     if (exiting || preparingUpdate) throw new Error("Pideck is preparing to restart. Your draft stays saved.");
 
+    if (command === "host:recover") {
+      if (!validPayload(command, payload)) throw new Error("Invalid workspace recovery request.");
+      return client.recover();
+    }
+
     if (command === "desktop:ready") {
       if (!validPayload(command, payload)) throw new Error("Invalid desktop request.");
       desktopReady = true;

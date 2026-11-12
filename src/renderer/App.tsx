@@ -72,6 +72,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
   const removed = useRef({ projects: new Set<string>(), sessions: new Set<string>() });
   const [removalFocus, setRemovalFocus] = useState<Removal>();
   const [projectsError, setProjectsError] = useState<string>();
+  const [recoveringHost, setRecoveringHost] = useState(false);
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [modelsError, setModelsError] = useState<string>();
   const [modelsReady, setModelsReady] = useState(false);
@@ -747,6 +748,17 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
     });
   }
 
+  async function recoverHost() {
+    if (recoveringHost) return;
+    setRecoveringHost(true);
+    try {
+      await window.pideck.invoke('host:recover');
+      refreshWorkspace(current => current + 1);
+      refreshSessions(current => current + 1);
+    } catch (cause) { setError(readableError(cause)); }
+    finally { setRecoveringHost(false); }
+  }
+
   function focusComposer() {
     if (projectId && (drawerOpen || toolsOverlay)) {
       closeDrawer();
@@ -1070,7 +1082,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                   ? <EmptyScene icon="folderPlus" title="Couldn’t load projects">
                       <p role="alert">{projectsError}</p>
                       <button className="button button--primary" type="button"
-                        onClick={() => refreshWorkspace((current) => current + 1)}>Retry loading projects</button>
+                        disabled={recoveringHost} onClick={() => void recoverHost()}>Retry loading projects</button>
                     </EmptyScene>
                   : !projects
                     ? <div className="workspace-loading" role="status">Opening workspace…</div>
@@ -1097,7 +1109,7 @@ function Desktop({ initialDrafts }: { initialDrafts: ReturnType<typeof readDraft
                     ? <EmptyScene icon="chat" title="Couldn’t load sessions">
                         <p role="alert">{sessionsIssue}</p>
                         <button className="button button--primary" type="button"
-                          onClick={() => refreshSessions((current) => current + 1)}>Retry loading sessions</button>
+                          disabled={recoveringHost} onClick={() => void recoverHost()}>Retry loading sessions</button>
                       </EmptyScene>
                     : <div className="workspace-loading" role="status">Loading sessions…</div>}
             </div>

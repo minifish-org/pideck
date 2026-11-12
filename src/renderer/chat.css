@@ -64,6 +64,12 @@
 .tool-output, .thinking pre { background: var(--bgColor-inset); }
 .markdown code { font: .9em var(--mono); }
 .markdown :not(pre) > code { border: 1px solid var(--borderColor-muted); border-radius: 4px; padding: 1px 4px; background: var(--bgColor-neutral-muted); }
+.markdown-code-block { margin: .65em 0; border: 1px solid var(--borderColor-muted); border-radius: 6px; overflow: hidden; background: var(--bgColor-muted); }
+.markdown-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 4px 11px; color: var(--fgColor-muted); font-size: 11px; border-bottom: 1px solid var(--borderColor-muted); }
+.markdown-code-header .icon-button { width: 24px; height: 24px; }
+.markdown-code-block pre { margin: 0; border: 0; border-radius: 0; }
+.markdown-code-block pre:focus-visible { outline-offset: -2px; }
+.markdown-code-error { padding: 0 11px; color: var(--fgColor-danger); font-size: 12px; }
 .markdown table { display: block; overflow: auto; border-collapse: collapse; margin: .65em 0; }
 .markdown td, .markdown th { border: 1px solid var(--borderColor-default); padding: 4px 8px; text-align: left; }
 .markdown tr:nth-child(even) { background: var(--bgColor-muted); }

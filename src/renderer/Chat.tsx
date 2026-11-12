@@ -1,8 +1,8 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ChatBlock, ChatGap, ChatMessage, ChatView, Commands, ImageInput, ModelOption, Project, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
+import type { ChatBlock, ChatGap, ChatMessage, ChatView, Commands, ImageInput, ModelOption, Project, Selection, Session, SessionActivity, StartChat, Thinking } from '../shared/api';
 import { Icon } from './Icons';
-import { ImagePreview } from './ImagePreview';
+import { ImageBlock } from './ChatImage';
 import { MessageFooter } from './MessageFooter';
 import { MessageMarkdown } from './MessageMarkdown';
 import { readableError, useConversation } from './conversation';
@@ -19,24 +19,6 @@ const InlineDiff = lazy(() => import('./ReviewPanel').then(({ InlineDiff }) => (
 type ReviewSelection = { path?: string; patch?: string; line?: number };
 type ToolBlock = Extract<ChatBlock, { type: 'tool' }>;
 
-function imageSource(image: { mimeType: string; data: string }) {
-  const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-  if (!supported.includes(image.mimeType) || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return undefined;
-  return `data:${image.mimeType};base64,${image.data}`;
-}
-
-function ImageBlock({ image, alt, thumbnail = false }: { image: { mimeType: string; data: string }; alt: string; thumbnail?: boolean }) {
-  const [previewing, setPreviewing] = useState(false);
-  const source = imageSource(image);
-  return source ? <>
-    <button type="button" className={thumbnail ? 'attachment-preview' : 'message-image-trigger'}
-      aria-label={`Preview ${alt.toLowerCase()}`} title="Preview image" onClick={() => setPreviewing(true)}>
-      <img className={thumbnail ? undefined : 'message-image'} src={source} alt={alt} />
-    </button>
-    {previewing && <ImagePreview source={source} alt={alt} onClose={() => setPreviewing(false)} />}
-  </> : null;
-}
-
 const toolLabels: Record<string, string> = { read: 'Read', write: 'Write', edit: 'Edit', bash: 'Shell' };
 const toolIcons = { read: 'eye', write: 'filePlus', edit: 'edit', bash: 'terminal' } as const;
 const toolPhases: Record<string, string> = {
@@ -46,12 +28,13 @@ const thinkingLabels: Record<Thinking, string> = {
   off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum',
 };
 
-function ToolCard({ block, onReview, expanded, onExpand, onCancel }: {
+function ToolCard({ block, onReview, expanded, onExpand, onCancel, selection }: {
   block: ToolBlock;
   onReview: (selection: ReviewSelection) => void;
   expanded?: boolean;
   onExpand: (id: string, expanded: boolean) => void;
   onCancel?: (taskId: number) => Promise<void>;
+  selection?: Selection;
 }) {
   const [cancellingTask, setCancellingTask] = useState<number>();
   const [cancelError, setCancelError] = useState<string>();
@@ -124,15 +107,16 @@ function ToolCard({ block, onReview, expanded, onExpand, onCancel }: {
               {showReview && <button className="inline-action tool-review" type="button"
                 onClick={() => onReview({ path })}>Open in Changes <span aria-hidden="true">↗</span></button>}
             </>}
-        {block.images?.map((image, index) => <ImageBlock key={index} image={image} alt={`Output from ${block.name}`} />)}
+        {block.images?.map((image, index) => <ImageBlock key={index} image={image} alt={`Output from ${block.name}`} selection={selection} />)}
       </div>
     </details>
   );
 }
 
-const Message = memo(function Message({ message, project, onReview, onFork, toolDisclosure, onToolExpand, onCancelTool }: {
+const Message = memo(function Message({ message, project, selection, onReview, onFork, toolDisclosure, onToolExpand, onCancelTool }: {
   message: ChatMessage;
   project: Project;
+  selection?: Selection;
   onReview: (selection: ReviewSelection) => void;
   onFork?: (entryId: number) => void;
   toolDisclosure: ReadonlyMap<string, boolean>;
@@ -158,10 +142,10 @@ const Message = memo(function Message({ message, project, onReview, onFork, tool
             case 'thinking':
               return block.text && <details className="thinking" key={index}><summary>Thinking</summary><pre>{block.text}</pre></details>;
             case 'image':
-              return <ImageBlock image={block} alt="Attached image" key={index} />;
+              return <ImageBlock image={block} alt="Attached image" key={index} selection={selection} />;
             case 'tool':
               return <ToolCard block={block} onReview={onReview} key={block.id}
-                expanded={toolDisclosure.get(block.id)} onExpand={onToolExpand} onCancel={onCancelTool} />;
+                expanded={toolDisclosure.get(block.id)} onExpand={onToolExpand} onCancel={onCancelTool} selection={selection} />;
           }
         })}
         {message.error && <div className="dialog-error">{message.error}</div>}
@@ -274,7 +258,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   onStarted: (session: Session) => void;
   onFork: (entryId: number) => Promise<void>;
 }) {
-  const selection = session ? { projectId: project.id, sessionId: session.id } : undefined;
+  const selection = useMemo(() => session ? { projectId: project.id, sessionId: session.id } : undefined, [project.id, session?.id]);
   const currentPosition = useRef(readingPosition);
   const lastWatch = useRef<string | undefined>(undefined);
   const { view, watchId, connected: watchConnected, error: connectionError, retry, loadEarlier } =
@@ -345,7 +329,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   const gaps = view?.gaps ?? [];
 
   useEffect(() => {
-    if (!connected || (!busy && !agentCompacting)) setStopping(false);
+    if (runControlPending.current !== 'cancel' && (!connected || (!busy && !agentCompacting))) setStopping(false);
   }, [agentCompacting, busy, connected]);
 
   useEffect(() => {
@@ -573,6 +557,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
       setStopping(false);
     } finally {
       runControlPending.current = undefined;
+      setStopping(false);
     }
   }
 
@@ -752,7 +737,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
             {view?.messages.map((message) => (
               <div className={`chat-turn chat-turn--${message.role}`} key={message.id}>
                 {renderGaps(message.id)}
-                <Message message={message} project={project} onReview={onReview} onFork={connected && !forking ? fork : undefined}
+                <Message message={message} project={project} selection={selection} onReview={onReview} onFork={connected && !forking ? fork : undefined}
                   toolDisclosure={toolDisclosure} onToolExpand={setToolExpanded}
                   onCancelTool={connected && !stopping && view?.status !== 'cancelling' ? cancelTool : undefined} />
               </div>

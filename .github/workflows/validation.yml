@@ -3,8 +3,14 @@ name: Validation
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      native:
+        description: Run macOS packaged acceptance without publishing
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -55,3 +61,53 @@ jobs:
         run: npm run build
       - name: Verify license materials
         run: npm run check:licenses
+
+  frontend:
+    if: github.event_name == 'pull_request'
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci
+      - name: Install browser system dependencies
+        run: npx --no-install playwright install-deps chromium
+      - name: Verify renderer through Durable and Playwright CLI
+        run: xvfb-run -a npm run verify:frontend
+
+  native:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.native)
+    needs: check
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci
+      - name: Package an isolated ad-hoc application
+        run: npm run package -- --mac dir --publish never -c.mac.identity=- -c.directories.output=release/native-ci
+      - name: Locate the packaged executable
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const directory = process.arch === 'arm64' ? 'mac-arm64' : 'mac';
+          appendFileSync(process.env.GITHUB_ENV, `PIDECK_SMOKE_EXECUTABLE=release/native-ci/${directory}/Pideck.app/Contents/MacOS/Pideck\n`);
+          NODE
+      - name: Verify packaged coding, browser, and host recovery
+        run: node scripts/smoke-packaged.mjs "$PIDECK_SMOKE_EXECUTABLE"
+      - name: Verify renderer and terminal recovery
+        run: node scripts/smoke-reliability.mjs "$PIDECK_SMOKE_EXECUTABLE"
+      - name: Verify native window and workspace lifecycle
+        run: node scripts/smoke-native.mjs "$PIDECK_SMOKE_EXECUTABLE"

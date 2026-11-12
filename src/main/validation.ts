@@ -76,6 +76,7 @@ function chatInput(value: Record<string, unknown>): boolean {
 }
 
 const validators = {
+  "host:recover": empty,
   "desktop:ready": empty,
   "desktop:context": (value) => object(value) && typeof value.viewing === "boolean"
     && (value.projectId === undefined ? value.sessionId === undefined
@@ -114,6 +115,8 @@ const validators = {
   "chat:watch": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
     && (value.readingEntryId === undefined || entry(value.readingEntryId)),
   "chat:unwatch": (value) => object(value) && match(value.subscriptionId, id),
+  "chat:image": (value) => object(value) && selection(value) && entry(value.entryId)
+    && integer(value.messageIndex, 0, 10_000) && integer(value.contentIndex, 0, 10_000),
   "chat:earlier": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
     && (value.gap === undefined || (object(value.gap) && entry(value.gap.after, 0) && entry(value.gap.upTo)
       && Number(value.gap.after) < Number(value.gap.upTo))),

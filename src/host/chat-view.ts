@@ -1,6 +1,6 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentState, InboxState, LiveState, RunFailure, TaskGraph, TranscriptView } from "@earendil-works/pi-durable";
-import type { ChatBlock, ChatGap, ChatMessage, ChatView } from "../shared/api.js";
+import type { ChatBlock, ChatGap, ChatImage, ChatMessage, ChatView } from "../shared/api.js";
 import { canSteerQueued, QueueEditDoc, queueItems, type QueueEditState } from "./queued-input.js";
 import { safeFailureDetail } from "./failure-detail.js";
 
@@ -13,11 +13,11 @@ export type CompletedRun = { entryId: number; startedAt?: number; durationMs?: n
 const inlineImageBudget = 16_000_000;
 const inlinePatchLimit = 512_000;
 
-function userBlocks(content: UserMessage["content"]): ChatBlock[] {
+function userBlocks(content: UserMessage["content"], entryId: number, messageIndex: number): ChatBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map(block => block.type === "text"
+  return content.map((block, contentIndex) => block.type === "text"
     ? { type: "text", text: block.text }
-    : { type: "image", mimeType: block.mimeType, data: block.data });
+    : { type: "image", mimeType: block.mimeType, data: block.data, ref: { entryId, messageIndex, contentIndex } });
 }
 
 function assistantBlocks(message: AssistantMessage): ChatBlock[] {
@@ -34,15 +34,15 @@ function assistantBlocks(message: AssistantMessage): ChatBlock[] {
   });
 }
 
-function applyToolResult(tool: ToolBlock, result: ToolResultMessage, data?: unknown): void {
+function applyToolResult(tool: ToolBlock, result: ToolResultMessage, entryId: number, messageIndex: number, data?: unknown): void {
   tool.status = result.isError ? "error" : "done";
   if (data && typeof data === "object" && "diagnostics" in data && Array.isArray(data.diagnostics)
       && data.diagnostics.some(item => item && typeof item === "object" && item.severity === "error" && item.code === "aborted")) {
     tool.cancelled = true;
   }
   tool.output = result.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
-  const images = result.content.flatMap(block => block.type === "image"
-    ? [{ mimeType: block.mimeType, data: block.data }]
+  const images = result.content.flatMap((block, contentIndex) => block.type === "image"
+    ? [{ mimeType: block.mimeType, data: block.data, ref: { entryId, messageIndex, contentIndex } }]
     : []);
   if (images.length) tool.images = images;
   if ((tool.name === "edit" || tool.name === "write") && result.details && typeof result.details === "object"
@@ -75,24 +75,21 @@ function limitInlineImages(messages: ChatMessage[]): void {
   // A fresh watch can attach after many image-heavy turns. Keep its projection
   // bounded while Durable retains the original images in the transcript.
   let remaining = inlineImageBudget;
-  const fits = (image: { data: string }) => {
-    if (image.data.length > remaining) return false;
-    remaining -= image.data.length;
-    return true;
+  const limit = (image: ChatImage) => {
+    if (image.data.length > remaining) image.data = "";
+    else {
+      remaining -= image.data.length;
+      // Only deferred images need a source reference in the renderer.
+      delete image.ref;
+    }
   };
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
     const { blocks } = messages[messageIndex];
     for (let index = blocks.length - 1; index >= 0; index--) {
       const block = blocks[index];
-      if (block.type === "image" && !fits(block)) {
-        blocks[index] = { type: "text", text: "[Earlier image omitted from this view.]" };
-      }
+      if (block.type === "image") limit(block);
       if (block.type === "tool" && block.images) {
-        const images = block.images.filter(fits);
-        if (images.length !== block.images.length) {
-          block.output = [block.output, "[Earlier image output omitted from this view.]"].filter(Boolean).join("\n");
-          block.images = images;
-        }
+        for (let imageIndex = block.images.length - 1; imageIndex >= 0; imageIndex--) limit(block.images[imageIndex]);
       }
     }
   }
@@ -129,7 +126,7 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
       if (message.role === "user") {
         const requestId = entry.kind === inputEntryKind ? inputRequestId(entry.data) : undefined;
         push({ id, entryId: entry.id, role: "user", timestamp: message.timestamp,
-          blocks: userBlocks(message.content), ...(requestId ? { requestId } : {}) });
+          blocks: userBlocks(message.content, entry.id, index), ...(requestId ? { requestId } : {}) });
       } else if (message.role === "assistant") {
         const blocks = assistantBlocks(message);
         const error = message.stopReason === "length" ? "The model reached its output limit." : undefined;
@@ -149,10 +146,10 @@ function projectTranscript(items: TranscriptView["items"], forkAt: number | unde
         const position = tools.get(message.toolCallId);
         const matching = position && messages[position.message]?.blocks[position.block];
         if (matching?.type === "tool") {
-          applyToolResult(matching, message, entry.data);
+          applyToolResult(matching, message, entry.id, index, entry.data);
         } else {
           const tool: ToolBlock = { type: "tool", id: message.toolCallId, name: message.toolName, status: "pending" };
-          applyToolResult(tool, message, entry.data);
+          applyToolResult(tool, message, entry.id, index, entry.data);
           push({ id, role: "assistant", timestamp: message.timestamp, blocks: [tool] });
         }
       }

@@ -36,6 +36,68 @@ const edited = 'Edited queue retained across native crashes.';
 const hold = 'Queue hold RELOAD';
 const countPrompt = text => provider.requests.filter(request => JSON.stringify(request.input.findLast(item => item.role === 'user')?.content).includes(text)).length;
 
+async function verifyFatalHostRecovery() {
+  // A separate disposable profile makes startup fail before any project or
+  // conversation exists. Never damage or replace the main fixture's store.
+  const recoveryProfile = join(temporary, 'fatal-profile');
+  await mkdir(recoveryProfile);
+  const database = join(recoveryProfile, 'workspace.sqlite');
+  const damaged = 'Pideck intentional invalid SQLite fixture';
+  await writeFile(database, damaged);
+  const recoveryErrors = [];
+  let recoveryApplication;
+  let recoveryPage;
+  try {
+    recoveryApplication = await _electron.launch({ executablePath: executable,
+      args: [`--user-data-dir=${recoveryProfile}`], env: { ...process.env } });
+    recoveryPage = await recoveryApplication.firstWindow();
+    recoveryPage.setDefaultTimeout(12000);
+    recoveryPage.on('pageerror', error => recoveryErrors.push(error.message));
+    const retry = recoveryPage.getByRole('button', { name: 'Retry loading projects', exact: true });
+    await retry.waitFor();
+    assert.match(await recoveryPage.locator('.empty-scene [role="alert"]').innerText(), /database/i);
+    await until(() => recoveryApplication.evaluate(({ app }) =>
+      !app.getAppMetrics().some(metric => metric.name === 'Pideck workspace')), 'fatal startup host exit');
+    assert.equal(await readFile(database, 'utf8'), damaged);
+    const identity = await recoveryApplication.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      const state = globalThis.__fatalRecovery = { loads: 0 };
+      window.webContents.on('did-start-loading', () => state.loads++);
+      return { main: process.pid, window: window.id, renderer: window.webContents.getOSProcessId() };
+    });
+    await recoveryPage.evaluate(() => {
+      window.fatalHostRestarts = 0;
+      window.pideck.onEvent(event => { if (event.type === 'host:restart') window.fatalHostRestarts++; });
+    });
+    await recoveryPage.screenshot({ path: join(output, 'fatal-host.png') });
+    // Only this intentionally damaged fixture is removed, after its process has
+    // exited. Real application recovery never deletes a user's database.
+    await Promise.all(['', '-wal', '-shm'].map(suffix => rm(database + suffix, { force: true })));
+    await retry.click();
+    await recoveryPage.getByRole('heading', { name: 'Open a project folder', exact: true }).waitFor();
+    assert.deepEqual(await recoveryPage.evaluate(() => window.pideck.invoke('project:list')), []);
+    const recovered = await recoveryApplication.evaluate(({ app, BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      return { identity: { main: process.pid, window: window.id, renderer: window.webContents.getOSProcessId() },
+        windows: BrowserWindow.getAllWindows().length, loads: globalThis.__fatalRecovery.loads,
+        hosts: app.getAppMetrics().filter(metric => metric.name === 'Pideck workspace').length };
+    });
+    assert.deepEqual(recovered.identity, identity, 'manual retry recovers only the host, preserving the interface');
+    assert.equal(recovered.windows, 1);
+    assert.equal(recovered.hosts, 1);
+    assert.equal(recovered.loads, 0, 'host recovery does not reload the renderer');
+    assert.equal(await recoveryPage.evaluate(() => window.fatalHostRestarts), 1);
+    assert.deepEqual(recoveryErrors, []);
+    await recoveryPage.screenshot({ path: join(output, 'recovered-host.png') });
+    results.checks.push('a real startup SQLite failure recovers through Retry loading projects after the fixture is repaired, restarting only the host once');
+  } catch (error) {
+    try { await recoveryPage?.screenshot({ path: join(output, 'fatal-host-failure.png'), timeout: 3000 }); } catch {}
+    throw error;
+  } finally {
+    await recoveryApplication?.close().catch(() => {});
+  }
+}
+
 try {
   await Promise.all([mkdir(directory), mkdir(profiles), mkdir(output, { recursive: true })]);
   await writeFile(join(directory, 'example.ts'), "export const result = 'before';\n");
@@ -209,6 +271,7 @@ try {
     }, { bundle, terminalBundle, home, shell });
     assert.equal(checks.length, 8); results.checks.push(`${shell}: ${checks.join(', ')}`);
   }
+  await verifyFatalHostRecovery();
   assert.deepEqual(errors, []);
   assert.deepEqual(provider.failures, []);
   await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2));

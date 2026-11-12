@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import type { Project } from '../shared/api';
 import { externalMessageUrl, projectMessageLink, type ProjectLink } from '../shared/message-links';
 import { readableError } from './conversation';
+import { MarkdownPre } from './MarkdownCodeBlock';
 
 function MessageLink({ href, project, onReview, children }: {
   href?: string;
@@ -39,5 +40,6 @@ export const MessageMarkdown = memo(function MessageMarkdown({ text, project, on
   return <div className="markdown"><ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} urlTransform={url => url} components={{
     a: ({ children, href }) => <MessageLink href={href} project={project} onReview={onReview}>{children}</MessageLink>,
     img: ({ alt }) => <span>{alt}</span>,
+    pre: MarkdownPre,
   }}>{text}</ReactMarkdown></div>;
 });

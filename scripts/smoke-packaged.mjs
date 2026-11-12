@@ -1575,6 +1575,7 @@ try {
   assert.deepEqual(modelServer.failures, []);
   console.log("Packaged Electron verified: native menus, coding and host recovery, native run Continue and tool cancellation, native PTY, and permanent workspace and session removal.");
 } catch (error) {
+  try { await (await app?.firstWindow())?.screenshot({ path: 'output/playwright/pideck-native-failure.png', timeout: 3000 }); } catch {}
   if (errors.length) console.error("Renderer errors:", errors);
   if (modelServer?.failures.length) console.error("Provider fixture errors:", modelServer.failures);
   throw error;

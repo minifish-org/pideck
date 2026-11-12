@@ -136,7 +136,7 @@ async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: st
 async function handle(request: HostRequest): Promise<unknown> {
   const { owner, windowId = owner, command, payload } = request;
   if (!runtime || !auth || closing || (closedOwners.has(owner) && command !== "owner:close")) throw new Error("The workspace host is closed.");
-  if (removing && (command === "chat:watch" || command === "chat:earlier")) {
+  if (removing && (command === "chat:watch" || command === "chat:earlier" || command === "chat:image")) {
     throw new Error("The conversation store is finishing a removal.");
   }
   switch (command) {
@@ -205,6 +205,8 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.start(payload);
     case "chat:send":
       return runtime.send(payload);
+    case "chat:image":
+      return runtime.readChatImage(payload);
     case "chat:queue-read":
       return runtime.readQueuedInput(payload);
     case "chat:queue-edit-start":

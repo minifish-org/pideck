@@ -168,3 +168,52 @@ test("review can watch a project before Git is initialized", { timeout: 8_000 },
   await changed.promise;
   assert.deepEqual(await listChanges(cwd), [{ path: "new.txt", status: "??" }]);
 });
+
+test("review watch ignores build output while retaining force-tracked files and Git metadata", { timeout: 10_000 }, async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pideck-review-ignore-"));
+  const watch = new AbortController();
+  t.after(async () => {
+    watch.abort();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  await Promise.all(["build", "node_modules", "kept"].map(path => mkdir(join(cwd, path))));
+  await writeFile(join(cwd, ".gitignore"), "build/\nnode_modules/\nkept/\n");
+  await writeFile(join(cwd, "kept", "tracked.ts"), "before\n");
+  git(cwd, "init", "-q");
+  git(cwd, "add", ".gitignore");
+  git(cwd, "add", "-f", "kept/tracked.ts");
+  git(cwd, "commit", "-qm", "start");
+
+  let changed = Promise.withResolvers<void>();
+  let events = 0;
+  await watchChanges(cwd, watch.signal, () => { events++; changed.resolve(); },
+    () => changed.reject(new Error("The review watch failed.")));
+  const probe = () => writeFile(join(cwd, ".git", "info", "exclude"), "\n# watch ready\n", { flag: "a" });
+  const probing = setInterval(() => { void probe().catch(changed.reject); }, 300);
+  t.after(() => clearInterval(probing));
+  try { await probe(); await changed.promise; }
+  finally { clearInterval(probing); }
+  await delay(300);
+  const baseline = events;
+  await Promise.all(Array.from({ length: 20 }, (_, index) =>
+    writeFile(join(cwd, index % 2 ? "build" : "node_modules", `generated ${index}.js`), "ignored\n")));
+  await delay(500);
+  assert.equal(events, baseline, "ignored build and dependency changes must not refresh review");
+
+  changed = Promise.withResolvers<void>();
+  await writeFile(join(cwd, "source.ts"), "new source\n");
+  await changed.promise;
+  changed = Promise.withResolvers<void>();
+  await writeFile(join(cwd, "kept", "tracked.ts"), "after\n");
+  await changed.promise;
+  assert.equal((await listChanges(cwd)).find(file => file.path === "kept/tracked.ts")?.status, " M");
+
+  changed = Promise.withResolvers<void>();
+  await promisify(execFile)("git", ["add", "-f", "kept/tracked.ts"], { cwd });
+  await changed.promise;
+  assert.equal((await listChanges(cwd)).find(file => file.path === "kept/tracked.ts")?.status, "M ");
+  changed = Promise.withResolvers<void>();
+  await rm(join(cwd, "kept"), { recursive: true });
+  await changed.promise;
+  assert.equal((await listChanges(cwd)).find(file => file.path === "kept/tracked.ts")?.status, "MD");
+});

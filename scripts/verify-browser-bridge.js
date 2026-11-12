@@ -256,6 +256,7 @@ async page => {
         }
         if (offline && (command === "project:list" || command === "session:list")) throw new Error("Fixture workspace unavailable.");
         switch (command) {
+          case "host:recover": return;
           case "draft:images-write":
             state.draftImages[`${payload.projectId}/${payload.draftId}/${payload.key}`] = payload.images;
             persist();
@@ -525,6 +526,14 @@ async page => {
             })), queued: [], canSteerQueued: false, canContinue: true, error: undefined,
               runOutcome: { kind: "cancelled", taskId: 9_002, message: "Run cancelled." } });
             document.body.dataset.withdrawnInputs = String(withdrawn);
+            if (sessionStorage.getItem('pideck-hold-cancel-cleanup')) {
+              sessionStorage.removeItem('pideck-hold-cancel-cleanup');
+              await new Promise(resolve => {
+                window.releaseCancelCleanup = resolve;
+                document.body.dataset.cancelCleanupPending = 'true';
+              });
+              delete document.body.dataset.cancelCleanupPending;
+            }
             return;
           }
           case "chat:continue": {

@@ -253,7 +253,14 @@ async page => {
     }
     if ((await runClock()).startedAt !== initialClock.startedAt) throw new Error("A tool result reset the active run stopwatch.");
     await run("next-tool");
+    await page.evaluate(() => sessionStorage.setItem('pideck-hold-cancel-cleanup', 'true'));
     await page.getByRole("button", { name: "Cancel run", exact: true }).click();
+    await page.waitForFunction(() => document.body.dataset.cancelCleanupPending === 'true');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (await page.getByRole('button', { name: 'Send', exact: true }).isEnabled()) {
+      throw new Error('The composer accepted new input before cancellation cleanup finished.');
+    }
+    await page.evaluate(() => window.releaseCancelCleanup());
     await page.getByRole("button", { name: "Continue run", exact: true }).waitFor();
     await controlsQueue.waitFor({ state: "detached" });
     if (await page.evaluate(() => document.body.dataset.withdrawnInputs) !== "1" || await prompt.inputValue() !== draft) {

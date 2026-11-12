@@ -125,6 +125,8 @@ export class Runtime {
     clear: id => this.metadata.clearSessionActivity(id),
   });
   private readonly closedEditOwners = new Set<number>();
+  private readonly cancellations = new Map<string, Promise<void>>();
+  private readonly cancelledAdmissions = new Map<string, symbol>();
   private editsClosing = false;
 
   private constructor(
@@ -423,16 +425,22 @@ export class Runtime {
 
   updateQueuedInput(input: QueuedInputRef & QueueUpdate): Promise<void> {
     return this.admit(async () => {
+      const admitted = this.conversationAdmission(input);
       this.requireProject(input.projectId);
       const conversation = await this.conversation(input);
-      return conversation.commit(tx => updateQueuedInput(tx, conversation.id, input.id, input), context);
+      return conversation.commit(tx => {
+        admitted();
+        return updateQueuedInput(tx, conversation.id, input.id, input);
+      }, context);
     });
   }
 
   startQueueEdit(input: QueueEditRef, owner: number) {
     return this.admit(async () => {
+      const admitted = this.conversationAdmission(input);
       const conversation = await this.conversation(input);
       return conversation.commit(tx => {
+        admitted();
         if (this.editsClosing || this.closedEditOwners.has(owner)) throw new Error("This editing window has closed.");
         return startQueueEdit(tx, conversation.id, { ...input, owner, lifetimeId: this.lifetimeId });
       }, context);
@@ -441,8 +449,10 @@ export class Runtime {
 
   finishQueueEdit(input: QueueEditRef & { text?: string }, owner: number): Promise<void> {
     return this.admit(async () => {
+      const admitted = this.conversationAdmission(input);
       const conversation = await this.conversation(input);
       return conversation.commit(tx => {
+        admitted();
         if (this.editsClosing || this.closedEditOwners.has(owner)) throw new Error("This editing window has closed.");
         return finishQueueEdit(tx, conversation, { ...input, owner, lifetimeId: this.lifetimeId }, input.text);
       }, context);
@@ -505,6 +515,7 @@ export class Runtime {
   }
 
   private async submitChat(input: SendChat): Promise<void> {
+    const admitted = this.conversationAdmission(input);
     this.requireProject(input.projectId);
     const { autoTitlePending } = this.metadata.session(input.projectId, input.sessionId);
     const conversation = await this.conversation(input);
@@ -521,7 +532,8 @@ export class Runtime {
     const model = await this.validateChatModel(input);
     const delivery = input.delivery ?? "send";
 
-    const admitted = await conversation.commit(async tx => {
+    const submitted = await conversation.commit(async tx => {
+      admitted();
       if (requestId && await tx.submissionByRequest(conversation.id, requestId)) return false;
       const editing = (await tx.doc(QueueEditDoc, conversation.id)).edit;
       if (delivery === "send" && !editing) {
@@ -539,7 +551,7 @@ export class Runtime {
       await submitQueuedInput(tx, conversation, chatSubmission(input));
       return true;
     }, context);
-    if (admitted) this.metadata.touchSession(input.sessionId);
+    if (submitted) this.metadata.touchSession(input.sessionId);
     if (autoTitlePending) await this.nameFromFirstMessage(input.sessionId, conversation);
   }
 
@@ -562,16 +574,32 @@ export class Runtime {
   }
 
   cancel(selection: Selection): Promise<void> {
-    return this.admit(async () => {
+    const existing = this.cancellations.get(selection.sessionId);
+    if (existing) return this.admit(async () => {
+      this.metadata.session(selection.projectId, selection.sessionId);
+      await existing;
+    });
+    const cancellation = this.admit(async () => {
+      this.metadata.session(selection.projectId, selection.sessionId);
+      // Invalidate earlier asynchronous admissions before the first await. Held
+      // edits and the native inbox are withdrawn in separate Durable commits;
+      // no new claim, release or input may enter between those commits.
+      this.cancelledAdmissions.set(selection.sessionId, Symbol());
       const conversation = await this.conversation(selection);
       await conversation.commit(tx => discardQueueEdit(tx, conversation.id), context);
       await conversation.abort(context, { background: true });
       await this.automation?.closeConversation(String(conversation.id));
     });
+    this.cancellations.set(selection.sessionId, cancellation);
+    void cancellation.finally(() => {
+      if (this.cancellations.get(selection.sessionId) === cancellation) this.cancellations.delete(selection.sessionId);
+    }).catch(() => {});
+    return cancellation;
   }
 
   continue(input: Commands["chat:continue"][0]): Promise<void> {
     return this.admit(async () => {
+      const admitted = this.conversationAdmission(input);
       this.requireProject(input.projectId);
       const conversation = await this.conversation(input);
       const existing = await conversation.commit(tx => tx.submissionByRequest(conversation.id, input.requestId), context);
@@ -589,6 +617,7 @@ export class Runtime {
       const last = current.messages.findLast(message => message.role !== "system");
       const tail = current.entries.at(-1)?.id;
       await conversation.commit(async tx => {
+        admitted();
         const accepted = await tx.submissionByRequest(conversation.id, input.requestId);
         if (accepted) {
           if (accepted.type !== "continue") throw new Error("This request already belongs to another action.");
@@ -725,6 +754,17 @@ export class Runtime {
     if (this.removing || this.closing) throw new Error("The workspace is finishing a removal.");
   }
 
+  private conversationAdmission(selection: Selection) {
+    const generation = this.cancelledAdmissions.get(selection.sessionId);
+    const assertCurrent = () => {
+      if (this.cancellations.has(selection.sessionId) || this.cancelledAdmissions.get(selection.sessionId) !== generation) {
+        throw new Error("This run was cancelled. Try the action again.");
+      }
+    };
+    assertCurrent();
+    return assertCurrent;
+  }
+
   private async admit<T>(operation: () => Promise<T>, startsWork = false): Promise<T> {
     this.assertWritable();
     if (startsWork) this.activeAdmissions++;
@@ -737,6 +777,23 @@ export class Runtime {
       if (admitted) this.admissions.delete(admitted);
       if (startsWork) this.activeAdmissions--;
     }
+  }
+
+  async readChatImage(input: Commands["chat:image"][0]): Promise<Commands["chat:image"][1]> {
+    const conversation = await this.conversation(input);
+    const entryId = input.entryId as EntryId;
+    const entry = (await conversation.entries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context)).items[0];
+    if (!entry || !["pi.user", inputEntryKind, "pi.tool-result"].includes(entry.kind)) {
+      throw new Error("This image is no longer available in this conversation.");
+    }
+    const message = entry.model?.[input.messageIndex];
+    const content = message && (message.role === "user" || message.role === "toolResult") ? message.content : undefined;
+    const image = Array.isArray(content) ? content[input.contentIndex] : undefined;
+    if (!image || image.type !== "image" || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType)) {
+      throw new Error("This image is no longer available in this conversation.");
+    }
+    if (image.data.length > 16_000_000) throw new Error("This image is too large to preview.");
+    return { data: image.data, mimeType: image.mimeType as "image/png" | "image/jpeg" | "image/webp" | "image/gif" };
   }
 
   async watch(

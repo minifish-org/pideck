@@ -6,7 +6,7 @@ export const eventChannel = "pideck:event";
 export const menuActionChannel = "pideck:menu-action";
 export const menuStateChannel = "pideck:menu-state";
 
-type Forwarded = Exclude<Command, "desktop:ready" | "desktop:context" | "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
+type Forwarded = Exclude<Command, "host:recover" | "desktop:ready" | "desktop:context" | "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
 

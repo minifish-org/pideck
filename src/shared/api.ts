@@ -64,6 +64,8 @@ export type AuthNotice =
   | { type: "device_code"; link?: AuthLink; code: string; copyId?: string; expiresInSeconds?: number }
   | { type: "progress"; message: string };
 export type ImageInput = { data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" };
+export type ChatImageRef = { entryId: number; messageIndex: number; contentIndex: number };
+export type ChatImage = { mimeType: string; data: string; ref?: ChatImageRef };
 export type DraftImage = ImageInput & { name: string };
 export type DraftImageRef = { projectId: string; draftId: string; key: string };
 export type SendChat = Selection & {
@@ -77,14 +79,14 @@ export type SendChat = Selection & {
 export type StartChat = Omit<SendChat, "sessionId" | "delivery" | "requestId"> & { requestId: string };
 export type ChatBlock =
   | { type: "text" | "thinking"; text: string }
-  | { type: "image"; mimeType: string; data: string }
+  | ({ type: "image" } & ChatImage)
   | {
       type: "tool";
       id: string;
       name: string;
       arguments?: Record<string, unknown>;
       output?: string;
-      images?: { mimeType: string; data: string }[];
+      images?: ChatImage[];
       patch?: string;
       path?: string;
       status: "pending" | "running" | "done" | "error";
@@ -151,6 +153,7 @@ export type TerminalEvent =
 type WatchRef = Selection & { subscriptionId: string };
 
 export type Commands = {
+  "host:recover": [undefined, void];
   "desktop:ready": [undefined, DesktopNavigation | null];
   "desktop:context": [DesktopContext, void];
   "appearance:get": [undefined, AppearanceState];
@@ -180,6 +183,7 @@ export type Commands = {
   "chat:watch": [WatchRef & { readingEntryId?: number }, void];
   "chat:unwatch": [{ subscriptionId: string }, void];
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
+  "chat:image": [Selection & ChatImageRef, ImageInput];
   "chat:start": [StartChat, Session];
   "chat:send": [SendChat, void];
   "chat:queue-read": [QueuedInputRef, QueuedInputContent];
