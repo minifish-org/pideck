@@ -115,7 +115,7 @@ async function observers() {
 async function launch() {
   assert.ok(digest(await readFile(asar)) === asarHash, "The release artifact changed during this review.");
   const app = await _electron.launch({ executablePath: executable,
-    args: [`--user-data-dir=${profile}`], env: environment, timeout: 30_000 });
+    args: [`--user-data-dir=${profile}`, "-SUEnableAutomaticChecks", "NO"], env: environment, timeout: 30_000 });
   running = app;
   const pid = app.process().pid;
   assert.ok(!processIds.has(pid), "A cold read reused a previous application process.");

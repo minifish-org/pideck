@@ -47,6 +47,11 @@ function killShell(pty: IPty, signal: "SIGHUP" | "SIGKILL") {
   try { pty.kill(process.platform === "win32" ? undefined : signal); } catch { /* Shell already exited. */ }
 }
 
+function idlePrompt(terminal: Terminal) {
+  const inputVersion = terminal.inputVersion;
+  return () => terminal.atPrompt && !terminal.pendingInput && terminal.inputVersion === inputVersion;
+}
+
 export class Terminals {
   private terminals = new Map<string, Terminal>();
   private closing = new Map<string, Set<ClosingShell>>();
@@ -75,11 +80,11 @@ export class Terminals {
       let count = 0;
       const candidates = [...this.terminals].sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
       for (const [id, terminal] of candidates) {
-        const version = terminal.inputVersion;
+        const atIdlePrompt = idlePrompt(terminal);
         const lastUsed = terminal.lastUsed;
         const eligible = () => !this.stopping && this.terminals.get(id) === terminal && !terminal.exited
-          && !terminal.visible && terminal.atPrompt && !terminal.pendingInput
-          && terminal.inputVersion === version && terminal.lastUsed === lastUsed && (pressure || this.now() - terminal.lastUsed >= this.idleAfter);
+          && !terminal.visible && atIdlePrompt()
+          && terminal.lastUsed === lastUsed && (pressure || this.now() - terminal.lastUsed >= this.idleAfter);
         if (!eligible() || !await this.hasNoJobs(terminal.pty.pid) || !eligible()) continue;
         const { owner, projectId } = terminal;
         const event: TerminalEvent = { type: 'terminal:reclaimed', projectId, terminalId: id, sequence: ++terminal.sequence };
@@ -106,6 +111,18 @@ export class Terminals {
   liveCount(): number {
     return [...this.terminals.values()].filter(terminal => !terminal.exited).length
       + [...this.closing.values()].reduce((count, shells) => count + shells.size, 0);
+  }
+
+  async hasWorkToInterrupt(): Promise<boolean> {
+    // The updater seals new requests first. Include any opens already admitted.
+    await this.opening.catch(() => {});
+    const busy = await Promise.all([...this.terminals].map(async ([id, terminal]) => {
+      if (terminal.exited) return false;
+      const atIdlePrompt = idlePrompt(terminal);
+      const idle = atIdlePrompt() && await this.hasNoJobs(terminal.pty.pid) && atIdlePrompt();
+      return !idle && this.terminals.get(id) === terminal && !terminal.exited;
+    }));
+    return busy.some(Boolean);
   }
 
   open(owner: number, projectId: string, cwd: string, cols: number, rows: number): Promise<TerminalOpen> {

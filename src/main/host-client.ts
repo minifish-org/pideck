@@ -5,8 +5,8 @@ import { randomUUID } from "node:crypto";
 import { CredentialVault } from "./credentials";
 import { hostEnvironment } from "./host-env";
 import { closeWorkspaceProcess } from "./native-workspace";
-import type { HostEvent, SessionActivity } from "../shared/api";
-import type { FromHost, HostCloseResult, HostCommand, HostInput, HostRequest, HostResult, ToHost } from "../shared/transport";
+import type { HostEvent } from "../shared/api";
+import type { FromHost, HostCloseResult, HostCommand, HostInput, HostRequest, HostResult, NotificationActivity, ToHost } from "../shared/transport";
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void };
 
@@ -31,7 +31,7 @@ export class HostClient {
     private onRestart: () => void,
     private onDisconnect: (message: string) => void,
     private automationDirectory?: string,
-    private onActivity?: (items: SessionActivity[], baseline: boolean) => void,
+    private onActivity?: (items: NotificationActivity[], baseline: boolean) => void,
   ) {}
 
   start(recovering = false): void {

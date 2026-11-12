@@ -21,8 +21,8 @@ function shortenTitle(title: string, limit: number): string {
   return shortened.trimEnd() + "…";
 }
 
-export function sessionTitle(title: string): string {
-  return shortenTitle(normalizeSessionTitle(title), sessionTitleLimit);
+export function sessionTitle(title: string, limit = sessionTitleLimit): string {
+  return shortenTitle(normalizeSessionTitle(title), limit);
 }
 
 export function firstSessionTitle(text: string): string {

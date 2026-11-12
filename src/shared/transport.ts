@@ -9,6 +9,7 @@ export const menuStateChannel = "pideck:menu-state";
 type Forwarded = Exclude<Command, "host:recover" | "desktop:ready" | "desktop:context" | "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
+export type NotificationActivity = SessionActivity & { notificationLabels?: { projectName: string; sessionTitle?: string } };
 
 export type HostCommand =
   | Forwarded
@@ -26,7 +27,7 @@ export type HostInput = {
   // Navigation retains the window's exclusive edit lease; a real close detaches
   // the lease while keeping the edit and queued inputs held for reopening.
   "owner:close": { preserveQueueEdits?: boolean } | undefined;
-  "host:status": undefined;
+  "host:status": { checkTerminalWork: true } | undefined;
 };
 export type HostResult = {
   [C in Exclude<Forwarded, "model:auth-open" | "model:auth-copy">]: Commands[C][1];
@@ -37,7 +38,7 @@ export type HostResult = {
   "removal:plan": RemovalPreview;
   "removal:execute": RemovalResult;
   "owner:close": void;
-  "host:status": { active: boolean; activities: SessionActivity[]; terminalCount: number };
+  "host:status": { active: boolean; activities: SessionActivity[]; terminalBusy?: boolean };
 };
 export type HostCloseResult =
   | { status: "graceful" }
@@ -54,7 +55,7 @@ export type ToHost =
   | { type: "shutdown:exit" }
   | HostRequest;
 export type FromHost =
-  | { type: "activity"; items: SessionActivity[]; baseline: boolean }
+  | { type: "activity"; items: NotificationActivity[]; baseline: boolean }
   | { type: "ready" }
   | { type: "fatal"; error: string }
   | { type: "shutdown:complete"; error?: string }

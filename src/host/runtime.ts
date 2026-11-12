@@ -18,7 +18,7 @@ import type {
   ChatGap, ChatView, ModelCatalog, ModelOption, QueuedInputRef, QueueEditRef, QueueUpdate, RemovalResult, SendChat, Selection, Session, SessionActivity,
   StartChat, Commands,
 } from "../shared/api.js";
-import type { RemovalPreview, RemovalTarget } from "../shared/transport.js";
+import type { NotificationActivity, RemovalPreview, RemovalTarget } from "../shared/transport.js";
 import { branchTitle, firstSessionTitle, sessionTitle, untitledSession } from "../shared/session-title.js";
 import { chatProjection, continueEntryKind, inputEntryKind, type CompletedRun } from "./chat-view.js";
 import { PersistentCredentials } from "./credential-store.js";
@@ -264,6 +264,11 @@ export class Runtime {
   }
 
   sessionActivities() { return this.activities.snapshot(); }
+  notificationActivities(items: SessionActivity[]): NotificationActivity[] {
+    return items.map(item => item.state === "running" ? item : {
+      ...item, notificationLabels: this.metadata.notificationLabels(item),
+    });
+  }
   hasActiveWork() { return this.activeAdmissions > 0 || this.activities.hasActiveWork(); }
 
   readSessionActivity(selection: Selection, taskId: number) {
@@ -279,7 +284,9 @@ export class Runtime {
         agent: { cwd: project.directory },
       }, context);
       const name = title && sessionTitle(title);
-      return this.metadata.createSession(projectId, conversation.id, name || untitledSession, !name);
+      return this.metadata.createSession(projectId, conversation.id, name || untitledSession, {
+        autoTitlePending: !name, titleIsExplicit: Boolean(name),
+      });
     });
   }
 
@@ -410,7 +417,7 @@ export class Runtime {
     await conversation.commit(async tx => {
       await conversation.submit(tx, chatSubmission(input));
       this.requireProject(projectId);
-      this.metadata.createSession(projectId, conversation.id, firstSessionTitle(input.text), false, requestId);
+      this.metadata.createSession(projectId, conversation.id, firstSessionTitle(input.text), { startId: requestId });
     }, context);
     return this.metadata.finishSessionStart(requestId);
   }
@@ -569,7 +576,8 @@ export class Runtime {
       throw new Error("Choose a committed user or assistant message in this session.");
     }
     const fork = await conversation.fork(at, { ownership: { kind: "ownerless" } }, context);
-    return { ...this.metadata.createSession(selection.projectId, fork.id, (title && sessionTitle(title)) || branchTitle(source.title)),
+    const name = title && sessionTitle(title);
+    return { ...this.metadata.createSession(selection.projectId, fork.id, name || branchTitle(source.title), { titleIsExplicit: Boolean(name) }),
       parentSessionId: source.id, forkEntryId: entryId };
   }
 

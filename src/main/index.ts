@@ -548,10 +548,14 @@ async function initialize() {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:resume" });
     },
     async confirm() {
-      const work = await client.request(0, "host:status", undefined);
-      if (!work.active && !work.terminalCount) return true;
-      const options: MessageBoxOptions = { type: "warning", message: "Restart while work is open?",
-        detail: "AI work and open terminal shells will stop. Your conversations, queued edits and drafts stay saved.",
+      const work = await client.request(0, "host:status", { checkTerminalWork: true });
+      const terminalMayBeBusy = work.terminalBusy !== false;
+      if (!work.active && !terminalMayBeBusy) return true;
+      const options: MessageBoxOptions = { type: "warning",
+        message: work.active ? "Restart while AI work is running?" : "Restart while a terminal may be busy?",
+        detail: [work.active && "Running AI work will be interrupted.",
+          terminalMayBeBusy && "Open terminals may have running commands or unfinished input. Restarting closes them.",
+          "Your conversations, queued edits and drafts stay saved."].filter(Boolean).join(" "),
         buttons: ["Keep Working", "Restart and Update"], defaultId: 0, cancelId: 0, noLink: true };
       const window = mainWindow;
       if (window && !window.isDestroyed()) revealWindow();

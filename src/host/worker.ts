@@ -140,8 +140,10 @@ async function handle(request: HostRequest): Promise<unknown> {
     throw new Error("The conversation store is finishing a removal.");
   }
   switch (command) {
-    case "host:status":
-      return { active: runtime.hasActiveWork(), activities: runtime.sessionActivities(), terminalCount: terminals.liveCount() };
+    case "host:status": {
+      const terminalBusy = payload?.checkTerminalWork ? await terminals.hasWorkToInterrupt() : undefined;
+      return { active: runtime.hasActiveWork(), activities: runtime.sessionActivities(), terminalBusy };
+    }
     case "owner:close":
       return closeOwner(owner, windowId, payload?.preserveQueueEdits);
     case "project:list":
@@ -353,7 +355,7 @@ port.on("message", ({ data }: { data: ToHost }) => {
       // Native completion reminders outlive renderer subscriptions and windows.
       let baseline = true;
       opened.watchSessionActivity(items => {
-        if (!closing) send({ type: "activity", items, baseline });
+        if (!closing) send({ type: "activity", items: opened.notificationActivities(items), baseline });
         baseline = false;
       });
       send({ type: "ready" });

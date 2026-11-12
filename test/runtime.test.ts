@@ -188,6 +188,8 @@ test("first send creates one durable session and recovers interrupted admissions
     assert.equal(started.id, input.requestId);
     assert.equal(started.title, input.text);
     const selection = { projectId: project.id, sessionId: started.id };
+    assert.deepEqual(runtime.notificationActivities([{ ...selection, taskId: 1, state: "finished", settled: true }])[0]?.notificationLabels,
+      { projectName: project.name });
     const view = await waitForView(runtime, selection, view => Boolean(answerWithTiming(view, "Done.")));
     assert.equal(view.messages.filter(message => message.requestId === input.requestId).length, 1);
     assert.ok(view.messages.some(message => message.blocks.some(block =>

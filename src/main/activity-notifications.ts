@@ -1,4 +1,6 @@
-import type { Selection, SessionActivity } from "../shared/api.js";
+import type { Selection } from "../shared/api.js";
+import { sessionTitle } from "../shared/session-title.js";
+import type { NotificationActivity } from "../shared/transport.js";
 
 export type ActivityNotification = {
   id: string;
@@ -18,7 +20,14 @@ export type ActivityNotificationPorts = {
 
 const prefix = "pideck-activity:";
 const keyOf = (item: Selection) => JSON.stringify([item.projectId, item.sessionId]);
-const deservesNotification = (item: SessionActivity) => item.settled || item.state === "attention";
+const deservesNotification = (item: NotificationActivity) => item.settled || item.state === "attention";
+
+function notificationTitle(labels: NotificationActivity["notificationLabels"]): string {
+  if (!labels) return "Pideck";
+  const project = sessionTitle(labels.projectName, 28);
+  const session = sessionTitle(labels.sessionTitle ?? "", 40) || "Session";
+  return project ? `${project} · ${session}` : session;
+}
 
 export function activityNotificationId(item: ActivityDestination) {
   return `${prefix}${encodeURIComponent(item.projectId)}:${encodeURIComponent(item.sessionId)}:${item.taskId}`;
@@ -50,7 +59,7 @@ export function activityNotificationLaunchId(launchInfo: unknown): string | unde
 // Main-process projection of the host's activity state. It never decides that a
 // result was read: only the focused renderer's visible-result acknowledgement does.
 export class ActivityNotifications {
-  private latest = new Map<string, SessionActivity>();
+  private latest = new Map<string, NotificationActivity>();
   private handled = new Map<string, number>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly delivered = new Map<string, ActivityNotificationHandle>();
@@ -60,7 +69,7 @@ export class ActivityNotifications {
 
   constructor(private readonly ports: ActivityNotificationPorts) {}
 
-  update(items: readonly SessionActivity[], options: { baseline?: boolean } = {}) {
+  update(items: readonly NotificationActivity[], options: { baseline?: boolean } = {}) {
     if (this.disposed) return;
     const baseline = options.baseline || !this.initialized;
     this.initialized = true;
@@ -91,7 +100,7 @@ export class ActivityNotifications {
           const handle = this.ports.show({
             id: expectedId,
             groupId: "pideck-activity",
-            title: "Pideck",
+            title: notificationTitle(current.notificationLabels),
             body: current.state === "finished" ? "Work finished. Open to view the result."
               : current.settled ? "Work could not finish. Open to review."
               : "Work needs attention. Open to continue.",

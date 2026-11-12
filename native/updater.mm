@@ -252,6 +252,8 @@ static napi_value Start(napi_env env, napi_callback_info info) {
       napi_throw_error(env, nullptr, message.c_str());
       return nullptr;
     }
+    // Check on launch before Sparkle starts its recurring schedule.
+    if (updater.automaticallyChecksForUpdates) [updater checkForUpdatesInBackground];
     return BooleanValue(env, CanCheck());
   }
 }

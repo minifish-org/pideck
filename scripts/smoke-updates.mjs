@@ -63,7 +63,7 @@ async function unpackedManifest(root) {
   return entries;
 }
 
-async function patchCandidate(base, candidate, { name, identity, version, publicKey, feedUrl, directory }) {
+async function patchCandidate(base, candidate, { name, identity, version, publicKey, feedUrl, directory, automaticChecks = false }) {
   await mkdir(dirname(candidate), { recursive: true });
   command("/usr/bin/ditto", [base, candidate]);
   const archive = join(candidate, "Contents", "Resources", "app.asar");
@@ -134,7 +134,7 @@ with open(p,'wb') as f:plistlib.dump(d,f)
 `, join(candidate, "Contents", "Info.plist"), JSON.stringify({
     CFBundleIdentifier: identity, CFBundleName: name, CFBundleDisplayName: name,
     CFBundleVersion: version, CFBundleShortVersionString: version,
-    SUEnableAutomaticChecks: false,
+    SUEnableAutomaticChecks: automaticChecks,
     SUFeedURL: feedUrl, SUPublicEDKey: publicKey, SUVerifyUpdateBeforeExtraction: true,
     SURequireSignedFeed: true, SUSignedFeedFailureExpirationInterval: 0,
   }), headerHash]);
@@ -205,7 +205,7 @@ print(json.dumps(result))
 `, profile, offline ? "offline" : "live"]));
 }
 
-export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
+export async function prepareUpdateAcceptance({ baseApp, directory, automaticChecks = false } = {}) {
   assert.equal(process.platform, "darwin", "This acceptance harness exercises native macOS Sparkle updates.");
   assert.ok(baseApp && isAbsolute(baseApp), "Pass the absolute path to a freshly built Pideck.app.");
   assert.ok(await exists(join(baseApp, "Contents", "Resources", "native", "pideck-sparkle.node")));
@@ -272,7 +272,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     const publicKey = createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
     await writeFile(privateFile, seed.toString("base64") + "\n", { mode: 0o600 });
     const configuration = { name, identity, publicKey, feedUrl, directory: run };
-    executable = await patchCandidate(baseApp, installed, { ...configuration, version: versions.installed });
+    executable = await patchCandidate(baseApp, installed, { ...configuration, version: versions.installed, automaticChecks });
     await patchCandidate(baseApp, candidate, { ...configuration, version: versions.update });
     const archive = join(run, "good.zip");
     command("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", candidate, archive]);
@@ -305,7 +305,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     throw error;
   } finally { await rm(privateFile, { force: true }); }
 
-  async function launch({ reopening = false } = {}) {
+  async function launch({ reopening = false, disableAutomaticChecks = false } = {}) {
     assert.equal(closed, false);
     assert.deepEqual(ownProcesses(executable), [], "Close the verification app before attaching a new test launch.");
     const info = readInfo(installed);
@@ -314,7 +314,8 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
       [identity, name, name, name, name]);
     provider ??= await openSmokeProvider();
     try {
-      app = await _electron.launch({ executablePath: executable, args: [], env: isolatedEnvironment(provider.endpoint), timeout: 30_000 });
+      const args = disableAutomaticChecks ? ["-SUEnableAutomaticChecks", "NO"] : [];
+      app = await _electron.launch({ executablePath: executable, args, env: isolatedEnvironment(provider.endpoint), timeout: 30_000 });
     } catch (error) {
       record("launch-failed", { message: error.stack ?? String(error) });
       await close();
@@ -416,6 +417,48 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     await waitForMenu("Show Software Update…", false);
     assert.equal(feedRequests(), count);
     record("update-menu-verified");
+  }
+
+  async function verifyStartupCheck() {
+    async function waitForMenu(label, count) {
+      const deadline = Date.now() + 15_000;
+      let state;
+      do {
+        state = await app.evaluate(({ Menu }) => {
+          const item = Menu.getApplicationMenu().getMenuItemById("check-for-updates");
+          return { label: item.label, enabled: item.enabled };
+        });
+        if (state.label === label && state.enabled && requests.length === count) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } while (Date.now() < deadline);
+      assert.deepEqual(state, { label, enabled: true });
+      assert.equal(requests.length, count);
+    }
+
+    // Hold any unexpected request open so that it cannot finish before we inspect the menu.
+    let releaseFeed;
+    feedGate = new Promise(resolve => { releaseFeed = resolve; });
+    try {
+      await launch({ disableAutomaticChecks: true });
+      await waitForMenu("Check for Updates…", 0);
+    } finally {
+      feedGate = undefined;
+      releaseFeed();
+    }
+    await app.close();
+
+    await launch();
+    await waitForMenu("Check for Updates…", 1);
+    await app.close();
+    const lastCheck = Date.parse(command("/usr/bin/defaults", ["read", identity, "SULastCheckTime"]).trim());
+    assert.ok(Math.abs(Date.now() - lastCheck) < 60_000, "Sparkle must have a recent check recorded before relaunch.");
+
+    await setFeedMode("good");
+    await launch();
+    await waitForMenu("Show Software Update…", 2);
+    assert.deepEqual(requests.map(({ path, mode }) => ({ path, mode })),
+      [{ path: "/feed.xml", mode: "current" }, { path: "/feed.xml", mode: "good" }]);
+    record("startup-update-check-verified");
   }
 
   async function launchAndSeed() {
@@ -554,7 +597,7 @@ export async function prepareUpdateAcceptance({ baseApp, directory } = {}) {
     record("harness-closed", { removeProfile, remainingAppPids: ownProcesses(executable) });
   }
 
-  return { ...publicState(), launchAndSeed, verifyMenu, reopenAndVerify, inspectInstallation, capture, setFeedMode, close,
+  return { ...publicState(), launchAndSeed, verifyMenu, verifyStartupCheck, reopenAndVerify, inspectInstallation, capture, setFeedMode, close,
     get app() { return app; }, get page() { return page; } };
 }
 
@@ -659,12 +702,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(json({ status: result.status, version: result.actual.version, screenshots: result.screenshots }));
     process.exit(0);
   }
-  assert.ok(["prepare", "launch", "menu"].includes(mode) && baseApp,
-    "Usage: node scripts/smoke-updates.mjs prepare|launch|menu /absolute/path/Pideck.app\n       node scripts/smoke-updates.mjs verify /absolute/path/readiness.json\nprepare serves signed fixtures without starting an app; launch also seeds an isolated project and held queue. menu verifies the native menu and its window in an isolated app.");
-  const harness = await prepareUpdateAcceptance({ baseApp: resolve(baseApp) });
-  if (mode === "menu") {
+  assert.ok(["prepare", "launch", "menu", "startup"].includes(mode) && baseApp,
+    "Usage: node scripts/smoke-updates.mjs prepare|launch|menu|startup /absolute/path/Pideck.app\n       node scripts/smoke-updates.mjs verify /absolute/path/readiness.json\nprepare serves signed fixtures without starting an app; launch also seeds an isolated project and held queue. menu verifies the native menu and its window; startup verifies background checks against the signed local feed.");
+  const harness = await prepareUpdateAcceptance({ baseApp: resolve(baseApp), automaticChecks: mode === "startup" });
+  if (mode === "menu" || mode === "startup") {
     try {
-      await harness.verifyMenu();
+      if (mode === "startup") await harness.verifyStartupCheck();
+      else await harness.verifyMenu();
     } finally {
       await harness.close({ quit: true, removeProfile: true });
     }

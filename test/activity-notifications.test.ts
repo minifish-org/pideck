@@ -58,6 +58,21 @@ test("background completion notifies once, counts unread sessions and clears onl
   assert.equal(badges.at(-1), 0);
 });
 
+test("notification labels are one line and use the latest explicit session title", t => {
+  const { controller, shown } = fixture(t);
+  const notice = { ...finished(), notificationLabels: { projectName: "Workspace\n\u202E工具", sessionTitle: "Old title" } };
+  controller.update([]);
+  controller.update([notice]);
+  controller.update([{ ...notice, notificationLabels: { ...notice.notificationLabels, sessionTitle: "Review\t界面" } }]);
+  t.mock.timers.tick(600);
+  assert.equal(shown[0]!.notice.title, "Workspace 工具 · Review 界面");
+  assert.equal(shown[0]!.notice.body, "Work finished. Open to view the result.");
+
+  controller.update([{ ...finished(2), ...second, notificationLabels: { projectName: "🚀".repeat(15) } }]);
+  t.mock.timers.tick(600);
+  assert.equal(shown[1]!.notice.title, `${"🚀".repeat(13)}… · Session`);
+});
+
 test("foreground result and quick read never generate notifications, while another session does", t => {
   const { controller, shown, view } = fixture(t);
   controller.update([]);

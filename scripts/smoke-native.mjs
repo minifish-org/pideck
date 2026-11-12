@@ -91,7 +91,7 @@ try {
     // The adapter show() below is intercepted, so no OS notification was
     // delivered to restore. Do not invoke the system's permission/history UI.
     await rm(join(profile, "notification-history"), { force: true });
-    application = await _electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`],
+    application = await _electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`, "-SUEnableAutomaticChecks", "NO"],
       env: { ...process.env, SHELL: "/bin/sh", AZURE_OPENAI_API_KEY: "pideck-smoke-key", AZURE_OPENAI_BASE_URL: provider.endpoint } });
     const page = await observe(await application.firstWindow());
     await installNativeObservers();
@@ -127,6 +127,7 @@ try {
   await page.locator("diffs-container").first().waitFor();
   await page.screenshot({ path: join(evidence, "coding-result.png") });
   results.checks.push("packaged coding through native pi-ai/Durable/tools and synchronized native window title");
+  const named = await command(page, "session:rename", { projectId: project.id, sessionId: session.id, title: "Review backend" });
 
   const node = await application.evaluate(() => `${process.resourcesPath}/automation/node/bin/node`);
   const serverFile = join(directory, "server.cjs");
@@ -165,7 +166,12 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   await until(async () => (await nativeState()).notices.length > noticesBeforeClose, "windowless completion reaches native notification adapter");
   const unread = await nativeState();
   assert.ok(unread.badges.some(value => value === "1"), "unread completion reaches the Dock adapter");
-  assert.ok(unread.notices.every(item => !item.body.includes(directory) && !item.body.includes("example.ts")), "lock-screen body does not leak workspace text");
+  const reminder = unread.notices.at(-1);
+  assert.equal(reminder.title, `${project.name} · ${named.title}`);
+  assert.equal(reminder.body, "Work finished. Open to view the result.");
+  assert.ok([directory, "example.ts", "Queue hold CLOSE", "current run finished"].every(text =>
+    !`${reminder.title}\n${reminder.body}`.includes(text)), "notification does not expose paths, prompts or result text");
+  results.checks.push("windowless notification includes the project and explicit session title with generic status");
   const opened = application.waitForEvent("window");
   results.beforeSyntheticClick = await application.evaluate(({ app, BrowserWindow }) => ({ hidden: app.isHidden(),
     focused: BrowserWindow.getAllWindows().map(window => window.isFocused()) }));

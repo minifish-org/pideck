@@ -40,10 +40,12 @@ export async function exerciseTerminalRecycling(TerminalsClass: typeof Terminals
   try {
     const first = await open('idle');
     await prompt(first.terminalId);
+    assert.equal(await terminals.hasWorkToInterrupt(), false, 'an open shell at an idle prompt does not interrupt work');
     terminals.input(1, 'idle', first.terminalId, "printf '\\nPROFILE_%s:%s\\n' \"$PIDECK_PROFILE_SURVIVED\" \"$ZDOTDIR\"\r");
     await until(() => (output.get(first.terminalId) ?? '').includes(`PROFILE_yes:${directory}`));
     await prompt(first.terminalId);
     hide('idle', first.terminalId);
+    assert.equal(await terminals.hasWorkToInterrupt(), false, 'a hidden idle shell does not interrupt work');
     assert.equal(await terminals.reclaimIdle(), 1, 'a hidden idle shell expires');
     assert.equal(events.at(-1)?.type, 'terminal:reclaimed', 'recycling is not represented as a failed shell');
     const replacement = await open('idle');
@@ -54,6 +56,7 @@ export async function exerciseTerminalRecycling(TerminalsClass: typeof Terminals
     terminals.input(1, 'idle', id, 'sleep 30\r');
     await delay(80);
     hide('idle', id);
+    assert.equal(await terminals.hasWorkToInterrupt(), true, 'a foreground job requires restart confirmation');
     assert.equal(await terminals.reclaimIdle(), 0, 'silent foreground work survives');
     terminals.input(1, 'idle', id, '\x03');
     await until(() => (output.get(id) ?? '').includes('^C'));
@@ -68,6 +71,7 @@ export async function exerciseTerminalRecycling(TerminalsClass: typeof Terminals
     terminals.input(1, 'idle', id, 'echo unfinished');
     await delay(50);
     clock += 2000;
+    assert.equal(await terminals.hasWorkToInterrupt(), true, 'unfinished terminal input requires restart confirmation');
     assert.equal(await terminals.reclaimIdle(), 0, 'an unfinished input line is not discarded');
     terminals.input(1, 'idle', id, '\x03');
     await delay(80);
@@ -76,11 +80,13 @@ export async function exerciseTerminalRecycling(TerminalsClass: typeof Terminals
     await delay(100);
     await prompt(id);
     clock += 2000;
+    assert.equal(await terminals.hasWorkToInterrupt(), true, 'a background job requires restart confirmation even at the prompt');
     assert.equal(await terminals.reclaimIdle(), 0, 'background jobs keep a prompt-idle shell alive');
     terminals.input(1, 'idle', id, 'kill $!\r');
     await delay(100);
     await prompt(id);
     clock += 2000;
+    assert.equal(await terminals.hasWorkToInterrupt(), false, 'the restart warning clears after background work ends');
     assert.equal(await terminals.reclaimIdle(), 1, 'the shell becomes reclaimable only after its jobs finish');
 
     const shells: { project: string; terminalId: string }[] = [];

@@ -49,7 +49,7 @@ async function verifyFatalHostRecovery() {
   let recoveryPage;
   try {
     recoveryApplication = await _electron.launch({ executablePath: executable,
-      args: [`--user-data-dir=${recoveryProfile}`], env: { ...process.env } });
+      args: [`--user-data-dir=${recoveryProfile}`, '-SUEnableAutomaticChecks', 'NO'], env: { ...process.env } });
     recoveryPage = await recoveryApplication.firstWindow();
     recoveryPage.setDefaultTimeout(12000);
     recoveryPage.on('pageerror', error => recoveryErrors.push(error.message));
@@ -103,7 +103,7 @@ try {
   await writeFile(join(directory, 'example.ts'), "export const result = 'before';\n");
   await writeFile(join(profiles, '.zshrc'), "PS1='native$ '\n");
   provider = await openSmokeProvider();
-  application = await _electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`],
+  application = await _electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`, '-SUEnableAutomaticChecks', 'NO'],
     env: { ...process.env, SHELL: '/bin/zsh', ZDOTDIR: profiles,
       AZURE_OPENAI_API_KEY: 'pideck-smoke-key', AZURE_OPENAI_BASE_URL: provider.endpoint } });
   results.processIds = { runner: process.pid, electron: application.process().pid };

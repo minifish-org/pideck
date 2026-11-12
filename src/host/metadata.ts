@@ -5,11 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import type { ModelsStore, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { DraftImage, DraftImageRef, Project, Selection, Session, SessionActivity } from "../shared/api.js";
+import type { NotificationActivity } from "../shared/transport.js";
 import { purgeConversations, reapUnmappedConversations } from "./purge.js";
 
 type DirectoryIdentity = { directory: string; device: string; inode: string };
 type ProjectRow = DirectoryIdentity & Project;
-type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; startPending: 0 | 1 };
+type SessionRow = Session & { conversationId: ConversationId; autoTitlePending: 0 | 1; titleIsExplicit: 0 | 1; startPending: 0 | 1 };
+type SessionCreation = { autoTitlePending?: boolean; titleIsExplicit?: boolean; startId?: string };
 export type StoredSessionActivity = Omit<SessionActivity, keyof Selection> & { conversationId: ConversationId };
 
 function inspectDirectory(path: string): DirectoryIdentity {
@@ -40,7 +42,7 @@ function presentProject(row: ProjectRow): Project {
 }
 
 function presentSession(row: SessionRow): Session {
-  const { conversationId: _conversationId, autoTitlePending: _autoTitlePending, startPending: _startPending, ...session } = row;
+  const { conversationId: _conversationId, autoTitlePending: _autoTitlePending, titleIsExplicit: _titleIsExplicit, startPending: _startPending, ...session } = row;
   return session;
 }
 
@@ -73,6 +75,7 @@ export class Metadata {
           createdAt INTEGER NOT NULL,
           updatedAt INTEGER NOT NULL,
           autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1)),
+          titleIsExplicit INTEGER NOT NULL DEFAULT 0 CHECK (titleIsExplicit IN (0, 1)),
           startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))
         ) STRICT;
         CREATE INDEX IF NOT EXISTS project_sessions ON sessions(projectId, updatedAt DESC);
@@ -110,6 +113,11 @@ export class Metadata {
       }
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'startPending'").get()) {
         this.db.exec("ALTER TABLE sessions ADD COLUMN startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))");
+      }
+      if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'titleIsExplicit'").get()) {
+        // Older profiles contain both manual and prompt-derived titles with no
+        // provenance. Treat them as private until they are named explicitly.
+        this.db.exec("ALTER TABLE sessions ADD COLUMN titleIsExplicit INTEGER NOT NULL DEFAULT 0 CHECK (titleIsExplicit IN (0, 1))");
       }
     } catch (error) {
       this.db.close();
@@ -195,12 +203,15 @@ export class Metadata {
     ).all(projectId) as SessionRow[];
   }
 
-  createSession(projectId: string, conversationId: ConversationId, title: string, autoTitlePending = false, startId?: string): Session {
+  createSession(projectId: string, conversationId: ConversationId, title: string, {
+    autoTitlePending = false, titleIsExplicit = false, startId,
+  }: SessionCreation = {}): Session {
     const now = Date.now();
     const session = { id: startId ?? randomUUID(), projectId, title, createdAt: now, updatedAt: now };
     this.db.prepare(
-      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt, autoTitlePending, startPending) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt, Number(autoTitlePending), Number(startId !== undefined));
+      "INSERT INTO sessions (id, projectId, conversationId, title, createdAt, updatedAt, autoTitlePending, titleIsExplicit, startPending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(session.id, projectId, conversationId, title, session.createdAt, session.updatedAt,
+      Number(autoTitlePending), Number(titleIsExplicit), Number(startId !== undefined));
     return session;
   }
 
@@ -232,13 +243,13 @@ export class Metadata {
   }
 
   setAutomaticTitle(sessionId: string, title: string): void {
-    this.db.prepare("UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE id = ? AND autoTitlePending = 1")
+    this.db.prepare("UPDATE sessions SET title = ?, autoTitlePending = 0, titleIsExplicit = 0 WHERE id = ? AND autoTitlePending = 1")
       .run(title, sessionId);
   }
 
   renameSession(projectId: string, sessionId: string, title: string): Session {
     const row = this.db.prepare(
-      "UPDATE sessions SET title = ?, autoTitlePending = 0 WHERE projectId = ? AND id = ? AND startPending = 0 RETURNING *",
+      "UPDATE sessions SET title = ?, autoTitlePending = 0, titleIsExplicit = 1 WHERE projectId = ? AND id = ? AND startPending = 0 RETURNING *",
     ).get(title, projectId, sessionId) as SessionRow | undefined;
     if (!row) throw new Error("Session not found in this project.");
     return presentSession(row);
@@ -263,6 +274,17 @@ export class Metadata {
   sessionSelection(conversationId: ConversationId): { projectId: string; sessionId: string } | undefined {
     return this.db.prepare("SELECT projectId, id AS sessionId FROM sessions WHERE conversationId = ?")
       .get(conversationId) as { projectId: string; sessionId: string } | undefined;
+  }
+
+  notificationLabels({ projectId, sessionId }: Selection): NotificationActivity["notificationLabels"] {
+    const row = this.db.prepare(`
+      SELECT CASE WHEN projects.name <> projects.directory THEN projects.name ELSE '' END AS projectName,
+        CASE WHEN sessions.titleIsExplicit = 1 THEN sessions.title END AS sessionTitle
+      FROM sessions JOIN projects ON projects.id = sessions.projectId
+      WHERE sessions.id = ? AND sessions.projectId = ? AND sessions.startPending = 0
+    `).get(sessionId, projectId) as { projectName: string; sessionTitle: string | null } | undefined;
+    if (!row) return undefined;
+    return row.sessionTitle === null ? { projectName: row.projectName } : { projectName: row.projectName, sessionTitle: row.sessionTitle };
   }
 
   hasConversation(conversationId: number): boolean {
