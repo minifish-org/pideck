@@ -553,7 +553,7 @@ async page => {
   const composer = page.locator(".composer");
   const picker = page.getByRole("region", { name: "Choose a model" });
   const modelSearch = picker.getByRole("searchbox", { name: "Search models" });
-  const thinkingLevel = picker.getByRole("combobox", { name: "Thinking level" });
+  const thinkingLevel = picker.getByRole("slider", { name: "Thinking level" });
   const send = page.getByRole("button", { name: "Send", exact: true });
   await page.waitForFunction(() => document.body.dataset.savedModelCatalog === "pending");
   await model.getByText("Choose a model", { exact: true }).waitFor();
@@ -709,7 +709,7 @@ async page => {
   await page.waitForFunction(() => document.activeElement?.classList.contains("model-option"));
   await page.keyboard.press("Enter");
   await modelSearch.waitFor();
-  await thinkingLevel.selectOption("high");
+  await thinkingLevel.press("End");
   await model.getByText("High", { exact: true }).waitFor();
   await expectColors(picker.locator('.model-option[aria-current="true"]'), {
     "background-color": "rgba(255, 255, 255, 0.08)",

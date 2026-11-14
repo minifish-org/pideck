@@ -23,6 +23,7 @@ workspaceScreens.push(...["running", "cancelled", "failed", "completed"].flatMap
 workspaceScreens.push(...['tree', 'connection', 'draft', 'queue', 'terminal', 'recovery'].map(stage => `${output}/pideck-reliability-${stage}.png`));
 workspaceScreens.push(...['preview', 'dark', 'light', 'narrow', 'history'].map(stage => `${output}/pideck-attachments-${stage}.png`));
 workspaceScreens.push(...['dark', 'light'].map(stage => `${output}/pideck-code-${stage}.png`));
+workspaceScreens.push(...['dark', 'diagram', 'preview', 'light', 'light-diagram', 'narrow', 'stream'].map(stage => `${output}/pideck-replies-${stage}.png`));
 workspaceScreens.push(...['search-dark', 'search-light', 'project-menu-dark', 'project-menu-light', 'session-menu-dark', 'session-menu-light', 'search-narrow'].map(stage => `${output}/pideck-navigation-${stage}.png`));
 const log = `${output}/${name}.log`;
 const flowLog = `${output}/${name}-flow.log`;
@@ -78,6 +79,8 @@ try {
     `grep -m1 'Navigation flow passed:' ${flowLog}`,
     `${cli} run-code --filename scripts/verify-browser-code.js >> ${flowLog} 2>&1 || { tail -n 60 ${flowLog}; exit 1; }`,
     `grep -m1 'Code block flow passed:' ${flowLog}`,
+    `${cli} run-code --filename scripts/verify-browser-replies.js >> ${flowLog} 2>&1 || { tail -n 60 ${flowLog}; exit 1; }`,
+    `grep -m1 'Reply rendering flow passed:' ${flowLog}`,
     `${cli} snapshot > ${snapshotLog} 2>&1`,
     `${cli} screenshot --filename ${screenshot}`,
     `${cli} console error`,
@@ -99,7 +102,7 @@ try {
   const blocks = result.messages.flatMap(message => message.blocks);
   const shell = blocks.find(block => block.type === "tool" && block.name === "bash");
   const images = blocks.filter(block => block.type === "tool" && block.name === "read");
-  assert.ok(shell?.type === "tool" && shell.status === "done" && shell.output?.includes("Renderer flow passed.") && shell.output?.includes("Reliability flow passed:") && shell.output?.includes("Attachment flow passed:") && shell.output?.includes("Navigation flow passed:") && shell.output?.includes("Code block flow passed:"), shell?.type === "tool" ? shell.output : "Bash did not run.");
+  assert.ok(shell?.type === "tool" && shell.status === "done" && shell.output?.includes("Renderer flow passed.") && shell.output?.includes("Reliability flow passed:") && shell.output?.includes("Attachment flow passed:") && shell.output?.includes("Navigation flow passed:") && shell.output?.includes("Code block flow passed:") && shell.output?.includes("Reply rendering flow passed:"), shell?.type === "tool" ? shell.output : "Bash did not run.");
   assert.ok(images.length === workspaceScreens.length && images.every(image =>
     image.type === "tool" && image.status === "done" && image.images?.length === 1), "Durable did not return the screenshots as image input.");
   console.log(`Durable Bash and Playwright verified the renderer. Screenshots: ${workspaceScreens.join(", ")}`);

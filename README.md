@@ -4,7 +4,7 @@ Pideck is an experimental desktop coding workspace. Each project opens in a loca
 
 ## Install and requirements
 
-Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.9 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
+Download versioned builds from [GitHub Releases](https://github.com/minifish-org/pideck/releases). The v0.1.10 download targets macOS 14 or later on Apple Silicon (arm64). It is ad-hoc signed, without Developer ID signing or Apple notarization. macOS may refuse to open a downloaded build. Do not disable Gatekeeper or other system protections to install it; building from source is available below.
 
 Install Git and keep it on `PATH` for change review. Windows also needs [Git for Windows](https://gitforwindows.org/) with Git Bash for the agent's `bash` tool; PowerShell alone does not provide that tool. Packaged builds include their own Node.js, npm, npx, and Playwright CLI, so a separate Node.js installation is unnecessary for normal packaged use. The first browser task needs an internet connection to obtain Playwright's matching browser and FFmpeg directly from their upstream download services; later tasks reuse the application-data cache.
 
@@ -33,7 +33,11 @@ During a run, the queue icon (**Queue next**) adds the message as a follow-up. D
 
 Committed user messages can be copied but not edited or resent in place. Queue editing remains available for messages that have not run. Existing conversations and branches are kept.
 
-Reply code blocks use syntax highlighting that follows the current appearance, with a separate copy button for each block. Copy preserves the code's whitespace. Unknown languages remain readable as plain text.
+Replies support heading links, footnotes, GitHub-style alerts, and simple collapsible details. Streaming formatting is repaired only for display; saved messages and copied source keep their original text. Code blocks follow the current appearance, can show a filename, wrap long lines, and collapse long blocks. Each block’s copy button preserves its exact whitespace; unknown languages remain plain text. Tables can wrap, scroll, expand, and copy their contents as TSV or CSV.
+
+Markdown screenshots load on demand after the reply finishes. Pideck prefers images already saved by the native `read` tool and labels them **Saved in conversation**. Otherwise, it reads raster images only from the selected project or that conversation’s browser output and labels them **Current file**—not a historical snapshot. Read a screenshot before linking it to preserve the captured version. PNG, JPEG, WebP and GIF are supported, with a 12 MB limit for current files. Remote and embedded images are not fetched automatically. Image previews support fit, actual size, zoom, dragging, and the +/−/0/1 keys; Esc closes the preview and restores focus.
+
+Complete `mermaid` fences render diagrams on demand, with a source toggle and image preview. Configuration directives, external assets, links and custom styles are disabled; large or invalid diagrams retain their readable source. Complete `diff`/`patch` fences show read-only proposed changes with unified/split views, explicitly marked **Proposed · not applied**. These views never apply a patch. Math and general SVG/HTML previews are not enabled.
 
 Image-heavy conversations keep a bounded amount of image data in the live view. Older attachments and tool screenshots show **View earlier image**; click it to read the original from the conversation and open its preview. Closing the preview releases that loaded image without expanding the live transcript.
 

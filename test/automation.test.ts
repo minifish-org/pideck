@@ -70,6 +70,10 @@ test('browser CLI preserves argv and cwd while isolating its profile and socket 
       f.automation.environment('project-a', '2', f.projectDirectory),
     ]);
     assert.deepEqual(a, duplicate);
+    assert.ok(f.automation.outputDirectory('project-a', '1')?.startsWith(f.stateDirectory));
+    assert.notEqual(f.automation.outputDirectory('project-a', '1'), f.automation.outputDirectory('project-a', '2'));
+    assert.equal(f.automation.outputDirectory('other-project', '1'), undefined);
+    assert.equal(f.automation.outputDirectory('project-a', 'unknown'), undefined);
     assert.deepEqual(Object.keys(a), ['PATH'], 'Project Node/npm keep the real HOME and do not inherit CLI-only overrides.');
     const argv = ['open', 'data:text/html,a b', '-s=shared', '--config', 'config with spaces.json'];
     await f.call(a, argv); await f.call(b, argv);

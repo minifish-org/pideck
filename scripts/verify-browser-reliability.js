@@ -139,7 +139,7 @@ async page => {
   await page.locator('input[type="file"]').setInputFiles({ name: 'draft.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
   await page.getByRole('button', { name: 'Preview attached image 1' }).waitFor();
   await page.getByRole('button', { name: 'Model', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Thinking level' }).selectOption('low');
+  await page.getByRole('slider', { name: 'Thinking level' }).fill('1');
   await page.getByRole('searchbox', { name: 'Search models' }).press('Escape');
   await page.reload();
   await page.getByRole('button', { name: 'Preview attached image 1' }).waitFor();

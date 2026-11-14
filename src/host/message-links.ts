@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { projectMessageLink, type ProjectLink } from "../shared/message-links.js";
-import type { ReviewFileContents } from "../shared/api.js";
+import type { ImageInput, ReviewFileContents } from "../shared/api.js";
 
 const fileLimit = 1024 * 1024;
 
@@ -41,7 +41,7 @@ export async function resolveMessageFile(directory: string, href: string, signal
   return { path, ...(target.line !== undefined ? { line: target.line } : {}) };
 }
 
-export async function readMessageFile(directory: string, relativePath: string, signal?: AbortSignal): Promise<ReviewFileContents> {
+async function readProjectBytes(directory: string, relativePath: string, limit: number, signal?: AbortSignal) {
   const target = await projectFile(directory, relativePath, signal);
   // Open the resolved regular file without following a replacement leaf symlink.
   // Nonblocking mode also prevents a replaced FIFO from hanging the trusted host.
@@ -50,8 +50,8 @@ export async function readMessageFile(directory: string, relativePath: string, s
     signal?.throwIfAborted();
     const before = await handle.stat();
     if (!before.isFile()) throw new Error("This link does not refer to a project file.");
-    if (before.size > fileLimit) return { path: target.path, contents: null, reason: "This file exceeds the 1 MB preview limit." };
-    const buffer = Buffer.alloc(fileLimit + 1);
+    if (before.size > limit) return { path: target.path, bytes: null };
+    const buffer = Buffer.alloc(limit + 1);
     let length = 0;
     while (length < buffer.length) {
       signal?.throwIfAborted();
@@ -67,20 +67,34 @@ export async function readMessageFile(directory: string, relativePath: string, s
       || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
       throw new Error("This file changed while opening. Try again.");
     }
-    if (length > fileLimit) return { path: target.path, contents: null, reason: "This file exceeds the 1 MB preview limit." };
-    const bytes = buffer.subarray(0, length);
-    let contents: string;
-    try {
-      contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      return { path: target.path, contents: null, reason: "This file is not UTF-8 text and cannot be previewed." };
-    }
-    if (contents.includes("\0") || (contents.match(/[\u0001-\u0008\u000b\u000e-\u001f]/g)?.length ?? 0) > contents.length / 100) {
-      return { path: target.path, contents: null, reason: "This binary file cannot be previewed." };
-    }
     signal?.throwIfAborted();
-    return { path: target.path, contents };
+    return { path: target.path, bytes: length > limit ? null : buffer.subarray(0, length) };
   } finally {
     await handle.close();
   }
+}
+
+export async function readMessageFile(directory: string, relativePath: string, signal?: AbortSignal): Promise<ReviewFileContents> {
+  const { path, bytes } = await readProjectBytes(directory, relativePath, fileLimit, signal);
+  if (!bytes) return { path, contents: null, reason: "This file exceeds the 1 MB preview limit." };
+  let contents: string;
+  try { contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return { path, contents: null, reason: "This file is not UTF-8 text and cannot be previewed." }; }
+  if (contents.includes("\0") || (contents.match(/[\u0001-\u0008\u000b\u000e-\u001f]/g)?.length ?? 0) > contents.length / 100) {
+    return { path, contents: null, reason: "This binary file cannot be previewed." };
+  }
+  return { path, contents };
+}
+
+export async function readMessageImage(directory: string, relativePath: string, signal?: AbortSignal): Promise<ImageInput> {
+  const { bytes } = await readProjectBytes(directory, relativePath, 12_000_000, signal);
+  if (!bytes) throw new Error("This image exceeds the 12 MB preview limit.");
+  // Sniff raster formats, not extensions. In particular, never load SVG/HTML
+  // from an untrusted path into the privileged application's document.
+  const mimeType = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png"
+    : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? "image/jpeg"
+    : /^GIF8[79]a$/.test(bytes.toString("ascii", 0, 6)) ? "image/gif"
+    : bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP" ? "image/webp" : undefined;
+  if (!mimeType) throw new Error("Only PNG, JPEG, WebP and GIF images can be previewed.");
+  return { mimeType, data: bytes.toString("base64") };
 }

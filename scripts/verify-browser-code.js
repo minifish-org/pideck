@@ -91,10 +91,10 @@ async page => {
     await code.getByRole('button', { name: 'Code copied', exact: true }).waitFor();
     if (await page.locator('body').getAttribute('data-copied-text') !== source) throw new Error('Code copy included language labels, surrounding Markdown or changed whitespace.');
     await page.evaluate(() => window.__pideckCodeAudit.copyFailure(true));
-    await code.getByRole('button').click();
+    await code.getByRole('button', { name: /^(Copy code block|Code copied)$/ }).click();
     await code.getByRole('alert').getByText('Couldn’t copy code. Try again.').waitFor();
     await page.evaluate(() => window.__pideckCodeAudit.copyFailure(false));
-    await code.getByRole('button').click();
+    await code.getByRole('button', { name: /^(Copy code block|Code copied)$/ }).click();
     await code.getByRole('button', { name: 'Code copied', exact: true }).waitFor();
     if (await code.getByRole('alert').count()) throw new Error('Successful code copy left a stale clipboard error.');
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('pideck-fixture-appearance', { detail: 'light' })));

@@ -26,7 +26,7 @@ const watches = new Map<number, Map<string, Selection & { watch?: ChatWatch }>>(
 const activityWatches = new Map<number, { id: string; dispose: () => void }>();
 const credentialWrites = new Map<number, PromiseWithResolvers<void>>();
 let credentialRead: { id: number; result: PromiseWithResolvers<Record<string, Credential>> } | undefined;
-const reviews = new Map<string, Set<{ owner: number; requestId?: string; controller: AbortController; pending: Promise<unknown> }>>();
+const reviews = new Map<string, Set<{ owner: number; requestId?: string; sessionId?: string; controller: AbortController; pending: Promise<unknown> }>>();
 const reviewWatches = new Map<number, { projectId: string; subscriptionId: string; controller: AbortController }>();
 let nextCredentialRequest = 0;
 
@@ -77,7 +77,7 @@ function requireOpenWorkspace(projectId: string) {
 }
 
 async function runReview<T>(runtime: Runtime, owner: number, projectId: string,
-  read: (cwd: string, signal: AbortSignal) => Promise<T>, requestId?: string) {
+  read: (cwd: string, signal: AbortSignal) => Promise<T>, requestId?: string, sessionId?: string) {
   requireOpenWorkspace(projectId);
   const project = runtime.requireProject(projectId);
   const jobs = reviews.get(projectId) ?? new Set();
@@ -86,7 +86,7 @@ async function runReview<T>(runtime: Runtime, owner: number, projectId: string,
   }
   const controller = new AbortController();
   const pending = Promise.resolve().then(() => read(project.directory, controller.signal));
-  const job = { owner, requestId, controller, pending };
+  const job = { owner, requestId, sessionId, controller, pending };
   jobs.add(job);
   reviews.set(projectId, jobs);
   try { return await pending; }
@@ -103,14 +103,15 @@ async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: st
   let result: RemovalResult | undefined;
   try {
     result = await runtime.remove(target, scope, async reopenHarness => {
-      if (!target.sessionId) {
-        const jobs = [...reviews.get(target.projectId) ?? []];
-        for (const job of jobs) job.controller.abort(new Error("Review stopped for workspace removal."));
-        await Promise.all([
-          terminals.closeProject(target.projectId),
-          Promise.allSettled(jobs.map(job => job.pending)),
-        ]);
-      }
+      // Purging reopens the shared store: stop every image-history reader,
+      // including readers in other projects, before that store is closed.
+      const jobs = [...reviews].flatMap(([projectId, jobs]) => [...jobs].filter(job =>
+        (reopenHarness && job.sessionId) || (projectId === target.projectId && (!target.sessionId || job.sessionId === target.sessionId))));
+      for (const job of jobs) job.controller.abort(new Error("Preview stopped for workspace removal."));
+      await Promise.all([
+        ...(!target.sessionId ? [terminals.closeProject(target.projectId)] : []),
+        Promise.allSettled(jobs.map(job => job.pending)),
+      ]);
       if (!reopenHarness) return;
       for (const [owner, owned] of watches) {
         for (const [subscriptionId, { projectId, sessionId }] of owned) {
@@ -137,7 +138,7 @@ async function executeRemoval(runtime: Runtime, target: RemovalTarget, scope: st
 async function handle(request: HostRequest): Promise<unknown> {
   const { owner, windowId = owner, command, payload } = request;
   if (!runtime || !auth || closing || (closedOwners.has(owner) && command !== "owner:close")) throw new Error("The workspace host is closed.");
-  if (removing && (command === "chat:watch" || command === "chat:earlier" || command === "chat:image")) {
+  if (removing && (command === "chat:watch" || command === "chat:earlier" || command === "chat:image" || command === "chat:reply-image")) {
     throw new Error("The conversation store is finishing a removal.");
   }
   switch (command) {
@@ -210,6 +211,17 @@ async function handle(request: HostRequest): Promise<unknown> {
       return runtime.send(payload);
     case "chat:image":
       return runtime.readChatImage(payload);
+    case "chat:reply-image":
+      return runReview(runtime, owner, payload.projectId, (_cwd, signal) => runtime!.readReplyImage(payload, signal), payload.requestId, payload.sessionId);
+    case "chat:reply-image-cancel": {
+      runtime.requireProject(payload.projectId);
+      for (const job of reviews.get(payload.projectId) ?? []) {
+        if (job.owner === owner && job.sessionId === payload.sessionId && job.requestId === payload.requestId) {
+          job.controller.abort(new Error('Image preview stopped.'));
+        }
+      }
+      return;
+    }
     case "chat:queue-read":
       return runtime.readQueuedInput(payload);
     case "chat:queue-edit-start":

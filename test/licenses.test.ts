@@ -54,6 +54,19 @@ test('distributed notices include runtime and renderer dependency versions, noti
   });
 });
 
+test('renderer notice discovery ignores erased type imports but includes side effects, exports and lazy renderers', async () => {
+  await fixture(async (root, file) => {
+    await file('src/renderer/main.ts', `import type { Root } from 'not-installed-types';
+      import { type Other } from 'also-type-only';
+      export type { Type } from 'erased-export';
+      import 'renderer/subpath';
+      export { value } from 'renderer';
+      const lazy = () => import('runtime/renderer');`);
+    assert.deepEqual((await collectLicenses(root)).map(value => `${value.name}@${value.version}`).sort(),
+      ['renderer@1.0.0', 'runtime@1.0.0', 'shared@1.0.0', 'shared@2.0.0']);
+  });
+});
+
 test('a declared SPDX license alone cannot silently pass the distribution check', async () => {
   await fixture(async root => {
     await rm(join(root, 'node_modules/renderer/LICENSE.md'));

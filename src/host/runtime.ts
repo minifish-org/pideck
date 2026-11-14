@@ -31,6 +31,7 @@ import { shellEnvironment } from "./shell-env.js";
 import { SessionActivities } from "./session-activity.js";
 import { reviewWrites } from "./write-review.js";
 import { Automation } from "./automation.js";
+import { resolveReplyImage } from "./reply-images.js";
 
 const context = BACKGROUND_CONTEXT;
 const processLifetime = randomUUID();
@@ -43,6 +44,8 @@ const instructions = [
   "For visual analysis, pass a screenshot to the read tool when your model supports images. Close the named browser session when finished.",
   "For a frontend change, run the changed interactions in the browser, inspect the screenshot and fix any problems before reporting success. Do not claim visual inspection without reading an image.",
   "Keep development servers on loopback, record their process IDs, and stop servers you started when verification is complete.",
+  "Show screenshots in replies using Markdown images, e.g. ![Description](path/to/screenshot.png). Read them first to save an immutable image in the conversation. Remote images are not loaded automatically.",
+  "Replies support Mermaid fences, read-only proposed diff fences, file names after code-fence languages, and GitHub-style NOTE/TIP/IMPORTANT/WARNING/CAUTION alerts. Do not use raw HTML for previews.",
 ].join("\n");
 
 const projectInstructionLimit = 64 * 1024;
@@ -778,6 +781,14 @@ export class Runtime {
       if (admitted) this.admissions.delete(admitted);
       if (startsWork) this.activeAdmissions--;
     }
+  }
+
+  async readReplyImage(input: Commands['chat:reply-image'][0], signal?: AbortSignal): Promise<Commands['chat:reply-image'][1]> {
+    signal?.throwIfAborted();
+    const project = this.requireProject(input.projectId);
+    const conversation = await this.conversation(input);
+    return resolveReplyImage(conversation, project.directory, input.entryId, input.href,
+      this.automation?.outputDirectory(input.projectId, String(conversation.id)), signal);
   }
 
   async readChatImage(input: Commands["chat:image"][0]): Promise<Commands["chat:image"][1]> {

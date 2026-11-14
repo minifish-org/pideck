@@ -184,6 +184,8 @@ export type Commands = {
   "chat:unwatch": [{ subscriptionId: string }, void];
   "chat:earlier": [WatchRef & { gap?: Pick<ChatGap, "after" | "upTo"> }, void];
   "chat:image": [Selection & ChatImageRef, ImageInput];
+  "chat:reply-image": [Selection & { entryId: number; href: string; requestId: string }, ImageInput & { source: 'conversation' | 'file' }];
+  "chat:reply-image-cancel": [Selection & { requestId: string }, void];
   "chat:start": [StartChat, Session];
   "chat:send": [SendChat, void];
   "chat:queue-read": [QueuedInputRef, QueuedInputContent];

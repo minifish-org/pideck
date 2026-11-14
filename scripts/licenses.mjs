@@ -32,7 +32,22 @@ async function rendererImports(root) {
       if (entry.isDirectory()) await visit(path);
       else if (/\.(?:[cm]?[jt]sx?|css)$/.test(entry.name)) {
         const source = await readFile(path, "utf8");
-        const imports = ts.preProcessFile(source, true, true).importedFiles.map(file => file.fileName);
+        const imports = [];
+        const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, /x$/.test(entry.name) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+        function imported(node) {
+          if (ts.isImportDeclaration(node)) {
+            const clause = node.importClause;
+            const bindings = clause?.namedBindings;
+            const typeOnly = clause?.isTypeOnly || (!clause?.name && bindings && ts.isNamedImports(bindings)
+              && bindings.elements.length > 0 && bindings.elements.every(element => element.isTypeOnly));
+            if (!typeOnly && ts.isStringLiteral(node.moduleSpecifier)) imports.push(node.moduleSpecifier.text);
+          } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+            imports.push(node.moduleSpecifier.text);
+          } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+            && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) imports.push(node.arguments[0].text);
+          ts.forEachChild(node, imported);
+        }
+        imported(tree);
         for (const match of source.matchAll(/@import\s+["']([^"']+)["']/g)) imports.push(match[1]);
         for (const value of imports) if (!value.startsWith(".") && !value.startsWith("/") && !value.startsWith("node:")) names.add(packageName(value));
       }

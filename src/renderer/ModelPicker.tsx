@@ -95,7 +95,7 @@ export function ModelPicker({ models, selected, label, description, thinking, on
     </button>
     <div className="chat-popover model-popover" id={id} popover="auto" role="region" aria-label="Choose a model" ref={panel}
       onKeyDown={(event) => {
-        if (event.key !== 'Escape' || event.currentTarget.querySelector('select:open')) return;
+        if (event.key !== 'Escape') return;
         event.preventDefault();
         event.stopPropagation();
         close();
@@ -175,12 +175,20 @@ export function ModelPicker({ models, selected, label, description, thinking, on
             })}</ul>
           </div>) : !onLoadSavedModels && <p className="model-empty">{available.length ? 'No models match your search.' : 'No models are available.'}</p>}
         </div>
-        {thinking && selected && <label className="model-effort">
-          Thinking level
-          <select value={thinking.level} onChange={(event) => onThinkingChange(event.target.value as Thinking)}>
-            {selected.thinking.map((level) => <option key={level} value={level}>{thinking.labels[level]}</option>)}
-          </select>
-        </label>}
+        {thinking && selected && selected.thinking.length > 1 && <div className="model-effort">
+          <div className="model-effort-heading">
+            <label htmlFor={`${id}-thinking`}>Thinking level</label>
+            <span aria-hidden="true">{thinking.labels[thinking.level]}</span>
+          </div>
+          <input id={`${id}-thinking`} type="range" min={0} max={selected.thinking.length - 1} step={1}
+            value={Math.max(0, selected.thinking.indexOf(thinking.level))}
+            aria-valuetext={thinking.labels[thinking.level]}
+            onChange={(event) => onThinkingChange(selected.thinking[Number(event.target.value)]!)} />
+          <div className="model-effort-labels" aria-hidden="true">
+            <span>{thinking.labels[selected.thinking[0]!]}</span>
+            <span>{thinking.labels[selected.thinking.at(-1)!]}</span>
+          </div>
+        </div>}
       </>}
     </div>
   </>;

@@ -17,6 +17,17 @@ export function externalMessageUrl(raw: string): URL | undefined {
   } catch { return; }
 }
 
+// Images never cause network requests or file:// navigation. The host still
+// checks the real path and the conversation that owns a saved tool image.
+export function localMessageImagePath(raw: string): string | undefined {
+  if (!raw || raw.length > 16_384 || raw !== raw.trim() || control.test(raw)) return;
+  let path: string;
+  try { path = decodeURIComponent(raw.split(/[?#]/, 1)[0]!); } catch { return; }
+  path = path.replaceAll("\\", "/");
+  if (!path || control.test(path) || path.startsWith("//") || (scheme.test(path) && !drive.test(path))) return;
+  return path;
+}
+
 function normalizePath(value: string): string | undefined {
   const path = value.replaceAll("\\", "/");
   const absolute = path.startsWith("/") || drive.test(path);

@@ -82,6 +82,11 @@ export class Automation {
 
   availability() { return { available: Boolean(this.paths), ...(this.reason ? { reason: this.reason } : {}) }; }
 
+  outputDirectory(projectId: string, conversationId: string): string | undefined {
+    const profile = this.profiles.get(conversationId);
+    return profile?.value.projectId === projectId ? profile.value.output : undefined;
+  }
+
   instructions() {
     return this.paths
       ? 'Pideck provides playwright-cli and Node/npm on PATH. Use playwright-cli directly. The first browser open automatically downloads the pinned upstream browser and FFmpeg into application data; allow a longer bash timeout for this first download. Later opens reuse the cache. Browser sessions and output are isolated to this conversation. Read screenshot paths with the read tool when the model supports images. Close browsers with playwright-cli close when finished; never use kill-all.'

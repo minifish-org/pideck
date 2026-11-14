@@ -124,7 +124,8 @@ export const Message = memo(function Message({ message, project, selection, onRe
             case 'text':
               return message.role === 'user'
                 ? <div key={index}>{block.text}</div>
-                : <MessageMarkdown key={index} text={block.text} project={project} onReview={onReview} />;
+                : <MessageMarkdown key={index} text={block.text} project={project} selection={selection} entryId={entryId}
+                  streaming={message.id === 'live-assistant'} onReview={onReview} />;
             case 'thinking':
               return block.text && <details className="thinking" key={index}><summary>Thinking</summary><pre>{block.text}</pre></details>;
             case 'image':

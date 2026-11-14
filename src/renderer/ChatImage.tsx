@@ -3,7 +3,7 @@ import type { ChatImage, Selection } from '../shared/api';
 import { ImagePreview } from './ImagePreview';
 import { readableError } from './conversation';
 
-function imageSource(image: ChatImage) {
+export function imageSource(image: ChatImage) {
   const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
   if (!supported.includes(image.mimeType) || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) return undefined;
   return `data:${image.mimeType};base64,${image.data}`;
@@ -48,7 +48,8 @@ export function ImageBlock({ image, alt, thumbnail = false, selection }: {
     <button type="button" className={source ? thumbnail ? 'attachment-preview' : 'message-image-trigger' : 'button message-image-load'}
       aria-label={`Preview ${alt.toLowerCase()}`} title="Preview image" disabled={loading} aria-busy={loading || undefined}
       onClick={() => void open()}>
-      {source ? <img className={thumbnail ? undefined : 'message-image'} src={source} alt={alt} />
+      {source ? <img className={thumbnail ? undefined : 'message-image'} src={source} alt={alt}
+        onError={() => setError('This image could not be decoded.')} />
         : loading ? 'Loading image…' : 'View earlier image'}
     </button>
     {error && <span className="dialog-error" role="alert">{error}</span>}

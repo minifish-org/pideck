@@ -281,6 +281,15 @@ function InlinePatch({ patch }: { patch: string }) {
   </div>;
 }
 
+// Read-only reply patches share exactly the same parser, themes and inline
+// emphasis as real tool diffs, but have no apply or working-tree actions.
+export function ReplyDiff({ patch, split = false, wrap = false }: { patch: string; split?: boolean; wrap?: boolean }) {
+  const files = usePatch(patch);
+  return <WorkerPoolContextProvider poolOptions={workerOptions} highlighterOptions={highlighterOptions}>
+    <div className="markdown-diff-view"><PatchView patch={patch} files={files} style={split ? 'split' : 'unified'} wrap={wrap} /></div>
+  </WorkerPoolContextProvider>;
+}
+
 type ReviewPanelProps = {
   project: Project;
   visible: boolean;

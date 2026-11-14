@@ -117,6 +117,9 @@ const validators = {
   "chat:unwatch": (value) => object(value) && match(value.subscriptionId, id),
   "chat:image": (value) => object(value) && selection(value) && entry(value.entryId)
     && integer(value.messageIndex, 0, 10_000) && integer(value.contentIndex, 0, 10_000),
+  "chat:reply-image": (value) => object(value) && selection(value) && entry(value.entryId) && match(value.requestId, id)
+    && string(value.href, 16_384) && value.href.length > 0 && !/[\u0000-\u001f\u007f]/.test(value.href),
+  "chat:reply-image-cancel": (value) => object(value) && selection(value) && match(value.requestId, id),
   "chat:earlier": (value) => object(value) && selection(value) && match(value.subscriptionId, id)
     && (value.gap === undefined || (object(value.gap) && entry(value.gap.after, 0) && entry(value.gap.upTo)
       && Number(value.gap.after) < Number(value.gap.upTo))),
