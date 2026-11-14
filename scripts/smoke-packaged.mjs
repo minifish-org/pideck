@@ -196,7 +196,9 @@ async function mockProjectPicker(app, directory) {
       : { canceled: true, filePaths: [] };
     dialog.showMessageBox = async (_window, options) => {
       options ??= _window;
-      if (options.buttons?.[1] !== "Remove" && options.message !== "Quit while work is running?") throw new Error("Unexpected native confirmation.");
+      const quit = options.buttons?.[0] === "Keep Working" && options.buttons?.[1] === "Quit"
+        && ["Quit while AI work is running?", "Quit while a terminal may be busy?", "Quit while workspace status is unavailable?"].includes(options.message);
+      if (options.buttons?.[1] !== "Remove" && !quit) throw new Error("Unexpected native confirmation.");
       return { response: 1, checkboxChecked: false };
     };
   }, directory);

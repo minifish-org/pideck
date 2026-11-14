@@ -18,6 +18,7 @@ const evidence = resolve("output/playwright/native-review");
 const temporary = await mkdtemp(join(tmpdir(), "pideck-native-"));
 const profile = join(temporary, "profile");
 const directory = join(temporary, "native-project");
+const shellProfiles = join(temporary, "shell-profiles");
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const results = { executable, notificationEvidence: "Electron adapter with intercepted show and synthetic click; OS delivery not asserted", checks: [] };
 const limitation = message => { (results.limitations ??= []).push(message); };
@@ -80,7 +81,8 @@ async function nativeState() {
 }
 
 try {
-  await Promise.all([mkdir(directory), mkdir(evidence, { recursive: true })]);
+  await Promise.all([mkdir(directory), mkdir(shellProfiles), mkdir(evidence, { recursive: true })]);
+  await writeFile(join(shellProfiles, ".zshrc"), "PS1='native$ '\n");
   await writeFile(join(directory, "example.ts"), "export const result = 'before';\n");
   execFileSync("git", ["init", "--quiet"], { cwd: directory });
   execFileSync("git", ["add", "example.ts"], { cwd: directory });
@@ -92,7 +94,8 @@ try {
     // delivered to restore. Do not invoke the system's permission/history UI.
     await rm(join(profile, "notification-history"), { force: true });
     application = await _electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`, "-SUEnableAutomaticChecks", "NO"],
-      env: { ...process.env, SHELL: "/bin/sh", AZURE_OPENAI_API_KEY: "pideck-smoke-key", AZURE_OPENAI_BASE_URL: provider.endpoint } });
+      env: { ...process.env, SHELL: "/bin/zsh", ZDOTDIR: shellProfiles, AZURE_OPENAI_API_KEY: "pideck-smoke-key", AZURE_OPENAI_BASE_URL: provider.endpoint } });
+    (results.processIds ??= []).push({ runner: process.pid, electron: application.process().pid });
     const page = await observe(await application.firstWindow());
     await installNativeObservers();
     return page;
@@ -146,6 +149,27 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   const server = JSON.parse(await readFile(addressFile, "utf8"));
   const shellPid = await readFile(shellPidFile, "utf8");
   assert.equal(await fetch(`http://127.0.0.1:${server.port}`).then(response => response.text()), "native server alive");
+  async function declineQuit(message) {
+    const before = (await nativeState()).dialogs.length;
+    await application.evaluate(({ app }) => {
+      globalThis.__nativeSmoke.response = 0;
+      app.quit();
+      app.quit();
+    });
+    await until(async () => (await nativeState()).dialogs.length > before, message);
+    await delay(100);
+    const dialogs = (await nativeState()).dialogs;
+    assert.equal(dialogs.length, before + 1, "repeated Quit must share one status read and confirmation");
+    assert.equal(dialogs.at(-1).message, message);
+    assert.deepEqual(dialogs.at(-1).buttons, ["Keep Working", "Quit"]);
+    assert.equal(dialogs.at(-1).defaultId, 0);
+    assert.equal(dialogs.at(-1).cancelId, 0);
+    assert.equal(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
+  }
+  await declineQuit("Quit while a terminal may be busy?");
+  assert.equal(await fetch(`http://127.0.0.1:${server.port}`).then(response => response.text()), "native server alive");
+  assert.equal((await command(page, "terminal:open", { projectId: project.id, cols: 80, rows: 24 })).terminalId, terminal.terminalId);
+  results.checks.push("AI-idle quit detects a foreground terminal server; Keep Working and repeated Quit preserve its process and shell");
   await delay(700);
   const noticesBeforeClose = (await nativeState()).notices.length;
   await command(page, "chat:send", { projectId: project.id, sessionId: session.id, requestId: randomUUID(),
@@ -247,6 +271,15 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   else limitation(`Window restored and became visible, but OS focus was not granted to the isolated acceptance application (idle=${restoredWindow.idle})`);
   results.checks.push("native resume signal resynchronizes without re-submitting work or rebuilding shell");
 
+  await command(page, "terminal:input", { projectId: project.id, terminalId: terminal.terminalId, data: "echo unfinished" });
+  await declineQuit("Quit while a terminal may be busy?");
+  const unfinished = await command(page, "terminal:open", { projectId: project.id, cols: 80, rows: 24 });
+  assert.equal(unfinished.terminalId, terminal.terminalId);
+  assert.match(unfinished.data, /echo unfinished/);
+  await command(page, "terminal:input", { projectId: project.id, terminalId: terminal.terminalId, data: "\u0003" });
+  await delay(150);
+  results.checks.push("AI-idle quit protects unfinished terminal input without replacing the shell");
+
   await command(page, "chat:send", { projectId: project.id, sessionId: session.id, requestId: randomUUID(),
     text: "Queue hold QUIT", model: { provider: model.provider, id: model.id }, thinking: "off" });
   await provider.waitForGate("Queue hold QUIT");
@@ -267,7 +300,7 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   await closing;
   application = undefined;
   assert.equal(JSON.parse(await readFile(quitDiagnostics, "utf8")).length, dialogsAfterCancel, "idle quit has no confirmation");
-  results.checks.push("active quit Keep Working keeps the task alive; subsequent idle quit completes without confirmation");
+  results.checks.push("active quit Keep Working keeps the task alive; subsequent quit with a verified idle native shell completes without confirmation");
   assert.ok(dialogsAfterCancel > dialogStart);
   await until(async () => { try { process.kill(Number(shellPid), 0); return false; } catch (error) { return error.code === "ESRCH"; } }, "quit tears down terminal process");
   page = await launch();
@@ -290,6 +323,12 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   page = await launch();
   await page.getByText("Queue hold STOP: current run finished.", { exact: true }).waitFor();
   results.checks.push("accepting Quit stops active work; cold relaunch recovers the interrupted Durable task");
+  const unknownShell = await command(page, "terminal:open", { projectId: project.id, cols: 80, rows: 24 });
+  await command(page, "terminal:input", { projectId: project.id, terminalId: unknownShell.terminalId,
+    data: "exec /bin/sh\r" });
+  await delay(200);
+  await declineQuit("Quit while a terminal may be busy?");
+  results.checks.push("a shell without reliable prompt integration requires confirmation even when AI work is idle");
   await page.screenshot({ path: join(evidence, "relaunch.png") });
   assert.deepEqual(provider.failures, []);
   assert.deepEqual(errors, []);

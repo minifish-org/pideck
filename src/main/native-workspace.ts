@@ -25,21 +25,6 @@ export function workspaceTitle(project?: { name: string }, session?: { title: st
   return [session && clean(session.title), project && clean(project.name), "Pideck"].filter(Boolean).join(" — ");
 }
 
-// Coalesce repeated Cmd+Q while the native sheet is open. Idle quits do not
-// prompt; only an explicit destructive choice lets the host shutdown proceed.
-export class QuitGuard {
-  private pending?: Promise<boolean>;
-  constructor(private readonly hasActiveWork: () => Promise<boolean>, private readonly confirm: () => Promise<boolean>) {}
-
-  request() {
-    if (this.pending) return this.pending;
-    const pending = this.hasActiveWork().then(active => !active || this.confirm())
-      .finally(() => { if (this.pending === pending) this.pending = undefined; });
-    this.pending = pending;
-    return pending;
-  }
-}
-
 type WorkspaceProcess = {
   on(event: "message", listener: (message: FromHost) => void): unknown;
   once(event: "exit", listener: (code: number) => void): unknown;

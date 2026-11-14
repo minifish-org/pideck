@@ -14,7 +14,8 @@ import { minimumWindow, openWindowState } from "./window-state";
 import { appearanceBackground, appearanceDocument, openAppearance } from "./appearance";
 import { externalMessageUrl } from "../shared/message-links";
 import type { DesktopContext, DesktopNavigation, Project, Selection, Session } from "../shared/api";
-import { projectArguments, QuitGuard, workspaceTitle } from "./native-workspace";
+import { projectArguments, workspaceTitle } from "./native-workspace";
+import { QuitGuard, workspaceInterruptionPrompt, type InterruptionAction } from "./workspace-interruption";
 import { createNativeNotifications } from "./native-notifications";
 import { activityNotificationLaunchId } from "./activity-notifications";
 import { loadMacUpdater, type MacUpdater, type NativeUpdateEvent } from "./mac-updater";
@@ -529,14 +530,17 @@ async function initialize() {
     return client.request(requestOwner, command, payload, window.webContents.id);
   });
 
-  quitGuard = new QuitGuard(async () => (await client.request(0, "host:status", undefined)).active, async () => {
-    const options: MessageBoxOptions = { type: "warning", message: "Quit while work is running?",
-      detail: "Running work and terminal commands will stop. Your saved conversations will be available when you reopen Pideck.",
-      buttons: ["Keep Working", "Quit"], defaultId: 0, cancelId: 0, noLink: true };
+  async function confirmInterruption(action: InterruptionAction) {
+    const work = await client.request(0, "host:status", { checkTerminalWork: true }).catch(() => undefined);
+    const options = workspaceInterruptionPrompt(action, work);
+    if (!options) return true;
     const window = mainWindow;
+    if (window && !window.isDestroyed()) revealWindow();
     const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
     return result.response === 1;
-  });
+  }
+
+  quitGuard = new QuitGuard(() => confirmInterruption("quit"));
   updateInstallation = new UpdateInstallation({
     seal() { preparingUpdate = true; refreshUpdateMenu(); },
     unseal() {
@@ -547,21 +551,7 @@ async function initialize() {
       refreshUpdateMenu();
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(eventChannel, { type: "host:resume" });
     },
-    async confirm() {
-      const work = await client.request(0, "host:status", { checkTerminalWork: true });
-      const terminalMayBeBusy = work.terminalBusy !== false;
-      if (!work.active && !terminalMayBeBusy) return true;
-      const options: MessageBoxOptions = { type: "warning",
-        message: work.active ? "Restart while AI work is running?" : "Restart while a terminal may be busy?",
-        detail: [work.active && "Running AI work will be interrupted.",
-          terminalMayBeBusy && "Open terminals may have running commands or unfinished input. Restarting closes them.",
-          "Your conversations, queued edits and drafts stay saved."].filter(Boolean).join(" "),
-        buttons: ["Keep Working", "Restart and Update"], defaultId: 0, cancelId: 0, noLink: true };
-      const window = mainWindow;
-      if (window && !window.isDestroyed()) revealWindow();
-      const result = await (window && !window.isDestroyed() ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options));
-      return result.response === 1;
-    },
+    confirm: () => confirmInterruption("update"),
     async flush() {
       if (mainWindow && !mainWindow.isDestroyed()) windowState.capture(mainWindow);
       await Promise.all([windowState.flush(), appearance.flush()]);
@@ -639,7 +629,11 @@ else {
       if (exiting) return;
       if (allowed) shutdownHost();
       else revealWindow();
-    }, shutdownHost).finally(() => { quitPending = false; });
+    }, () => {
+      if (exiting || shuttingDown) return;
+      revealWindow();
+      dialog.showErrorBox("Pideck could not quit", "The running-work confirmation could not be shown. Try quitting again.");
+    }).finally(() => { quitPending = false; });
   });
   if (app.isPackaged) queueFolders(projectArguments(process.argv.slice(1), process.cwd()));
   void app.whenReady().then(initialize).catch(error => {
