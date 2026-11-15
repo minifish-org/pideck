@@ -27,6 +27,7 @@ static void Emit(UpdaterEvent event) {
 
 @interface PideckUpdateUserDriver : SPUStandardUserDriver
 @property(nonatomic, copy) void (^cancelCheck)(void);
+@property(nonatomic) BOOL installWhenReady;
 @end
 
 @implementation PideckUpdateUserDriver
@@ -40,22 +41,41 @@ static void Emit(UpdaterEvent event) {
 - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)item
     state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
   self.cancelCheck = nil;
-  [super showUpdateFoundWithAppcastItem:item state:state reply:reply];
+  self.installWhenReady = NO;
+  [super showUpdateFoundWithAppcastItem:item state:state reply:^(SPUUserUpdateChoice choice) {
+    self.installWhenReady = choice == SPUUserUpdateChoiceInstall;
+    reply(choice);
+  }];
   Emit({.type = "menu-changed"});
+}
+
+- (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
+  if (!self.installWhenReady) {
+    [super showReadyToInstallAndRelaunch:reply];
+    return;
+  }
+  // The initial Install Update choice also approves restarting after Sparkle
+  // verifies the download. The relaunch delegate still guards running work
+  // and waits for a clean workspace shutdown before releasing installation.
+  self.installWhenReady = NO;
+  reply(SPUUserUpdateChoiceInstall);
 }
 
 - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
   self.cancelCheck = nil;
+  self.installWhenReady = NO;
   [super showUpdateNotFoundWithError:error acknowledgement:acknowledgement];
 }
 
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
   self.cancelCheck = nil;
+  self.installWhenReady = NO;
   [super showUpdaterError:error acknowledgement:acknowledgement];
 }
 
 - (void)dismissUpdateInstallation {
   self.cancelCheck = nil;
+  self.installWhenReady = NO;
   [super dismissUpdateInstallation];
   Emit({.type = "menu-changed"});
 }
