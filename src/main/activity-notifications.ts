@@ -101,7 +101,8 @@ export class ActivityNotifications {
             id: expectedId,
             groupId: "pideck-activity",
             title: notificationTitle(current.notificationLabels),
-            body: current.state === "finished" ? "Work finished. Open to view the result."
+            body: current.state === "finished" ? current.resultPreview
+              ? `Work finished. ${current.resultPreview}` : "Work finished. Open to view the result."
               : current.settled ? "Work could not finish. Open to review."
               : "Work needs attention. Open to continue.",
           }, () => { this.activate(expectedId); });

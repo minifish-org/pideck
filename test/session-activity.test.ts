@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { SessionActivity } from "../src/shared/api.js";
 import { fauxRuntime, waitForView } from "./support/faux-runtime.js";
 
@@ -50,6 +50,7 @@ test("Durable reports background session completion and failure without opening 
       assert.ok(result.resultEntryId);
       assert.equal(result.resultEntryId, done.messages.at(-1)?.entryId);
       assert.equal(done.latestEntryId, result.resultEntryId);
+      assert.equal((await runtime.notificationActivities([result]))[0]?.resultPreview, "Done.");
       runtime.readSessionActivity(selection, result.taskId + 1);
       assert.equal(latest[0]?.state, "finished");
       runtime.readSessionActivity(selection, result.taskId);
@@ -61,6 +62,7 @@ test("Durable reports background session completion and failure without opening 
       const failedSelection = { projectId: project.id, sessionId: second.id };
       const failedView = await waitForView(runtime, failedSelection, view => view.status === "idle" && Boolean(view.error));
       assert.equal(failedView.failureTaskId, failed.taskId);
+      assert.equal((await runtime.notificationActivities([failed]))[0]?.resultPreview, undefined);
       const plan = runtime.removalPlan(failedSelection);
       await runtime.remove(failedSelection, plan.scope);
       assert.deepEqual(latest, []);
@@ -103,10 +105,14 @@ test("unread results survive relaunch, while reads and removals stay cleared", {
     const unread = runtime.sessionActivities();
     assert.equal(unread.length, 2);
     assert.equal(runtime.hasActiveWork(), false);
+    const notices = await runtime.notificationActivities(unread);
+    assert.equal(notices.find(item => item.sessionId === first.id)?.resultPreview, "Done.");
+    assert.equal(notices.find(item => item.sessionId === second.id)?.resultPreview, undefined);
     await runtime.close();
 
     runtime = await fixture.open();
     assert.deepEqual(runtime.sessionActivities(), unread);
+    assert.deepEqual(await runtime.notificationActivities(unread), notices);
     const result = unread.find(item => item.sessionId === first.id)!;
     runtime.readSessionActivity(success, result.taskId - 1);
     assert.deepEqual(runtime.sessionActivities(), unread);
@@ -216,8 +222,77 @@ test("a running follow-up queue produces one settled result after the final gene
     const view = await waitForView(runtime, selection, view => view.status === "idle" && view.messages.length === 4);
     assert.equal(settled.length, 1);
     assert.equal(result.resultEntryId, view.messages.at(-1)?.entryId);
+    assert.equal((await runtime.notificationActivities([result]))[0]?.resultPreview, "Final answer.");
   } finally {
     release.resolve();
+    await runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notification previews use only the selected task's final reply, never thinking, tools or an earlier result", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pideck-notification-preview-"));
+  const directory = join(root, "project");
+  const otherDirectory = join(root, "other-project");
+  await Promise.all([mkdir(directory), mkdir(otherDirectory)]);
+  const fixture = fauxRuntime(join(root, "app"));
+  const runtime = await fixture.open();
+  const finished = Promise.withResolvers<SessionActivity>();
+  try {
+    const project = runtime.addProject(directory);
+    const otherProject = runtime.addProject(otherDirectory);
+    const session = await runtime.createSession(project.id);
+    const sibling = await runtime.createSession(project.id);
+    const selection = { projectId: project.id, sessionId: session.id };
+    const detach = runtime.watchSessionActivity(items => {
+      const result = items.find(item => item.sessionId === session.id && item.settled);
+      if (result) finished.resolve(result);
+    });
+    fixture.faux.setResponses([
+      fauxAssistantMessage([
+        fauxThinking("Private tool reasoning."),
+        fauxText("I will inspect the project."),
+        fauxToolCall("bash", { command: "printf 'Private tool output.'" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([
+        fauxThinking("Private final reasoning."),
+        fauxText("## 已完成\n\n修复 **登录回调**；[相关测试](test/login.test.ts) 通过。"),
+      ]),
+    ]);
+    await runtime.send(fixture.input(selection, "修复登录回调。请运行测试"));
+    const result = await finished.promise;
+    detach();
+    const [notice] = await runtime.notificationActivities([result]);
+    assert.deepEqual(notice?.notificationLabels, { projectName: project.name, sessionTitle: "修复登录回调" });
+    assert.equal(notice?.resultPreview, "已完成 修复 登录回调；相关测试 通过。");
+    assert.equal(fixture.faux.state.callCount, 2, "previews do not make an extra model request");
+    for (const item of [
+      { ...result, taskId: result.taskId + 1 },
+      { ...result, resultEntryId: result.resultEntryId! - 1 },
+      { ...result, resultEntryId: undefined },
+      { ...result, state: "running" as const, settled: false },
+      { ...result, state: "attention" as const },
+      { ...result, settled: false },
+      { ...result, sessionId: sibling.id },
+      { ...result, projectId: otherProject.id },
+    ]) {
+      assert.equal((await runtime.notificationActivities([item]))[0]?.resultPreview, undefined);
+    }
+    const failed = Promise.withResolvers<SessionActivity>();
+    const detachFailure = runtime.watchSessionActivity(items => {
+      const item = items.find(item => item.sessionId === session.id && item.settled && item.state === "attention");
+      if (item) failed.resolve(item);
+    });
+    fixture.faux.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "Private provider diagnostic." })]);
+    await runtime.send(fixture.input(selection, "This next task fails."));
+    const failure = await failed.promise;
+    detachFailure();
+    assert.equal((await runtime.notificationActivities([failure]))[0]?.resultPreview, undefined,
+      "failed tasks must not reuse a previous successful reply");
+    const plan = runtime.removalPlan(selection);
+    await runtime.remove(selection, plan.scope);
+    assert.equal((await runtime.notificationActivities([result]))[0]?.resultPreview, undefined);
+  } finally {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   }

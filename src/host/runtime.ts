@@ -24,6 +24,7 @@ import { continueEntryKind, inputEntryKind } from "./chat-view.js";
 import { watchConversation, type ChatWatch } from "./chat-watch.js";
 import { PersistentCredentials } from "./credential-store.js";
 import { Metadata } from "./metadata.js";
+import { notificationPreview } from "./notification-preview.js";
 import { conversationClosure, conversationSpillPaths, removeLegacySpills } from "./purge.js";
 import { advanceReleasedQueue, detachQueueEdit, discardQueueEdit, finishQueueEdit, QueueEditDoc, readQueuedInput,
   startQueueEdit, submitQueuedInput, updateQueuedInput } from "./queued-input.js";
@@ -260,10 +261,27 @@ export class Runtime {
   }
 
   sessionActivities() { return this.activities.snapshot(); }
-  notificationActivities(items: SessionActivity[]): NotificationActivity[] {
-    return items.map(item => item.state === "running" ? item : {
-      ...item, notificationLabels: this.metadata.notificationLabels(item),
-    });
+  async notificationActivities(items: SessionActivity[]): Promise<NotificationActivity[]> {
+    return Promise.all(items.map(async (item): Promise<NotificationActivity> => {
+      if (item.state === "running") return item;
+      const notice: NotificationActivity = { ...item, notificationLabels: this.metadata.notificationLabels(item) };
+      if (!notice.notificationLabels || item.state !== "finished" || !item.settled || item.resultEntryId === undefined) return notice;
+      try {
+        const session = this.metadata.session(item.projectId, item.sessionId);
+        // Read only the native receipt's final entry. Never scan for a recent
+        // assistant message, which could belong to an earlier task or a fork.
+        const entry = await this.harness.commit(tx => tx.entry(item.resultEntryId as EntryId), context);
+        if (entry?.conversationId !== session.conversationId || entry.kind !== "pi.assistant" || entry.byTaskId !== item.taskId) return notice;
+        const text = entry.model?.flatMap(message => message.role === "assistant"
+          && (message.stopReason === "stop" || message.stopReason === "length")
+          ? message.content.flatMap(block => block.type === "text" ? [block.text] : []) : []).join("\n") ?? "";
+        const preview = notificationPreview(text);
+        if (preview) notice.resultPreview = preview;
+      } catch {
+        // A missing result or a closing store must not prevent status reminders.
+      }
+      return notice;
+    }));
   }
   hasActiveWork() { return this.activeAdmissions > 0 || this.activities.hasActiveWork(); }
 

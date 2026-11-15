@@ -9,7 +9,10 @@ export const menuStateChannel = "pideck:menu-state";
 type Forwarded = Exclude<Command, "host:recover" | "desktop:ready" | "desktop:context" | "project:open" | "project:remove" | "session:remove" | "clipboard:write" | "appearance:get" | "link:open-external">;
 export type RemovalTarget = { projectId: string; sessionId?: string };
 export type RemovalPreview = { scope: string; name: string; directory: string; sessionCount: number } & RemovalBlocked;
-export type NotificationActivity = SessionActivity & { notificationLabels?: { projectName: string; sessionTitle?: string } };
+export type NotificationActivity = SessionActivity & {
+  notificationLabels?: { projectName: string; sessionTitle?: string };
+  resultPreview?: string;
+};
 
 export type HostCommand =
   | Forwarded

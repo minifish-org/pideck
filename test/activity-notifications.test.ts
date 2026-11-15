@@ -58,7 +58,7 @@ test("background completion notifies once, counts unread sessions and clears onl
   assert.equal(badges.at(-1), 0);
 });
 
-test("notification labels are one line and use the latest explicit session title", t => {
+test("notification labels are one line and use the latest session title", t => {
   const { controller, shown } = fixture(t);
   const notice = { ...finished(), notificationLabels: { projectName: "Workspace\n\u202E工具", sessionTitle: "Old title" } };
   controller.update([]);
@@ -71,6 +71,23 @@ test("notification labels are one line and use the latest explicit session title
   controller.update([{ ...finished(2), ...second, notificationLabels: { projectName: "🚀".repeat(15) } }]);
   t.mock.timers.tick(600);
   assert.equal(shown[1]!.notice.title, `${"🚀".repeat(13)}… · Session`);
+});
+
+test("completion notifications show the latest result preview without changing navigation or read state", t => {
+  const { controller, shown, opened, badges } = fixture(t);
+  controller.update([]);
+  controller.update([{ ...finished(), resultPreview: "Old preview." }]);
+  controller.update([{ ...finished(), resultPreview: "修复登录回调；相关测试通过。" }]);
+  t.mock.timers.tick(600);
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0]!.notice.body, "Work finished. 修复登录回调；相关测试通过。");
+  shown[0]!.click();
+  assert.deepEqual(opened, [{ ...first, taskId: 1, resultEntryId: 12 }]);
+  assert.equal(badges.at(-1), 1);
+  controller.update([{ ...finished(2), resultPreview: "" }]);
+  t.mock.timers.tick(600);
+  assert.equal(shown[0]!.closed, 1);
+  assert.equal(shown[1]!.notice.body, "Work finished. Open to view the result.");
 });
 
 test("foreground result and quick read never generate notifications, while another session does", t => {

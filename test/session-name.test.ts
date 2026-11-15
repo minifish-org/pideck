@@ -20,13 +20,13 @@ test("the first admitted prompt names an untitled session and is recovered befor
     const named = await runtime.createSession(project.id, "Saved legacy name");
     const selection = { projectId: project.id, sessionId: session.id };
     const currentTitle = async (id: string) => (await runtime.listSessions(project.id)).find(item => item.id === id)?.title;
-    const notificationLabels = (sessionId: string, projectId = project.id) => runtime.notificationActivities([
+    const notificationLabels = async (sessionId: string, projectId = project.id) => (await runtime.notificationActivities([
       { projectId, sessionId, taskId: 1, state: "finished", settled: true },
-    ])[0]?.notificationLabels;
+    ]))[0]?.notificationLabels;
     assert.equal(await currentTitle(session.id), untitledSession);
-    assert.deepEqual(notificationLabels(session.id), { projectName: project.name });
-    assert.deepEqual(notificationLabels(named.id), { projectName: project.name, sessionTitle: named.title });
-    assert.equal(notificationLabels(named.id, other.id), undefined);
+    assert.deepEqual(await notificationLabels(session.id), { projectName: project.name, sessionTitle: untitledSession });
+    assert.deepEqual(await notificationLabels(named.id), { projectName: project.name, sessionTitle: named.title });
+    assert.equal(await notificationLabels(named.id, other.id), undefined);
     assert.throws(() => runtime.renameSession({ ...selection, projectId: other.id }, "Wrong project"), /not found/i);
     assert.throws(() => runtime.renameSession(selection, " \u202e "), /enter a session name/i);
 
@@ -41,14 +41,14 @@ test("the first admitted prompt names an untitled session and is recovered befor
     await runtime.send(fixture.input(selection, "A later instruction"));
     await second;
     assert.equal(await currentTitle(session.id), "Fix 🔎 the search");
-    assert.deepEqual(notificationLabels(session.id), { projectName: project.name });
+    assert.deepEqual(await notificationLabels(session.id), { projectName: project.name, sessionTitle: "Fix 🔎 the search" });
     const entryId = firstView.messages.find(message => message.role === "assistant")?.entryId;
     assert.ok(entryId);
     const fork = await runtime.fork(selection, entryId);
     assert.equal(fork.title, "Fix 🔎 the search (fork)");
-    assert.deepEqual(notificationLabels(fork.id), { projectName: project.name });
+    assert.deepEqual(await notificationLabels(fork.id), { projectName: project.name, sessionTitle: fork.title });
     const namedFork = await runtime.fork(selection, entryId, "Explicit fork name");
-    assert.deepEqual(notificationLabels(namedFork.id), { projectName: project.name, sessionTitle: namedFork.title });
+    assert.deepEqual(await notificationLabels(namedFork.id), { projectName: project.name, sessionTitle: namedFork.title });
 
     // Simulate stopping after Durable commits the input and before the title projection is written.
     await runtime.close();
@@ -60,7 +60,7 @@ test("the first admitted prompt names an untitled session and is recovered befor
     assert.equal(await currentTitle(named.id), "Saved legacy name");
     const renamed = runtime.renameSession(selection, "  Explicit title   ");
     assert.equal(renamed.title, "Explicit title");
-    assert.deepEqual(notificationLabels(session.id), { projectName: project.name, sessionTitle: renamed.title });
+    assert.deepEqual(await notificationLabels(session.id), { projectName: project.name, sessionTitle: renamed.title });
     await runtime.close();
     const oldMetadata = new DatabaseSync(join(data, "workspace.sqlite"));
     oldMetadata.exec("ALTER TABLE sessions DROP COLUMN autoTitlePending");
@@ -69,8 +69,8 @@ test("the first admitted prompt names an untitled session and is recovered befor
     runtime = await fixture.open();
     assert.equal(await currentTitle(session.id), "Explicit title");
     assert.equal(await currentTitle(named.id), "Saved legacy name");
-    assert.deepEqual(notificationLabels(session.id), { projectName: project.name });
-    assert.deepEqual(notificationLabels(named.id), { projectName: project.name });
+    assert.deepEqual(await notificationLabels(session.id), { projectName: project.name, sessionTitle: renamed.title });
+    assert.deepEqual(await notificationLabels(named.id), { projectName: project.name, sessionTitle: named.title });
   } finally {
     await runtime.close();
     await Promise.all([rm(data, { recursive: true, force: true }), rm(otherDirectory, { recursive: true, force: true })]);

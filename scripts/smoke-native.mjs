@@ -130,7 +130,6 @@ try {
   await page.locator("diffs-container").first().waitFor();
   await page.screenshot({ path: join(evidence, "coding-result.png") });
   results.checks.push("packaged coding through native pi-ai/Durable/tools and synchronized native window title");
-  const named = await command(page, "session:rename", { projectId: project.id, sessionId: session.id, title: "Review backend" });
 
   const node = await application.evaluate(() => `${process.resourcesPath}/automation/node/bin/node`);
   const serverFile = join(directory, "server.cjs");
@@ -191,11 +190,14 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(addressFil
   const unread = await nativeState();
   assert.ok(unread.badges.some(value => value === "1"), "unread completion reaches the Dock adapter");
   const reminder = unread.notices.at(-1);
-  assert.equal(reminder.title, `${project.name} · ${named.title}`);
-  assert.equal(reminder.body, "Work finished. Open to view the result.");
-  assert.ok([directory, "example.ts", "Queue hold CLOSE", "current run finished"].every(text =>
-    !`${reminder.title}\n${reminder.body}`.includes(text)), "notification does not expose paths, prompts or result text");
-  results.checks.push("windowless notification includes the project and explicit session title with generic status");
+  // The notification title truncates the auto-generated session name to 40
+  // characters; no explicit rename is needed to identify the background work.
+  assert.equal(session.title, "Update example.ts and verify the result.");
+  assert.equal(reminder.title, `${project.name} · ${session.title}`);
+  assert.equal(reminder.body, "Work finished. Queue hold CLOSE: current run finished.");
+  assert.ok(!`${reminder.title}\n${reminder.body}`.includes(directory), "notification does not add the project directory");
+  results.notification = reminder;
+  results.checks.push("windowless notification includes the automatic session title and the current task's final reply preview");
   const opened = application.waitForEvent("window");
   results.beforeSyntheticClick = await application.evaluate(({ app, BrowserWindow }) => ({ hidden: app.isHidden(),
     focused: BrowserWindow.getAllWindows().map(window => window.isFocused()) }));

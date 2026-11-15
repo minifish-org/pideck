@@ -367,9 +367,17 @@ port.on("message", ({ data }: { data: ToHost }) => {
       auth = new AuthFlows(opened.models, credentials, emit, () => opened.deviceId());
       // Native completion reminders outlive renderer subscriptions and windows.
       let baseline = true;
+      let notifications = Promise.resolve();
       opened.watchSessionActivity(items => {
-        if (!closing) send({ type: "activity", items: opened.notificationActivities(items), baseline });
+        const initial = baseline;
         baseline = false;
+        // Result reads are asynchronous. Preserve snapshot order so a slow
+        // preview cannot resurrect a read result or overtake the baseline.
+        notifications = notifications.then(async () => {
+          if (closing) return;
+          const notices = await opened.notificationActivities(items);
+          if (!closing) send({ type: "activity", items: notices, baseline: initial });
+        }).catch(() => { /* Optional reminders must never interrupt the host. */ });
       });
       send({ type: "ready" });
     }, error => {

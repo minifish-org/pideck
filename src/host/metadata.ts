@@ -116,7 +116,7 @@ export class Metadata {
       }
       if (!this.db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'titleIsExplicit'").get()) {
         // Older profiles contain both manual and prompt-derived titles with no
-        // provenance. Treat them as private until they are named explicitly.
+        // recorded provenance. Do not mark them as explicitly named.
         this.db.exec("ALTER TABLE sessions ADD COLUMN titleIsExplicit INTEGER NOT NULL DEFAULT 0 CHECK (titleIsExplicit IN (0, 1))");
       }
     } catch (error) {
@@ -279,12 +279,11 @@ export class Metadata {
   notificationLabels({ projectId, sessionId }: Selection): NotificationActivity["notificationLabels"] {
     const row = this.db.prepare(`
       SELECT CASE WHEN projects.name <> projects.directory THEN projects.name ELSE '' END AS projectName,
-        CASE WHEN sessions.titleIsExplicit = 1 THEN sessions.title END AS sessionTitle
+        sessions.title AS sessionTitle
       FROM sessions JOIN projects ON projects.id = sessions.projectId
       WHERE sessions.id = ? AND sessions.projectId = ? AND sessions.startPending = 0
-    `).get(sessionId, projectId) as { projectName: string; sessionTitle: string | null } | undefined;
-    if (!row) return undefined;
-    return row.sessionTitle === null ? { projectName: row.projectName } : { projectName: row.projectName, sessionTitle: row.sessionTitle };
+    `).get(sessionId, projectId) as { projectName: string; sessionTitle: string } | undefined;
+    return row && { projectName: row.projectName, sessionTitle: row.sessionTitle };
   }
 
   hasConversation(conversationId: number): boolean {
