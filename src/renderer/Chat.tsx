@@ -11,6 +11,7 @@ import { RunClock } from './RunClock';
 import { useReadSessionActivity } from './session-activity';
 import type { Attachment, Draft, ReadingPosition, SendAttempt } from './preferences';
 import { completeAttempt, hydrateDraftImages, newSessionDraft, persistDraftImages, retainQueueEditText } from './preferences';
+import { defaultThinking, readProjectThinking, saveProjectThinking } from './thinking-preference';
 import './chat.css';
 
 type ToolBlock = Extract<ChatBlock, { type: 'tool' }>;
@@ -181,7 +182,7 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
   function resolveThinking(option: ModelOption | undefined): Thinking {
     const preferred = busy ? view?.thinking : draft.thinking ?? (option && modelKey(option) === activeKey ? view?.thinking : undefined);
     if (preferred && option?.thinking.includes(preferred)) return preferred;
-    return option?.thinking.includes('off') ? 'off' : option?.thinking[0] ?? 'off';
+    return defaultThinking(option?.thinking ?? [], busy ? undefined : readProjectThinking(project.id));
   }
   const thinking = resolveThinking(model);
   const hasDraft = Boolean(text.trim() || attachments.length);
@@ -732,7 +733,10 @@ export function Chat({ project, session, activityReceipt, models, modelsReady, m
                   </button>
                 : models.length > 0 || savedConnectionsPending ? <ModelPicker models={models} selected={model} label={modelLabel}
                     description={modelDescription} thinking={thinkingOptions} onLoadSavedModels={savedConnectionsPending ? onLoadSavedModels : undefined}
-                    onThinkingChange={(level) => update({ thinking: level })}
+                    onThinkingChange={(level) => {
+                      saveProjectThinking(project.id, level);
+                      update({ thinking: level });
+                    }}
                     onChoose={(option) => {
                       const key = modelKey(option);
                       update({ model: key, thinking: model && modelKey(model) === key ? draft.thinking : undefined, error: undefined });
