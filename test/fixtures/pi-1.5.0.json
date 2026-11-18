@@ -1,0 +1,944 @@
+{
+  "source": {
+    "version": "1.5.0",
+    "commit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+    "description": "Synthetic faux-provider stores captured before upgrading; only project paths and directory identities are normalized."
+  },
+  "expected": {
+    "source": "Pi 1.5.0",
+    "project": {
+      "id": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "name": "project",
+      "directory": "__PIDECK_PROJECT__",
+      "createdAt": 1795006059391
+    },
+    "session": {
+      "id": "f30e3f95-0c96-4884-8d36-7368032ea60c",
+      "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "title": "Pi 1.5.0 upgrade fixture",
+      "createdAt": 1795006059395,
+      "updatedAt": 1795006059395
+    },
+    "selection": {
+      "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "sessionId": "f30e3f95-0c96-4884-8d36-7368032ea60c"
+    },
+    "branch": {
+      "id": "62baace1-41f7-48a6-99dc-48066bcfd003",
+      "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "title": "Pi 1.5.0 upgrade fixture (fork)",
+      "createdAt": 1795006059424,
+      "updatedAt": 1795006059424,
+      "parentSessionId": "f30e3f95-0c96-4884-8d36-7368032ea60c",
+      "forkEntryId": 17
+    },
+    "edit": {
+      "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "sessionId": "f30e3f95-0c96-4884-8d36-7368032ea60c",
+      "id": 27,
+      "token": "198c02c1-4d3c-48dd-ab1c-0b46bd3a9242"
+    },
+    "interrupted": {
+      "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+      "sessionId": "48bee9d1-c028-46f3-9dcf-9fbd5e90a463"
+    },
+    "requestId": "433959f1-8a31-4824-a9cd-b2a290b77da7",
+    "view": {
+      "messages": [
+        {
+          "id": "9:0",
+          "entryId": 9,
+          "role": "user",
+          "timestamp": 1795006059396,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Create the upgrade fixture."
+            }
+          ]
+        },
+        {
+          "id": "13:0",
+          "role": "assistant",
+          "timestamp": 1795006059395,
+          "blocks": [
+            {
+              "type": "tool",
+              "id": "tool:1795006059395:t9uxaoq13o",
+              "name": "write",
+              "status": "done",
+              "path": "legacy.txt",
+              "output": "Successfully wrote to legacy.txt",
+              "patch": "===================================================================\n--- /dev/null\n+++ b/legacy.txt\n@@ -0,0 +1,1 @@\n+Written by Pi 1.5.0.\n"
+            }
+          ],
+          "entryId": 13
+        },
+        {
+          "id": "17:0",
+          "role": "assistant",
+          "timestamp": 1795006059395,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Legacy result is preserved."
+            }
+          ],
+          "entryId": 17
+        },
+        {
+          "id": "24:0",
+          "entryId": 24,
+          "role": "user",
+          "timestamp": 1795006059425,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Hold a queue edit across the upgrade."
+            }
+          ]
+        },
+        {
+          "id": "28:0",
+          "role": "assistant",
+          "timestamp": 1795006059428,
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Legacy main work finished."
+            }
+          ],
+          "entryId": 28
+        }
+      ],
+      "status": "idle",
+      "latestEntryId": 28,
+      "queued": [
+        {
+          "id": 27,
+          "delivery": "follow-up",
+          "preview": "Original queued text.",
+          "editing": true
+        }
+      ],
+      "model": {
+        "provider": "faux",
+        "id": "pideck-test-model"
+      },
+      "thinking": "off"
+    }
+  },
+  "stores": {
+    "workspace.sqlite": {
+      "userVersion": {
+        "user_version": 0
+      },
+      "tables": [
+        {
+          "name": "draft_images",
+          "sql": "CREATE TABLE draft_images (\n          projectId TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n          draftId TEXT NOT NULL,\n          key TEXT NOT NULL,\n          images TEXT NOT NULL,\n          PRIMARY KEY (projectId, draftId, key)\n        ) STRICT",
+          "rows": []
+        },
+        {
+          "name": "installation",
+          "sql": "CREATE TABLE installation (\n          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n          deviceId TEXT NOT NULL\n        ) STRICT",
+          "rows": []
+        },
+        {
+          "name": "model_catalogs",
+          "sql": "CREATE TABLE model_catalogs (\n          provider TEXT PRIMARY KEY,\n          catalog TEXT NOT NULL\n        ) STRICT",
+          "rows": []
+        },
+        {
+          "name": "projects",
+          "sql": "CREATE TABLE projects (\n          id TEXT PRIMARY KEY,\n          directory TEXT NOT NULL UNIQUE,\n          name TEXT NOT NULL,\n          device TEXT NOT NULL,\n          inode TEXT NOT NULL,\n          createdAt INTEGER NOT NULL,\n          trusted INTEGER NOT NULL DEFAULT 0 CHECK (trusted IN (0, 1))\n        ) STRICT",
+          "rows": [
+            {
+              "id": "99569881-2674-452d-9e1f-79fd1643a1d2",
+              "directory": "__PIDECK_PROJECT__",
+              "name": "project",
+              "device": "0",
+              "inode": "0",
+              "createdAt": 1795006059391,
+              "trusted": 1
+            }
+          ]
+        },
+        {
+          "name": "session_activity",
+          "sql": "CREATE TABLE session_activity (\n          conversationId INTEGER PRIMARY KEY REFERENCES sessions(conversationId) ON DELETE CASCADE,\n          taskId INTEGER NOT NULL,\n          state TEXT NOT NULL CHECK (state IN ('running', 'finished', 'attention')),\n          settled INTEGER NOT NULL CHECK (settled IN (0, 1)),\n          resultEntryId INTEGER\n        ) STRICT",
+          "rows": [
+            {
+              "conversationId": 2,
+              "taskId": 26,
+              "state": "finished",
+              "settled": 1,
+              "resultEntryId": 28
+            },
+            {
+              "conversationId": 29,
+              "taskId": 38,
+              "state": "running",
+              "settled": 0,
+              "resultEntryId": null
+            }
+          ]
+        },
+        {
+          "name": "sessions",
+          "sql": "CREATE TABLE sessions (\n          id TEXT PRIMARY KEY,\n          projectId TEXT NOT NULL REFERENCES projects(id),\n          conversationId INTEGER NOT NULL UNIQUE,\n          title TEXT NOT NULL,\n          createdAt INTEGER NOT NULL,\n          updatedAt INTEGER NOT NULL,\n          autoTitlePending INTEGER NOT NULL DEFAULT 0 CHECK (autoTitlePending IN (0, 1)),\n          titleIsExplicit INTEGER NOT NULL DEFAULT 0 CHECK (titleIsExplicit IN (0, 1)),\n          startPending INTEGER NOT NULL DEFAULT 0 CHECK (startPending IN (0, 1))\n        ) STRICT",
+          "rows": [
+            {
+              "id": "f30e3f95-0c96-4884-8d36-7368032ea60c",
+              "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+              "conversationId": 2,
+              "title": "Pi 1.5.0 upgrade fixture",
+              "createdAt": 1795006059395,
+              "updatedAt": 1795006059427,
+              "autoTitlePending": 0,
+              "titleIsExplicit": 1,
+              "startPending": 0
+            },
+            {
+              "id": "62baace1-41f7-48a6-99dc-48066bcfd003",
+              "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+              "conversationId": 18,
+              "title": "Pi 1.5.0 upgrade fixture (fork)",
+              "createdAt": 1795006059424,
+              "updatedAt": 1795006059424,
+              "autoTitlePending": 0,
+              "titleIsExplicit": 0,
+              "startPending": 0
+            },
+            {
+              "id": "48bee9d1-c028-46f3-9dcf-9fbd5e90a463",
+              "projectId": "99569881-2674-452d-9e1f-79fd1643a1d2",
+              "conversationId": 29,
+              "title": "Interrupted before upgrade",
+              "createdAt": 1795006059432,
+              "updatedAt": 1795006059698,
+              "autoTitlePending": 0,
+              "titleIsExplicit": 1,
+              "startPending": 0
+            }
+          ]
+        },
+        {
+          "name": "tool_output_cleanup",
+          "sql": "CREATE TABLE tool_output_cleanup (path TEXT PRIMARY KEY) STRICT",
+          "rows": []
+        }
+      ]
+    },
+    "conversations.sqlite": {
+      "userVersion": {
+        "user_version": 0
+      },
+      "tables": [
+        {
+          "name": "conversations",
+          "sql": "CREATE TABLE conversations (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\towner_conversation_id INTEGER,\n\t\t\towner_task_id INTEGER,\n\t\t\trecord TEXT NOT NULL CHECK (json_valid(record))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 2,
+              "owner_conversation_id": null,
+              "owner_task_id": null,
+              "record": "{\"id\":2}"
+            },
+            {
+              "id": 18,
+              "owner_conversation_id": null,
+              "owner_task_id": null,
+              "record": "{\"id\":18,\"parent\":{\"conversationId\":2,\"at\":17}}"
+            },
+            {
+              "id": 29,
+              "owner_conversation_id": null,
+              "owner_task_id": null,
+              "record": "{\"id\":29}"
+            }
+          ]
+        },
+        {
+          "name": "document_revisions",
+          "sql": "CREATE TABLE document_revisions (\n\t\t\tdocument_id INTEGER NOT NULL,\n\t\t\tseq INTEGER NOT NULL,\n\t\t\tkind TEXT NOT NULL CHECK (kind IN ('base', 'delta')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcontent TEXT NOT NULL CHECK (json_valid(content)),\n\t\t\tPRIMARY KEY (document_id, seq)\n\t\t) STRICT",
+          "rows": [
+            {
+              "document_id": 6,
+              "seq": 1,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"sessionId\":\"01a1eeb2-d380-75da-a33b-f5f763ffec72\"}"
+            },
+            {
+              "document_id": 7,
+              "seq": 1,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"cwd\":\"__PIDECK_PROJECT__\"}"
+            },
+            {
+              "document_id": 8,
+              "seq": 2,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"items\":[],\"order\":[]}"
+            },
+            {
+              "document_id": 7,
+              "seq": 2,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"cwd\":\"__PIDECK_PROJECT__\",\"model\":{\"provider\":\"faux\",\"modelId\":\"pideck-test-model\"},\"thinkingLevel\":\"off\"}"
+            },
+            {
+              "document_id": 19,
+              "seq": 14,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"cwd\":\"__PIDECK_PROJECT__\",\"model\":{\"provider\":\"faux\",\"modelId\":\"pideck-test-model\"},\"thinkingLevel\":\"off\"}"
+            },
+            {
+              "document_id": 20,
+              "seq": 14,
+              "kind": "base",
+              "version": 3,
+              "content": "{}"
+            },
+            {
+              "document_id": 21,
+              "seq": 14,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"items\":[]}"
+            },
+            {
+              "document_id": 22,
+              "seq": 14,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"models\":{},\"tools\":{}}"
+            },
+            {
+              "document_id": 23,
+              "seq": 14,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"sessionId\":\"01a1eeb2-d3a0-75da-a33b-f5f937231ca3\"}"
+            },
+            {
+              "document_id": 8,
+              "seq": 19,
+              "kind": "delta",
+              "version": 1,
+              "content": "[[\"s\",[\"edit\"],{\"projectId\":\"99569881-2674-452d-9e1f-79fd1643a1d2\",\"sessionId\":\"f30e3f95-0c96-4884-8d36-7368032ea60c\",\"id\":27,\"token\":\"198c02c1-4d3c-48dd-ab1c-0b46bd3a9242\",\"owner\":11,\"lifetimeId\":\"legacy-upgrade\",\"mode\":\"followUp\"}],[\"s\",[\"order\"],[27]],[\"s\",[\"items\"],[{\"id\":27,\"mode\":\"followUp\",\"content\":\"Original queued text.\"}]]]"
+            },
+            {
+              "document_id": 4,
+              "seq": 19,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"items\":[]}"
+            },
+            {
+              "document_id": 3,
+              "seq": 20,
+              "kind": "base",
+              "version": 3,
+              "content": "{}"
+            },
+            {
+              "document_id": 5,
+              "seq": 20,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"models\":{\"faux/pideck-test-model\":{\"input\":0,\"output\":30,\"cacheRead\":2270,\"cacheWrite\":1171,\"totalTokens\":3471,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}}},\"tools\":{}}"
+            },
+            {
+              "document_id": 31,
+              "seq": 21,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"items\":[]}"
+            },
+            {
+              "document_id": 32,
+              "seq": 21,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"models\":{},\"tools\":{}}"
+            },
+            {
+              "document_id": 33,
+              "seq": 21,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"sessionId\":\"01a1eeb2-d3a7-75da-a33b-f5fadfaf8e6f\"}"
+            },
+            {
+              "document_id": 34,
+              "seq": 21,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"cwd\":\"__PIDECK_PROJECT__\"}"
+            },
+            {
+              "document_id": 8,
+              "seq": 22,
+              "kind": "delta",
+              "version": 1,
+              "content": "[[\"s\",[\"edit\",\"detached\"],true]]"
+            },
+            {
+              "document_id": 35,
+              "seq": 23,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"items\":[],\"order\":[]}"
+            },
+            {
+              "document_id": 34,
+              "seq": 23,
+              "kind": "base",
+              "version": 1,
+              "content": "{\"cwd\":\"__PIDECK_PROJECT__\",\"model\":{\"provider\":\"faux\",\"modelId\":\"pideck-test-model\"},\"thinkingLevel\":\"off\"}"
+            },
+            {
+              "document_id": 30,
+              "seq": 23,
+              "kind": "base",
+              "version": 3,
+              "content": "{\"run\":{\"taskId\":38,\"inputs\":[37],\"turns\":0,\"first\":36}}"
+            }
+          ]
+        },
+        {
+          "name": "documents",
+          "sql": "CREATE TABLE documents (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\tkind TEXT NOT NULL,\n\t\t\tfamily INTEGER NOT NULL CHECK (family IN (0, 1)),\n\t\t\tkey_value TEXT NOT NULL,\n\t\t\tscope_kind TEXT NOT NULL CHECK (scope_kind IN ('session', 'conversation', 'task')),\n\t\t\towner_id INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL,\n\t\t\tretired_at INTEGER,\n\t\t\trecord TEXT NOT NULL CHECK (json_valid(record))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 3,
+              "kind": "\"pi.live\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 1,
+              "retired_at": null,
+              "record": "{\"id\":3,\"kind\":\"pi.live\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":1}"
+            },
+            {
+              "id": 4,
+              "kind": "\"pi.inbox\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 1,
+              "retired_at": null,
+              "record": "{\"id\":4,\"kind\":\"pi.inbox\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":1}"
+            },
+            {
+              "id": 5,
+              "kind": "\"pi.usage\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 1,
+              "retired_at": null,
+              "record": "{\"id\":5,\"kind\":\"pi.usage\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":1}"
+            },
+            {
+              "id": 6,
+              "kind": "\"pi.provider\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 1,
+              "retired_at": null,
+              "record": "{\"id\":6,\"kind\":\"pi.provider\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":1}"
+            },
+            {
+              "id": 7,
+              "kind": "\"pi.agent\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 1,
+              "retired_at": null,
+              "record": "{\"id\":7,\"kind\":\"pi.agent\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"rewindable\",\"fork\":\"asOf\",\"createdAt\":1}"
+            },
+            {
+              "id": 8,
+              "kind": "\"pideck.queue-edit\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 2,
+              "created_at": 2,
+              "retired_at": null,
+              "record": "{\"id\":8,\"kind\":\"pideck.queue-edit\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":2},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":2}"
+            },
+            {
+              "id": 19,
+              "kind": "\"pi.agent\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 18,
+              "created_at": 14,
+              "retired_at": null,
+              "record": "{\"id\":19,\"kind\":\"pi.agent\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":18},\"history\":\"rewindable\",\"fork\":\"asOf\",\"createdAt\":14}"
+            },
+            {
+              "id": 20,
+              "kind": "\"pi.live\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 18,
+              "created_at": 14,
+              "retired_at": null,
+              "record": "{\"id\":20,\"kind\":\"pi.live\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":18},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":14}"
+            },
+            {
+              "id": 21,
+              "kind": "\"pi.inbox\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 18,
+              "created_at": 14,
+              "retired_at": null,
+              "record": "{\"id\":21,\"kind\":\"pi.inbox\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":18},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":14}"
+            },
+            {
+              "id": 22,
+              "kind": "\"pi.usage\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 18,
+              "created_at": 14,
+              "retired_at": null,
+              "record": "{\"id\":22,\"kind\":\"pi.usage\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":18},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":14}"
+            },
+            {
+              "id": 23,
+              "kind": "\"pi.provider\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 18,
+              "created_at": 14,
+              "retired_at": null,
+              "record": "{\"id\":23,\"kind\":\"pi.provider\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":18},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":14}"
+            },
+            {
+              "id": 30,
+              "kind": "\"pi.live\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 21,
+              "retired_at": null,
+              "record": "{\"id\":30,\"kind\":\"pi.live\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":21}"
+            },
+            {
+              "id": 31,
+              "kind": "\"pi.inbox\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 21,
+              "retired_at": null,
+              "record": "{\"id\":31,\"kind\":\"pi.inbox\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":21}"
+            },
+            {
+              "id": 32,
+              "kind": "\"pi.usage\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 21,
+              "retired_at": null,
+              "record": "{\"id\":32,\"kind\":\"pi.usage\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":21}"
+            },
+            {
+              "id": 33,
+              "kind": "\"pi.provider\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 21,
+              "retired_at": null,
+              "record": "{\"id\":33,\"kind\":\"pi.provider\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":21}"
+            },
+            {
+              "id": 34,
+              "kind": "\"pi.agent\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 21,
+              "retired_at": null,
+              "record": "{\"id\":34,\"kind\":\"pi.agent\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"rewindable\",\"fork\":\"asOf\",\"createdAt\":21}"
+            },
+            {
+              "id": 35,
+              "kind": "\"pideck.queue-edit\"",
+              "family": 0,
+              "key_value": "\"\"",
+              "scope_kind": "conversation",
+              "owner_id": 29,
+              "created_at": 23,
+              "retired_at": null,
+              "record": "{\"id\":35,\"kind\":\"pideck.queue-edit\",\"scope\":{\"kind\":\"conversation\",\"conversationId\":29},\"history\":\"latest\",\"fork\":\"initial\",\"createdAt\":23}"
+            }
+          ]
+        },
+        {
+          "name": "durable_metadata",
+          "sql": "CREATE TABLE durable_metadata (\n\t\t\tsingleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n\t\t\tnext_id TEXT NOT NULL,\n\t\t\tnext_seq INTEGER NOT NULL\n\t\t) STRICT",
+          "rows": [
+            {
+              "singleton": 1,
+              "next_id": "40",
+              "next_seq": 26
+            }
+          ]
+        },
+        {
+          "name": "durable_schema",
+          "sql": "CREATE TABLE durable_schema (\n\t\t\tsingleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n\t\t\tversion INTEGER NOT NULL CHECK (version >= 0)\n\t\t) STRICT",
+          "rows": [
+            {
+              "singleton": 1,
+              "version": 2
+            }
+          ]
+        },
+        {
+          "name": "entries",
+          "sql": "CREATE TABLE entries (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\tconversation_id INTEGER NOT NULL,\n\t\t\thead INTEGER,\n\t\t\tcommit_seq INTEGER NOT NULL,\n\t\t\trecord TEXT NOT NULL CHECK (json_valid(record))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 9,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 2,
+              "record": "{\"model\":[{\"role\":\"user\",\"content\":\"Create the upgrade fixture.\",\"timestamp\":1795006059396}],\"kind\":\"pi.user\",\"id\":9,\"conversationId\":2}"
+            },
+            {
+              "id": 12,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 4,
+              "record": "{\"model\":[{\"role\":\"system\",\"content\":\"\",\"sections\":{\"pideck\":\"<pideck>\\nYou are Pideck, a coding agent working in the user's selected local project.\\nInspect relevant files before editing. Read AGENTS.md in relevant subdirectories for instructions scoped to those files.\\nUse repository instructions within the scope of the user's task. Make focused changes, review the diff, and verify the result.\\nFor frontend verification, use the bash tool in the project to start the dev server and run Playwright CLI.\\nUse a unique named browser session (playwright-cli -s=<name> open <url>), exercise the changed flow, and check its snapshot, screenshot, or console.\\nFor visual analysis, pass a screenshot to the read tool when your model supports images. Close the named browser session when finished.\\nFor a frontend change, run the changed interactions in the browser, inspect the screenshot and fix any problems before reporting success. Do not claim visual inspection without reading an image.\\nKeep development servers on loopback, record their process IDs, and stop servers you started when verification is complete.\\nShow screenshots in replies using Markdown images, e.g. ![Description](path/to/screenshot.png). Read them first to save an immutable image in the conversation. Remote images are not loaded automatically.\\nReplies support Mermaid fences, read-only proposed diff fences, file names after code-fence languages, and GitHub-style NOTE/TIP/IMPORTANT/WARNING/CAUTION alerts. Do not use raw HTML for previews.\\nUse the project's local Playwright CLI or a CLI already on PATH; if needed, run npx --yes --package @playwright/cli playwright-cli.\\nThe project working directory is __PIDECK_PROJECT__.\\n</pideck>\"},\"toolsAdded\":[{\"name\":\"read\",\"description\":\"Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to read (relative or absolute)\"},\"offset\":{\"type\":\"number\",\"description\":\"Line number to start reading from (1-indexed)\"},\"limit\":{\"type\":\"number\",\"description\":\"Maximum number of lines to read\"}},\"required\":[\"path\"]}},{\"name\":\"write\",\"description\":\"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to write (relative or absolute)\"},\"content\":{\"type\":\"string\",\"description\":\"Content to write to the file\"}},\"required\":[\"path\",\"content\"]}},{\"name\":\"edit\",\"description\":\"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to edit (relative or absolute)\"},\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"oldText\":{\"type\":\"string\",\"description\":\"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.\"},\"newText\":{\"type\":\"string\",\"description\":\"Replacement text for this targeted edit.\"}},\"required\":[\"oldText\",\"newText\"]},\"description\":\"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.\"}},\"required\":[\"path\",\"edits\"]}},{\"name\":\"bash\",\"description\":\"Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Bash command to execute\"},\"timeout\":{\"type\":\"number\",\"description\":\"Timeout in seconds (optional, no default timeout)\"}},\"required\":[\"command\"]}}],\"timestamp\":1795006059404}],\"kind\":\"pi.system\",\"id\":12,\"conversationId\":2,\"byTaskId\":11}"
+            },
+            {
+              "id": 13,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 5,
+              "record": "{\"model\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"tool:1795006059395:t9uxaoq13o\",\"name\":\"write\",\"arguments\":{\"path\":\"legacy.txt\",\"content\":\"Written by Pi 1.5.0.\\n\"}}],\"api\":\"faux:1795006059377:nqdgci10tf\",\"provider\":\"faux\",\"model\":\"pideck-test-model\",\"usage\":{\"input\":0,\"output\":16,\"cacheRead\":0,\"cacheWrite\":1119,\"totalTokens\":1135,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"toolUse\",\"timestamp\":1795006059395,\"thinkingLevel\":\"off\"}],\"kind\":\"pi.assistant\",\"id\":13,\"conversationId\":2,\"byTaskId\":11}"
+            },
+            {
+              "id": 15,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 8,
+              "record": "{\"model\":[{\"role\":\"toolResult\",\"toolCallId\":\"tool:1795006059395:t9uxaoq13o\",\"toolName\":\"write\",\"content\":[{\"type\":\"text\",\"text\":\"Successfully wrote to legacy.txt\"}],\"details\":{\"patch\":\"===================================================================\\n--- /dev/null\\n+++ b/legacy.txt\\n@@ -0,0 +1,1 @@\\n+Written by Pi 1.5.0.\\n\"},\"isError\":false,\"durationMs\":1,\"timestamp\":1795006059415}],\"data\":{\"diagnostics\":[]},\"kind\":\"pi.tool-result\",\"id\":15,\"conversationId\":2,\"byTaskId\":14}"
+            },
+            {
+              "id": 17,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 13,
+              "record": "{\"model\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Legacy result is preserved.\"}],\"api\":\"faux:1795006059377:nqdgci10tf\",\"provider\":\"faux\",\"model\":\"pideck-test-model\",\"usage\":{\"input\":0,\"output\":7,\"cacheRead\":1119,\"cacheWrite\":32,\"totalTokens\":1158,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":1795006059395,\"thinkingLevel\":\"off\"}],\"kind\":\"pi.assistant\",\"id\":17,\"conversationId\":2,\"byTaskId\":16}"
+            },
+            {
+              "id": 24,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 15,
+              "record": "{\"model\":[{\"role\":\"user\",\"content\":\"Hold a queue edit across the upgrade.\",\"timestamp\":1795006059425}],\"kind\":\"pi.user\",\"id\":24,\"conversationId\":2}"
+            },
+            {
+              "id": 28,
+              "conversation_id": 2,
+              "head": null,
+              "commit_seq": 20,
+              "record": "{\"model\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Legacy main work finished.\"}],\"api\":\"faux:1795006059377:nqdgci10tf\",\"provider\":\"faux\",\"model\":\"pideck-test-model\",\"usage\":{\"input\":0,\"output\":7,\"cacheRead\":1151,\"cacheWrite\":20,\"totalTokens\":1178,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":1795006059428,\"durationMs\":2,\"thinkingLevel\":\"off\"}],\"kind\":\"pi.assistant\",\"id\":28,\"conversationId\":2,\"byTaskId\":26}"
+            },
+            {
+              "id": 36,
+              "conversation_id": 29,
+              "head": null,
+              "commit_seq": 23,
+              "record": "{\"kind\":\"pideck.input\",\"data\":{\"requestId\":\"433959f1-8a31-4824-a9cd-b2a290b77da7\"},\"model\":[{\"role\":\"user\",\"content\":\"Recover this request.\",\"timestamp\":1795006059695}],\"id\":36,\"conversationId\":29}"
+            },
+            {
+              "id": 39,
+              "conversation_id": 29,
+              "head": null,
+              "commit_seq": 25,
+              "record": "{\"model\":[{\"role\":\"system\",\"content\":\"\",\"sections\":{\"pideck\":\"<pideck>\\nYou are Pideck, a coding agent working in the user's selected local project.\\nInspect relevant files before editing. Read AGENTS.md in relevant subdirectories for instructions scoped to those files.\\nUse repository instructions within the scope of the user's task. Make focused changes, review the diff, and verify the result.\\nFor frontend verification, use the bash tool in the project to start the dev server and run Playwright CLI.\\nUse a unique named browser session (playwright-cli -s=<name> open <url>), exercise the changed flow, and check its snapshot, screenshot, or console.\\nFor visual analysis, pass a screenshot to the read tool when your model supports images. Close the named browser session when finished.\\nFor a frontend change, run the changed interactions in the browser, inspect the screenshot and fix any problems before reporting success. Do not claim visual inspection without reading an image.\\nKeep development servers on loopback, record their process IDs, and stop servers you started when verification is complete.\\nShow screenshots in replies using Markdown images, e.g. ![Description](path/to/screenshot.png). Read them first to save an immutable image in the conversation. Remote images are not loaded automatically.\\nReplies support Mermaid fences, read-only proposed diff fences, file names after code-fence languages, and GitHub-style NOTE/TIP/IMPORTANT/WARNING/CAUTION alerts. Do not use raw HTML for previews.\\nUse the project's local Playwright CLI or a CLI already on PATH; if needed, run npx --yes --package @playwright/cli playwright-cli.\\nThe project working directory is __PIDECK_PROJECT__.\\n</pideck>\"},\"toolsAdded\":[{\"name\":\"read\",\"description\":\"Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to read (relative or absolute)\"},\"offset\":{\"type\":\"number\",\"description\":\"Line number to start reading from (1-indexed)\"},\"limit\":{\"type\":\"number\",\"description\":\"Maximum number of lines to read\"}},\"required\":[\"path\"]}},{\"name\":\"write\",\"description\":\"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to write (relative or absolute)\"},\"content\":{\"type\":\"string\",\"description\":\"Content to write to the file\"}},\"required\":[\"path\",\"content\"]}},{\"name\":\"edit\",\"description\":\"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the file to edit (relative or absolute)\"},\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"oldText\":{\"type\":\"string\",\"description\":\"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.\"},\"newText\":{\"type\":\"string\",\"description\":\"Replacement text for this targeted edit.\"}},\"required\":[\"oldText\",\"newText\"]},\"description\":\"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.\"}},\"required\":[\"path\",\"edits\"]}},{\"name\":\"bash\",\"description\":\"Execute a bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Bash command to execute\"},\"timeout\":{\"type\":\"number\",\"description\":\"Timeout in seconds (optional, no default timeout)\"}},\"required\":[\"command\"]}}],\"timestamp\":1795006059700}],\"kind\":\"pi.system\",\"id\":39,\"conversationId\":29,\"byTaskId\":38}"
+            }
+          ]
+        },
+        {
+          "name": "record_ids",
+          "sql": "CREATE TABLE record_ids (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\trecord_type TEXT NOT NULL CHECK (record_type IN ('conversation', 'entry', 'task', 'submission', 'document'))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 2,
+              "record_type": "conversation"
+            },
+            {
+              "id": 3,
+              "record_type": "document"
+            },
+            {
+              "id": 4,
+              "record_type": "document"
+            },
+            {
+              "id": 5,
+              "record_type": "document"
+            },
+            {
+              "id": 6,
+              "record_type": "document"
+            },
+            {
+              "id": 7,
+              "record_type": "document"
+            },
+            {
+              "id": 8,
+              "record_type": "document"
+            },
+            {
+              "id": 9,
+              "record_type": "entry"
+            },
+            {
+              "id": 10,
+              "record_type": "submission"
+            },
+            {
+              "id": 11,
+              "record_type": "task"
+            },
+            {
+              "id": 12,
+              "record_type": "entry"
+            },
+            {
+              "id": 13,
+              "record_type": "entry"
+            },
+            {
+              "id": 14,
+              "record_type": "task"
+            },
+            {
+              "id": 15,
+              "record_type": "entry"
+            },
+            {
+              "id": 16,
+              "record_type": "task"
+            },
+            {
+              "id": 17,
+              "record_type": "entry"
+            },
+            {
+              "id": 18,
+              "record_type": "conversation"
+            },
+            {
+              "id": 19,
+              "record_type": "document"
+            },
+            {
+              "id": 20,
+              "record_type": "document"
+            },
+            {
+              "id": 21,
+              "record_type": "document"
+            },
+            {
+              "id": 22,
+              "record_type": "document"
+            },
+            {
+              "id": 23,
+              "record_type": "document"
+            },
+            {
+              "id": 24,
+              "record_type": "entry"
+            },
+            {
+              "id": 25,
+              "record_type": "submission"
+            },
+            {
+              "id": 26,
+              "record_type": "task"
+            },
+            {
+              "id": 27,
+              "record_type": "submission"
+            },
+            {
+              "id": 28,
+              "record_type": "entry"
+            },
+            {
+              "id": 29,
+              "record_type": "conversation"
+            },
+            {
+              "id": 30,
+              "record_type": "document"
+            },
+            {
+              "id": 31,
+              "record_type": "document"
+            },
+            {
+              "id": 32,
+              "record_type": "document"
+            },
+            {
+              "id": 33,
+              "record_type": "document"
+            },
+            {
+              "id": 34,
+              "record_type": "document"
+            },
+            {
+              "id": 35,
+              "record_type": "document"
+            },
+            {
+              "id": 36,
+              "record_type": "entry"
+            },
+            {
+              "id": 37,
+              "record_type": "submission"
+            },
+            {
+              "id": 38,
+              "record_type": "task"
+            },
+            {
+              "id": 39,
+              "record_type": "entry"
+            }
+          ]
+        },
+        {
+          "name": "submissions",
+          "sql": "CREATE TABLE submissions (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\tconversation_id INTEGER NOT NULL,\n\t\t\trequest_id TEXT,\n\t\t\tstatus TEXT NOT NULL CHECK (status IN ('queued', 'placed', 'done', 'unanswered')),\n\t\t\trecord TEXT NOT NULL CHECK (json_valid(record))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 10,
+              "conversation_id": 2,
+              "request_id": null,
+              "status": "done",
+              "record": "{\"conversationId\":2,\"type\":\"input\",\"status\":\"done\",\"entry\":9,\"id\":10,\"answer\":17}"
+            },
+            {
+              "id": 25,
+              "conversation_id": 2,
+              "request_id": null,
+              "status": "done",
+              "record": "{\"conversationId\":2,\"type\":\"input\",\"status\":\"done\",\"entry\":24,\"id\":25,\"answer\":28}"
+            },
+            {
+              "id": 27,
+              "conversation_id": 2,
+              "request_id": null,
+              "status": "queued",
+              "record": "{\"conversationId\":2,\"type\":\"input\",\"status\":\"queued\",\"id\":27}"
+            },
+            {
+              "id": 37,
+              "conversation_id": 29,
+              "request_id": "\"433959f1-8a31-4824-a9cd-b2a290b77da7\"",
+              "status": "placed",
+              "record": "{\"conversationId\":29,\"requestId\":\"433959f1-8a31-4824-a9cd-b2a290b77da7\",\"type\":\"input\",\"status\":\"placed\",\"entry\":36,\"id\":37}"
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "sql": "CREATE TABLE \"tasks\" (\n\t\t\tid INTEGER PRIMARY KEY,\n\t\t\tconversation_id INTEGER NOT NULL,\n\t\t\tkind TEXT NOT NULL,\n\t\t\tstatus TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal')),\n\t\t\tabort_requested INTEGER NOT NULL CHECK (abort_requested IN (0, 1)),\n\t\t\tbackground INTEGER NOT NULL CHECK (background IN (0, 1)),\n\t\t\trecord TEXT NOT NULL CHECK (json_valid(record))\n\t\t) STRICT",
+          "rows": [
+            {
+              "id": 11,
+              "conversation_id": 2,
+              "kind": "\"pi.generation\"",
+              "status": "terminal",
+              "abort_requested": 0,
+              "background": 0,
+              "record": "{\"id\":11,\"conversationId\":2,\"kind\":\"pi.generation\",\"version\":2,\"input\":{},\"background\":false,\"abortRequested\":false,\"state\":{\"status\":\"terminal\",\"outcome\":{\"status\":\"completed\",\"result\":{\"entryId\":13}}},\"startedAt\":1795006059400,\"endedAt\":1795006059418}"
+            },
+            {
+              "id": 14,
+              "conversation_id": 2,
+              "kind": "\"pi.tool\"",
+              "status": "terminal",
+              "abort_requested": 0,
+              "background": 0,
+              "record": "{\"id\":14,\"conversationId\":2,\"kind\":\"pi.tool\",\"version\":3,\"input\":{\"kind\":\"model\",\"assistant\":13,\"callId\":\"tool:1795006059395:t9uxaoq13o\"},\"owner\":11,\"background\":false,\"abortRequested\":false,\"state\":{\"status\":\"terminal\",\"outcome\":{\"status\":\"completed\",\"result\":{\"kind\":\"model\",\"entryId\":15}}},\"startedAt\":1795006059411,\"endedAt\":1795006059415}"
+            },
+            {
+              "id": 16,
+              "conversation_id": 2,
+              "kind": "\"pi.generation\"",
+              "status": "terminal",
+              "abort_requested": 0,
+              "background": 0,
+              "record": "{\"id\":16,\"conversationId\":2,\"kind\":\"pi.generation\",\"version\":2,\"input\":{},\"background\":false,\"abortRequested\":false,\"state\":{\"status\":\"terminal\",\"outcome\":{\"status\":\"completed\",\"result\":{\"entryId\":17}}},\"startedAt\":1795006059418,\"endedAt\":1795006059421}"
+            },
+            {
+              "id": 26,
+              "conversation_id": 2,
+              "kind": "\"pi.generation\"",
+              "status": "terminal",
+              "abort_requested": 0,
+              "background": 0,
+              "record": "{\"id\":26,\"conversationId\":2,\"kind\":\"pi.generation\",\"version\":2,\"input\":{},\"background\":false,\"abortRequested\":false,\"state\":{\"status\":\"terminal\",\"outcome\":{\"status\":\"completed\",\"result\":{\"entryId\":28}}},\"startedAt\":1795006059425,\"endedAt\":1795006059428}"
+            },
+            {
+              "id": 38,
+              "conversation_id": 29,
+              "kind": "\"pi.generation\"",
+              "status": "running",
+              "abort_requested": 0,
+              "background": 0,
+              "record": "{\"id\":38,\"conversationId\":29,\"kind\":\"pi.generation\",\"version\":2,\"input\":{},\"background\":false,\"abortRequested\":false,\"state\":{\"status\":\"running\",\"checkpoint\":{\"phase\":\"request\",\"attempt\":1,\"model\":{\"provider\":\"faux\",\"modelId\":\"pideck-test-model\"},\"thinkingLevel\":\"off\",\"streamOptions\":{},\"cutoff\":39}},\"startedAt\":1795006059698}"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION } from "@earendil-works/pi-durable/storage/sqlite";
 
-// Durable 1.5.0 has no conversation deletion API. These statements are an
+// Durable 1.5.2 has no conversation deletion API. These statements are an
 // offline operation for its reviewed v2 schema, never for a live Harness.
 const purgeSchemaVersion = 2;
 type DatabaseName = "main" | "durable";

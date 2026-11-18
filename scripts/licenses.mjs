@@ -2,8 +2,8 @@ import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import asar from "@electron/asar";
-import ts from "typescript";
+import * as asar from "@electron/asar";
+import { build } from "esbuild";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
 const noticeName = /(?:^|[._-])(?:licen[cs]es?|copying|copyright|notices?|third[-_]?party(?:notices?)?)(?:$|[._-])/i;
@@ -25,35 +25,31 @@ async function resolvePackage(name, from, root) {
 }
 
 async function rendererImports(root) {
-  const names = new Set();
+  const files = [];
   async function visit(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) await visit(path);
-      else if (/\.(?:[cm]?[jt]sx?|css)$/.test(entry.name)) {
-        const source = await readFile(path, "utf8");
-        const imports = [];
-        const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, /x$/.test(entry.name) ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-        function imported(node) {
-          if (ts.isImportDeclaration(node)) {
-            const clause = node.importClause;
-            const bindings = clause?.namedBindings;
-            const typeOnly = clause?.isTypeOnly || (!clause?.name && bindings && ts.isNamedImports(bindings)
-              && bindings.elements.length > 0 && bindings.elements.every(element => element.isTypeOnly));
-            if (!typeOnly && ts.isStringLiteral(node.moduleSpecifier)) imports.push(node.moduleSpecifier.text);
-          } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-            imports.push(node.moduleSpecifier.text);
-          } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
-            && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) imports.push(node.arguments[0].text);
-          ts.forEachChild(node, imported);
-        }
-        imported(tree);
-        for (const match of source.matchAll(/@import\s+["']([^"']+)["']/g)) imports.push(match[1]);
-        for (const value of imports) if (!value.startsWith(".") && !value.startsWith("/") && !value.startsWith("node:")) names.add(packageName(value));
-      }
+      else if (/\.(?:[cm]?[jt]sx?|css)$/.test(entry.name)) files.push(path);
     }
   }
   await visit(join(root, "src", "renderer"));
+  if (!files.length) return new Set();
+  // TypeScript 7 no longer exposes the old JS compiler API. Use the build
+  // parser we already ship with the tooling, without resolving or executing
+  // imports. Keep value imports even when unused; erase explicit type imports.
+  const { metafile } = await build({
+    entryPoints: files, outdir: join(root, ".license-scan"), entryNames: "[dir]/[name]-[ext]",
+    bundle: true, external: ["*"], write: false, metafile: true, treeShaking: false,
+    format: "esm", jsx: "preserve", logLevel: "silent",
+    tsconfigRaw: { compilerOptions: { preserveValueImports: true } },
+  });
+  const names = new Set();
+  for (const input of Object.values(metafile.inputs)) {
+    for (const { path, kind } of input.imports) {
+      if (kind !== "url-token" && !path.startsWith(".") && !path.startsWith("/") && !path.startsWith("node:")) names.add(packageName(path));
+    }
+  }
   return names;
 }
 

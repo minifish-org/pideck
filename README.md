@@ -18,12 +18,14 @@ These are packaging targets, not a claim that every operating-system release or 
 
 ## Run locally
 
-Use Node.js 22.23.4 for the build, matching CI and the bundled runtime, and the Git/Bash requirements above. Native dependencies may require your platform's C/C++ build tools if a matching prebuilt binary is unavailable.
+Use Node.js 22.23.5 for the build, matching CI and the bundled runtime, and the Git/Bash requirements above. Native dependencies may require your platform's C/C++ build tools if a matching prebuilt binary is unavailable.
 
 ```sh
 npm ci
 npm run dev
 ```
+
+Installation runs Electron Builder's native dependency preparation against the pinned Electron version, including node-pty's executable spawn helper. Do not skip the root install script for a working development terminal. Chord's optional React peer is narrowly overridden to retain the renderer's patched React version rather than downgrade it to the peer's exact patch.
 
 The first development launch prepares the bundled Node.js and Playwright CLI before building the app. This downloads fixed upstream versions into `release/automation-downloads/`; later preparations reuse the verified download cache. `npm run build` only compiles the app and does not download browser executables. To prepare the tools separately, run `npm run prepare:automation`. Browser executables are prepared by the pinned upstream installer when first needed, under application data.
 

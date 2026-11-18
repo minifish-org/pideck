@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import asar from '@electron/asar';
+import * as asar from '@electron/asar';
 
 type Inventory = { dependencies: { name: string; version: string }[] };
 const { collectLicenses, prepareLicenses, validateLicenses, validatePackagedLicenses, prepareInstalledLicenses, validateInstalledLicenses } = await import(new URL('../scripts/licenses.mjs', import.meta.url).href) as {
@@ -64,6 +64,24 @@ test('renderer notice discovery ignores erased type imports but includes side ef
       const lazy = () => import('runtime/renderer');`);
     assert.deepEqual((await collectLicenses(root)).map(value => `${value.name}@${value.version}`).sort(),
       ['renderer@1.0.0', 'runtime@1.0.0', 'shared@1.0.0', 'shared@2.0.0']);
+  });
+});
+
+test('renderer notice discovery parses TSX and CSS, retains unused values, and ignores strings and type-only exports', async () => {
+  await fixture(async (root, file) => {
+    await file('src/renderer/component.tsx', `import { unused } from 'runtime';
+      import type { Props } from 'not-installed-types';
+      export type { Model } from 'erased-export';
+      const example = "import('not-a-dependency')";
+      export const component = <div>{example}</div>;`);
+    await file('src/renderer/theme.css', `@import 'renderer/theme.css';
+      /* @import 'not-a-dependency'; */
+      .example { background: url('./local.png'); }`);
+    assert.deepEqual((await collectLicenses(root)).map(value => `${value.name}@${value.version}`).sort(),
+      ['renderer@1.0.0', 'runtime@1.0.0', 'shared@1.0.0', 'shared@2.0.0']);
+    await file('src/renderer/component.tsx', `import { missing } from 'unlicensed-runtime';
+      export const component = <div />;`);
+    await assert.rejects(collectLicenses(root), /not installed: unlicensed-runtime/);
   });
 });
 

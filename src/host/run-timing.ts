@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { GenerationTask, type Conversation, type Cursor, type EntryId, type Harness, type LiveRun } from "@earendil-works/pi-durable";
 import { continueEntryKind, inputEntryKind, type CompletedRun } from "./chat-view.js";
 

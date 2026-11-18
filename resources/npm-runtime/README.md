@@ -1,13 +1,13 @@
 # Bundled npm runtime
 
 Pideck keeps standalone Node.js and replaces the npm copy in that distribution
-with npm 12.2.2. The original npm archive is obtained from the public npm
+with npm 12.2.3. The original npm archive is obtained from the public npm
 registry and checked against its pinned SHA-512 integrity before extraction.
 Its CLI, library files, documentation, and license remain intact.
 
 The adjacent production package metadata and lockfile rebuild npm's dependency
 tree with standard `npm ci --ignore-scripts --omit=dev`. Glob is fixed at
-14.0.4 and minimatch at 11.0.5, including transitive copies through overrides,
+14.0.6 and minimatch at 11.0.9, including transitive copies through overrides,
 to avoid the affected versions shipped in npm's original bundled tree. The
 remaining dependencies are locked with registry URLs and integrity values.
 Development workspaces, development scripts, and the original bundling list

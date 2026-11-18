@@ -10,8 +10,8 @@ import { shellEnvironment } from './shell-env.js';
 import { cliEnvironment, type AutomationProfile } from '../automation/profile.js';
 
 const execute = promisify(execFile);
-const manifestVersion = { schema: 2, nodeVersion: '22.23.4', npmVersion: '12.2.2', cliVersion: '0.1.23',
-  playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252' };
+const manifestVersion = { schema: 2, nodeVersion: '22.23.5', npmVersion: '12.2.3', cliVersion: '0.1.24',
+  playwrightVersion: '1.66.0-alpha-1794252756000', browserRevision: '1254' };
 type Manifest = typeof manifestVersion & { platform: string; arch: string; node: string; cli: string; playwright: string };
 type Options = { resourcesDirectory: string; stateDirectory: string; launcherPath?: string };
 type Profile = { directory: string; descriptor: string; value: AutomationProfile };

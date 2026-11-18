@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import asar from '@electron/asar';
+import * as asar from '@electron/asar';
 
 type Package = { name: string; version: string; path: string };
 type Finding = { package: string; severity: string; url: string; installed: { version: string; path: string }[] };
@@ -66,7 +66,7 @@ test('an actual ASAR license inventory contributes compiled renderer versions ab
     const browserMetadata = await readFile(new URL('../node_modules/playwright-core/browsers.json', import.meta.url), 'utf8');
     const browserRevision = JSON.parse(browserMetadata).browsers.find((browser: { name: string }) => browser.name === 'chromium').revision;
     await file(join(automation, 'node_modules/playwright-core/browsers.json'), browserMetadata);
-    await file(join(automation, 'manifest.json'), JSON.stringify({ schema: 2, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.4', npmVersion,
+    await file(join(automation, 'manifest.json'), JSON.stringify({ schema: 2, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.5', npmVersion,
       cliVersion: packages['@playwright/cli'].version, playwrightVersion: packages.playwright.version, browserRevision,
       node: 'node/bin/node', cli: 'node_modules/@playwright/cli/playwright-cli.js', playwright: 'node_modules/playwright/cli.js' }));
     await file(join(automation, 'node/lib/node_modules/npm/package.json'), JSON.stringify({ name: 'npm', version: npmVersion }));
@@ -94,7 +94,7 @@ test('an actual ASAR license inventory contributes compiled renderer versions ab
 });
 
 test('browser and media binaries cannot return to the package through an old cache or an alternate location', () => {
-  for (const path of ['automation/browsers', 'automation/browsers/chromium-1252/chrome-mac-arm64/chrome',
+  for (const path of ['automation/browsers', 'automation/browsers/chromium-1254/chrome-mac-arm64/chrome',
     'other/ffmpeg-mac', 'other/chrome.exe', 'other/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing']) {
     const issues = distributionPathIssues([{ path, directory: path.endsWith('browsers') }]);
     assert.ok(issues.some(issue => issue.reason.startsWith('Browser and FFmpeg')), path);

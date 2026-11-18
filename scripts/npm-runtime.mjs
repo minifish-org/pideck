@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 import { x as extractTar } from "tar";
 import { prepareInstalledLicenses } from "./licenses.mjs";
 
-export const npmVersion = "12.2.2";
-// https://registry.npmjs.org/npm/12.2.2 dist.integrity. Verify before extraction.
-const npmIntegrity = "sha512-KglgbZyacf7jH+FHuNRqVuCzQi8VhI2a7J87Ix43FsPTuZoGWmIXXGdZtBUOA79vwL+IJREqURVzupA7PsQTcA==";
+export const npmVersion = "12.2.3";
+// https://registry.npmjs.org/npm/12.2.3 dist.integrity. Verify before extraction.
+const npmIntegrity = "sha512-ovmNRRe76Jvcp1E6iOePQ6H9Zr4XMOrqgfaeGNhtRvP3XSl2Lo/a9C1N5/jRlLLrsqCem/omgGdZHpZ5a6yn1Q==";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 async function integrity(file) {

@@ -70,7 +70,7 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
     const browsers = JSON.parse(await readFile(join(source, 'node_modules', 'playwright-core', 'browsers.json'), 'utf8')).browsers;
     const chromium = browsers.find((browser: { name: string }) => browser.name === 'chromium').revision;
     const ffmpeg = browsers.find((browser: { name: string }) => browser.name === 'ffmpeg').revision;
-    const manifest = { schema: 2, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.4', npmVersion: '12.2.2',
+    const manifest = { schema: 2, platform: 'darwin', arch: 'arm64', nodeVersion: '22.23.5', npmVersion: '12.2.3',
       cliVersion: cli.version, playwrightVersion: core.version, browserRevision: chromium,
       node: 'node/bin/node', cli: 'node_modules/@playwright/cli/playwright-cli.js',
       playwright: 'node_modules/playwright/cli.js' };
@@ -78,7 +78,7 @@ test('afterPack restores upstream CLI dependencies omitted by the normal resourc
     for (const path of [manifest.node, 'node/LICENSE', 'NOTICE.txt', 'node/bin/npm', 'node/bin/npx',
       'node/lib/node_modules/npm/bin/npm-cli.js', 'node/lib/node_modules/npm/bin/npx-cli.js',
       'node/lib/node_modules/npm/LICENSE', 'node/lib/node_modules/npm/PIDECK-DISTRIBUTION.txt']) await file(path);
-    await file('node/lib/node_modules/npm/package.json', JSON.stringify({ name: 'npm', version: '12.2.2', license: 'Artistic-2.0' }));
+    await file('node/lib/node_modules/npm/package.json', JSON.stringify({ name: 'npm', version: '12.2.3', license: 'Artistic-2.0' }));
     await prepareInstalledLicenses(join(source, 'node/lib/node_modules/npm'));
     await validateAutomationResources(source);
     await cp(source, published, { recursive: true, verbatimSymlinks: true,

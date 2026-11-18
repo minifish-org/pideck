@@ -13,9 +13,9 @@ const run = promisify(execFile);
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
 export const sparkleVersion = "2.10.1";
 const sparkleChecksum = "1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27";
-const electronVersion = "45.2.3";
-// Official artifacts.electronjs.org/headers/dist/v45.2.3/SHASUMS256.txt.
-const headerChecksum = "5300f8e7965734f7cc1aec0c89ce8c0b68644129b858fb0a530ebbd9cd4a4284";
+const electronVersion = "45.3.4";
+// Official artifacts.electronjs.org/headers/dist/v45.3.4/SHASUMS256.txt.
+const headerChecksum = "8ca1baba449ec91f78d75290ffc3533d8a2dc13bd9a2257f08828ac4835bde5f";
 const napiVersion = 8;
 const minimumSystemVersion = "14.0";
 const frameworkPath = "Frameworks/Sparkle.framework";

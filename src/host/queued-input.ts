@@ -2,7 +2,7 @@ import {
   ConversationBusy, ConversationIdle, defineDoc, InboxDoc, LiveDoc, type Conversation, type ConversationId,
   type InboxItem, type InputSubmissionDraft, type LiveState, type SubmissionId, type Tx,
 } from "@earendil-works/pi-durable";
-import { copyJson } from "@earendil-works/chord";
+import { copyJson } from "@earendil-works/chord/json";
 import type { QueuedInputContent, QueueUpdate } from "../shared/api.js";
 
 type EditIdentity = { id: number; token: string; owner: number; lifetimeId: string };

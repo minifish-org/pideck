@@ -17,7 +17,7 @@ const { prepareUpdaterAssets, prepareUpdaterTools, publishUpdaterAssets, validat
 const manifest = {
   schema: 1, platform: 'darwin', arch: 'arm64', sparkleVersion: '2.10.1',
   sparkleArchiveSha256: '1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27',
-  electronVersion: '45.2.3', electronHeadersSha256: '5300f8e7965734f7cc1aec0c89ce8c0b68644129b858fb0a530ebbd9cd4a4284',
+  electronVersion: '45.3.4', electronHeadersSha256: '8ca1baba449ec91f78d75290ffc3533d8a2dc13bd9a2257f08828ac4835bde5f',
   napiVersion: 8, minimumSystemVersion: '14.0', framework: 'Frameworks/Sparkle.framework',
   native: 'Resources/native/pideck-sparkle.node',
 };

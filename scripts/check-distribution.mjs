@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import asar from "@electron/asar";
+import * as asar from "@electron/asar";
 import semver from "semver";
 import { validateAutomationResources } from "./package-assets.mjs";
 import { validatePackagedLicenses } from "./licenses.mjs";

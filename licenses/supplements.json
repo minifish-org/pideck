@@ -1,38 +1,38 @@
 {
-  "@earendil-works/chord@1.5.0": {
+  "@earendil-works/chord@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
-  "@earendil-works/pi-ai@1.5.0": {
+  "@earendil-works/pi-ai@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
-  "@earendil-works/pi-durable@1.5.0": {
+  "@earendil-works/pi-durable@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
-  "@earendil-works/pi-codemode@1.5.0": {
+  "@earendil-works/pi-codemode@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
-  "@earendil-works/pi-telemetry@1.5.0": {
+  "@earendil-works/pi-telemetry@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
-  "@earendil-works/pi-schema@1.5.0": {
+  "@earendil-works/pi-schema@1.5.2": {
     "license": "MIT",
-    "file": "pi-1.5.0-MIT.txt",
-    "source": "https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE",
+    "file": "pi-1.5.2-MIT.txt",
+    "source": "https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE",
     "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
   },
   "standardwebhooks@1.1.1": {

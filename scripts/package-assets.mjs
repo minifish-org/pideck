@@ -13,14 +13,14 @@ import { validateInstalledLicenses } from "./licenses.mjs";
 import { prepareUpdaterAssets } from "./update-assets.mjs";
 
 const projectDirectory = fileURLToPath(new URL("..", import.meta.url));
-const nodeVersion = "22.23.4";
-// Official https://nodejs.org/dist/v22.23.4/SHASUMS256.txt, pinned with the runtime.
+const nodeVersion = "22.23.5";
+// Official https://nodejs.org/dist/v22.23.5/SHASUMS256.txt, pinned with the runtime.
 const nodeChecksums = {
-  "darwin-arm64": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428",
-  "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819",
-  "linux-arm64": "f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9",
-  "linux-x64": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
-  "win32-x64": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20",
+  "darwin-arm64": "e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d",
+  "darwin-x64": "c53383238206b9ae4db23c5d8a63645e2e753bec8ab51a49cc81939aa64e9422",
+  "linux-arm64": "8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3",
+  "linux-x64": "c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1",
+  "win32-x64": "4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3",
 };
 const targetNames = { darwin: "mac", linux: "linux", win32: "win" };
 

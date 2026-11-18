@@ -42,7 +42,7 @@ if (args[0] === 'list') console.log(JSON.stringify({browsers:fs.existsSync(state
 else console.log(JSON.stringify({args,home:process.env.HOME}));
 `);
   await writeFile(join(resourcesDirectory, 'manifest.json'), JSON.stringify({ schema: 2, platform: process.platform, arch: process.arch,
-    nodeVersion: '22.23.4', npmVersion: '12.2.2', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
+    nodeVersion: '22.23.5', npmVersion: '12.2.3', cliVersion: '0.1.24', playwrightVersion: '1.66.0-alpha-1794252756000', browserRevision: '1254',
     node: 'node', cli: 'upstream.cjs', playwright: 'node_modules/playwright/cli.js' }));
   const launcherPath = join(root, 'cli.cjs');
   await build({ entryPoints: ['src/automation/cli.ts'], outfile: launcherPath, bundle: true, platform: 'node', format: 'cjs', packages: 'external', logLevel: 'silent' });
@@ -206,7 +206,7 @@ test('an absent or invalid bundled manifest does not fall back to a system brows
     assert.equal(absent.availability().available, false);
     assert.deepEqual(await absent.environment('project', '1'), {});
     await writeFile(join(root, 'manifest.json'), JSON.stringify({ schema: 1, platform: process.platform, arch: process.arch,
-      nodeVersion: '22.23.4', cliVersion: '0.1.23', playwrightVersion: '1.65.0-alpha-2026-10-30', browserRevision: '1252',
+      nodeVersion: '22.23.5', cliVersion: '0.1.24', playwrightVersion: '1.66.0-alpha-1794252756000', browserRevision: '1254',
       node: '../outside', cli: '../outside', chromium: '../outside' }));
     assert.equal((await Automation.open(options)).availability().available, false);
   } finally { await rm(root, { recursive: true, force: true }); }

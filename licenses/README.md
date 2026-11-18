@@ -12,8 +12,8 @@ without network access during builds. A dependency update does not inherit an
 old supplement automatically. The text files in this directory are copied
 verbatim from the recorded upstream sources:
 
-- **Pi 1.5.0:** the MIT license from release commit
-  [`f9a26365568127461c47a07a37dcb42c140a3ac5`](https://github.com/earendil-works/pi/blob/f9a26365568127461c47a07a37dcb42c140a3ac5/LICENSE).
+- **Pi 1.5.2:** the MIT license from release commit
+  [`b4afdddf44e059c67ccf5097e5317d913521b470`](https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/LICENSE).
   This supplies the repository-root license omitted by the chord, pi-ai,
   pi-durable, pi-codemode, pi-telemetry and pi-schema npm packages. The schema
   package's separate TypeBox license is also collected from its installed
